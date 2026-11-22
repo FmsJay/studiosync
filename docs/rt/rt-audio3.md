@@ -132,3 +132,57 @@ Setup as `rt-ears.md` (`rig.sh setup`; `load`, `track add=true`, `live role=send
 8. **Measure latency instead of adding it up.** *Evidence:* cause 7: three numbers for one path (95-118 ms from envelopes, 127.6 stamped, 152-171 in the status). *Plan:* stamp each stream's frames with the sender's link-clock capture time (AOO's stream-time message already carries a time; `StudioSync_DirectClock` gives the offset) and report the measured mouth-to-ear delay per stream. Play together and Their time could then use it directly. Two days.
 9. **Tell the user when the device is the problem.** *Evidence:* the desktop's WASAPI-through-Voicemeeter device loses 2-12 of its 10 ms ticks in 10 s; no receiver can make that sound right locally. *Plan:* Health reads `clock_ppm` and the spread of the callback count ("this audio device runs 0.4 % slow and unevenly: use its ASIO driver or Voicemeeter's ASIO insert"). Half a day.
 10. **Opus settings worth a measured try:** 10 ms frames for Play (half the packets; 5 ms matters for Talk), in-band FEC on lossy links, DTX on a silent Talk (an idle stream was re-buffering for nothing). A day with the ears pattern.
+
+## REAPER re-check results (rt-r5, 2026-11-22 11:50-13:50 MT, StudioSync 0.59.49.97 from bfb7be9 + extension 1.0.38, Deafen 1)
+
+Desktop (d, WASAPI through Voicemeeter, 512), laptop (l, ASIO 128, on Wi-Fi over the internet), LinuxBox (x, PulseAudio 512 in a VM on
+the desktop); LinuxBox2 (x2) resumed 12:43-13:48 for step 7 and the hour of four, then suspended. The Mac was offline. Sound tests as the handoff says:
+the ears pattern on a generated test track on the sender only (`track add=true`, Play only), receivers muted (send nothing) at volume 0
+(0.01 through the hub), no microphone, no VM audio input; Deafen back to 1 on all three after every run and the test track removed.
+Probes and files: `<scratchpad>/rt-r5/` (`rig_rt-r5.sh` = tools/ears/rig.sh with the laptop through its hook lock, `stat.sh`, `ears/`,
+`st/`, `idle_log.txt`, `idleb_log.txt`, `guests/`).
+
+**The laptop's link was poor for most of the window.** Desktop -> laptop ping (Tailscale, direct): 84-748 ms, average 190, during the
+guests run (12:25); 83-311, average 147, after it (12:42); 77-176, average 83, at 13:35; 73-83, average 80, at 13:38. The laptop's own
+status said `rtt_ms` 106-206 to the desktop through the 9-minute idle (12:00-12:09), and its buffer for the desktop sat at the 150 ms
+ceiling with `jitter` (underruns that grew it) 59 -> 222. Runs a1, idle, a2 and the guests ran on that link; b1 and the second idle on the
+calm one. Read the laptop rows with that in mind.
+
+| # | Check | Result | Numbers |
+| --- | --- | --- | --- |
+| 1 | d -> l (a1, poor link) | **fail** | `speed_error` **1.00734** (speed 1.00339 against 0.99607 expected: desktop 47809 Hz, laptop 47997 Hz), `gap_ms` 900 (longest 230), `steady` false, corr 0.13; on the laptop the desktop's Play: underruns 8 -> 18, overruns 5 -> 9, resyncs 13 -> 27, trims 0 -> 2 in the run; **`ratio_ppm` +8727 before and +2369 after, `play_rate_ppm` +13727 / +7369**: the wrong sign (the desktop's device is the slow one: about -3900 ppm expected) and P pinned at its +0.5 % bound. Envelopes (`ears.py env`): latency 248 ms, IQR 9, level 0.0 dB, gaps 0. Live sync also turned the desktop into the room's mixer at 11:57:08 and back at 11:58:51 during the run ("you mix it for the others here"), and the laptop's `fallbacks` went 0 -> 2. |
+| 1 | d -> l again (b1, calm link, 13:36) | **pass but for 2 underruns** | `speed_error` **0.9994**, `gap_ms` **0**, `steady` true, level +0.01 dB, `latency_ms` 141.8 against `play_latency_ms` 143.0-155.0; the laptop's entry for the desktop: underruns 106 -> 108, resyncs 159 -> 161, overruns 53 -> 53, trims 25 -> 26 (target +0), `ratio_ppm` -1415 -> -2050 (in -500..-8000), `play_rate_ppm` -946 / -2374 (within 5000 of it). `aligned` false (corr 0.46, lag -20.5 ms) in all runs here: see Left. |
+| 2 | l -> d (a2, poor link) | **near miss** | `speed_error` **1.00232** (bound 1 +- 0.002; laptop 47997 Hz, desktop 47909 Hz), `gap_ms` 180 (longest 20), `steady` true; on the desktop the laptop's Play: underruns 0 -> 0, resyncs 0 -> 0 (**pass**: they rose 7 -> 9 and 11 -> 13 in r9), `ratio_ppm` +1597 / +793 (in +500..+8000). Tap latency 227 ms against `play_latency_ms` 212 at the start (the size went 150 -> 60 ms during the run, 107 at the end). |
+| 3 | Idle 9 min, desktop Play up and silent (12:00-12:09, poor link) | **fail** | Laptop, desktop's Play: **resyncs 39 -> 143 (+104)**, underruns 26 -> 93 (+67), overruns 13 -> 50, trims 3 -> 16 (+13); Talk underruns 67 -> 133 (+66); `ratio_ppm` swung -1612 .. +12156 and `play_rate_ppm` -6612 .. +17156 minute to minute; `play_buffer_ms` 130-392 against a 150 ms size. LinuxBox (same minutes): resyncs 3 -> 7, underruns 3 -> 7, trims 0, `ratio_ppm` -367 .. -4640. |
+| 3 | Idle 6 min again, calm link (13:39-13:45, ping 74-90 ms) | **fail, small** | Laptop, desktop's Play: resyncs 162 -> 166 (+4), underruns 109 -> 113 (+4), overruns 53 -> 53, trims 27 -> 29 (+2; target +1 at most); Talk underruns 431 -> 435; `ratio_ppm` -1212 .. -3492 (the right sign now), `play_rate_ppm` within 5000 of it in every read (-7637 against -2637 at the edge); `rate_fast` true in every read. |
+| 4 | d -> x (a3) | **pass but for 40 ms of gaps** | `speed_error` **1.0016** (desktop 47910, LinuxBox 48004 Hz), `gap_ms` 40 (longest 10; was 240), `steady` true, level 0.0 dB; LinuxBox's desktop entry: resyncs 12 -> 13 (+1, **pass**), underruns 12 -> 13; `clock_ppm` 63.0-66.0 against its counted rate +85 ppm (tap stamps) / +248 ppm (callbacks against `time_precise`, 47 s): **within 300, pass**; `clock_steps` 1 since 11:49 (**pass**). |
+| 5 | The desktop's restarts | **pass** (2 h) | "live audio stopped: Windows needs its firewall rule first" in the desktop's log: 3 (all 04:01-04:04) at 11:53 and still 3 at 13:51: **+0 in 11:50-13:51**, and no "live audio stopped" line of any kind. The desktop's `callbacks` 25284 at 11:54, 178558 at 12:22, 680653 at 13:51 (2 h 1 min of 512-sample blocks: it never started again). |
+| 6 | The hub holds | **pass** (log part) | No "is its hub now" or "you're the hub" line on the desktop after its Live sync start at 11:50:36 (the last two at 11:46:54 and 11:50:36 are the reload and the start), none on the laptop or LinuxBox today; four computers in Cross Test (LinuxBox2 from 12:44) and none either. `hub view` on d, l, x and x2: hub James, studio James (why home / preferred). Not run: the VM lab part (Syncthing paused on a LinuxBox holder; the block). |
+| 7 | LinuxBox2 without Tailscale | **pass** | Resumed 12:43 (suspended again 13:48), extension 1.0.38 installed (sha256 891b0274..., the 1.0.37 .so to `~/.local/share/Trash/files/reaper_studiosync-x86_64.so.1037-1795376657`), Deafen 1 before its REAPER restarted on 1.0.38 with 0.59.49.97; its status file `"la": "down"`; Health on d, l and x: "LinuxBox2 not connected: live audio didn't start there (their Health says why)"; `hub view` names James on all four; its own log: "live audio didn't start: Tailscale isn't up here" and "James's computer mixes it for the room", never "you mix it for the others here". (It caught up "57 changes from the others" on resuming, as in rt-r4.) |
+| 8 | Through the hub (a4, desktop serves) | **pass but for gaps** | Listeners' `fallbacks` +0 in the 3 minutes (laptop 2 -> 2, LinuxBox 1 -> 1); the hub's `stall_max_ms` **0.0** (1613.8 in r13), `stalls` 0; level 0.00 / -0.01 dB with `--gain 0.01`; `speed_error` 0.99887 (l) and 0.99829 (x); `hs` "hub" in every laptop row after joining (13.3 s); on LinuxBox one "direct" row at 108.9 s, which its poll notes as Live sync asking again (`hub asked again`, fallbacks unchanged), not a fallback. **`gap_ms` 120 (l, longest 10) and 10 (x)**: target 0. After the run, with no test, Health said "back to everyone's own streams 3 times" on both listeners (laptop 2 -> 3, LinuxBox 1 -> 3 by 12:47). |
+| 9 | Jam's growing WAV | not run | |
+| 10 | Browser guests (`guests.py --laptop --soak-min 15 --extra 2`, poor link) | **fail** | The six hearing checks and `four_live` pass. Pages' worklet `under` 15 -> 27 (A) and 14 -> 28 (B) from the 4th minute to the end (target: +8 at most; it was +226/+237 in 15 min), `drops` +8 / +13; `target` settled at 0.39-0.40 s (above 0.08: pass); `tone_b_hz` 1492.8-1506.3 (target within 0.1 % of 1500: **fail**, +-0.5 %); the listener's `ahead` at most **0.21 s** past its lead (target 0.3: pass), its lead stepped 0.25 -> 0.65 s, `under` 1 -> 8. Host rows `under` 96 -> 533 and 96 -> 531 in 15 minutes. CPU 33-48 % on the desktop. |
+
+**Findings.**
+- **A. On a jittery link the read-rate control learns a ratio of the wrong sign and holds P at its bound** (a1 and the idle, the laptop
+  hearing the desktop). With the desktop's device at 47809 Hz the laptop should read it about 0.4 % slow; it read it 0.73 % fast in a1
+  (`play_rate_ppm` +7369, R +2369, P +5000 = `RATE_P_F`), and through the idle R wandered -1612 .. +12156 ppm. The buffer sat at its
+  150 ms ceiling, so bursts that didn't fit were re-buffers (`play_overruns` +37) and each left the level high (fill 210-392 ms against
+  150): a high level is "read faster", which drains it into an underrun (`play_underruns` +67), and R, learning whenever the level "isn't
+  coming back", follows the sawtooth. On a calm link (b1) the same pair read at -2374 ppm, R -2050, `speed_error` 0.9994, no gaps, though the calm idle still re-buffered about once in 90 s (+4 resyncs in 6 minutes) with the fast loop on in every read. So the
+  control is right for a steady link and goes wrong when the network's jitter exceeds the buffer's ceiling: R should probably not learn
+  in a window that contains a re-buffer or an overrun, nor while the size sits at the ceiling. Evidence: `st/st_idle*_l.json`,
+  `idle_log.txt`, `ears/a1_*`.
+- **B. Live sync switched the desktop to "you mix it for the others" during a1** (11:57:08-11:58:51) with only one sender in the room, so
+  a "peer to peer" run partly went through the hub (laptop `fallbacks` +2). rt-audio3's step 1 assumes peer to peer.
+- **C. A bandmate's track change can arrive 27 s late with its live preview put back first.** In fix9 check 3 LinuxBox set XT Drums A to
+  0.9 at 13:07:21 (its log: "1 change(s) went to the others"); the desktop and the laptop showed the fader at once (live preview), said
+  "a bandmate's live move wasn't followed by their change: put back as it was" at 13:07:40 and got the change at 13:07:48 (Syncthing, not
+  the link): the fader jumped 0.9 -> 1.0 -> 0.9 on both. Seen once.
+- Small: `aligned` is false in every tap comparison here (corr 0.33-0.46 with lags of -43 to +21 ms), while speed, level, spectrum and
+  steadiness pass: the comparer's alignment threshold or the taps' start may need a look (a1's corr 0.13 is the real fault). The laptop
+  lists the offline Mac as a peer (`chilis-macbook-pro`, "no answer"), and LinuxBox's log said "Chilio-Mac's computer sends here before
+  this room lists it" at 20:17:30 UTC with the Mac offline.
+
+**Left.** Jam's growing WAV (step 9); step 6's VM lab part; the guests and a2 again on a calm link; a1's two underruns on the calm link;
+the desktop's own Voicemeeter device (`clock_ppm` -1500 to -4200 through the window).

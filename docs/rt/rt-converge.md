@@ -648,3 +648,48 @@ the map's move now takes the base's retimed text). The oracle now allows 1e-9 pe
    claim on "XT Gtr renamed" within 10 s of the track's return.
 7. **(d)**: run "Insert tempo marker" (the action, not the API) at an existing marker's place with another tempo; and
    `SetTempoTimeSigMarker(proj, -1, t, ...)` at an existing marker's time. Pass: one marker, the first tempo, for both.
+
+## REAPER re-check results for rt-fix9 (rt-r5, 2026-11-22 12:47-13:47 MT, StudioSync 0.59.49.97 from bfb7be9 + extension 1.0.38, Deafen 1)
+
+Desktop (d), laptop (l), LinuxBox (x), LinuxBox2 (x2, resumed for the audio checks; no part in these). Room mode "open" (claims) throughout.
+Edits by script through each REAPER's dev eval hook in undo blocks named as REAPER's own actions; paired edits at one moment on the shared
+link clock (`direct.shared_now`: each pair ran 4-48 ms apart). StudioSync's Undo is the studio folder's real `StudioSync - Undo.lua` (the
+Ctrl+Z script), run in the desktop's REAPER; the panel's bar was stood in for by writing `undo answer <proj>` exactly as `claimask.bar`
+does. After each check Cross Test was put back and compared on all three (`cmp.lua`): equal each time (the desktop's own "StudioSync live
+out" track aside). **No modal box appeared in any REAPER** (the desktop's windows listed after each Undo: only the tooltip; the laptop's and
+LinuxBox's hooks kept answering). Probes: `<scratchpad>/rt-r5/` (`p.sh`, `tm.sh`, `c/*.lua`, `cmp3.sh`, `soak_body.lua`).
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1 | A again | **fail, 4 of 4: the desktop's edit is still lost** | The desktop renamed XT Drums A -> "XT Drums R5" and the laptop set its fader 0.5 at the same moment (19:47:56.855 / .880 UTC). On all three, the desktop included: **"XT Drums A"**, 0.5. The desktop's log: "James-Laptop: changed a track on XT Drums A", "1 change from the others", and nothing of its own (no "change(s) went", no hold, no "which you've claimed"); the laptop: "claimed XT Drums A for you as you edit", "1 change(s) went". Again with R6 / 0.7 (.296 / .300): the same. Colour (`I_CUSTOMCOLOR`) against the fader 0.6: the colour lost on all three. Mute against the fader 0.8: the mute lost. Control: the fader 300 ms after the rename: the rename went out at once ("1 change(s) went") and the laptop's script found no "XT Drums A". The deployed `lib/mirror.lua` has rt-fix9's hold (`mirror.track_seen`, lines 3981, 4421-4422, 4779, 6275), so the hold doesn't engage in this race. Not proven, from the code: `W.each` writes `track_seen` for every track as the look *reads* it (line 6275), before `W.one` sends anything, so a receive handled after a look has read the rename but before that look's send went out finds "nothing unseen" and replaces the track whole; and the hold looks only at `mirror.receive`'s path. A trace (ExtState `stream trace`) of one try on the desktop would settle it. |
+| 2 | B again | **pass** | LinuxBox set the tempo 130 -> 120, -> 125, -> 100; each time 15 s later (landed: the desktop read that tempo) the desktop set 110, 115, 130: "sent the tempo map and the markers to the studio", "11 change(s) went", **no claim** (the desktop's claims empty after each, three of three). Then the desktop set 120 and moved XT Rec A's volume point 1 (592.45 -> 533.20) in one undo block: "claimed XT Rec A for you as you edit", claims `[XT Rec A]` auto. |
+| 3 | The Undo ask | **pass** | The desktop moved the laptop's new item on XT Keys C 15 -> 16, the laptop renamed it "R5 named" (claims released between, so no claim asks got in the way), the desktop pressed StudioSync Undo: **no box**; a tooltip (the desktop's windows: `tooltips_class32`) and its log: "Undo: changed an item on XT Keys C at 16.00 s? It goes to everyone. James-Laptop changed it after that: what they changed stays, unless it's what you changed. Press Ctrl+Z again within 30 s for yes (or Yes in StudioSync's bar); otherwise nothing changes."; ExtState `undo ask` set for 30 s. Live sync carried on: LinuxBox's fader change showed on the desktop meanwhile (but see rt-audio3's rt-r5 finding C: its change itself came 27 s later). The second press 21 s later: "1 change(s) brought back and sent to the others", the item at 15 with the laptop's name on all three. The bar's Yes (`undo answer` {id, yes}): Live sync's "1 change(s) brought back" 3 s later, done everywhere. Silence: after 36 s the item stayed at 16; a press then asked again rather than undoing. The bar's No: nothing changed, the ask cleared (the next press asked afresh). |
+| 4 | (a) the words | **pass** | The desktop added marker "R5 mark" and renamed it "R5 mark2"; LinuxBox set 130 -> 100; the desktop's Undo: log "undo: changed the markers" (no bpm), the marker back to "R5 mark", 100 bpm kept on all three; a second Undo took the marker away ("undo: changed the markers"). |
+| 5 | (b) check 1 with XT Keys C | **pass** | LinuxBox off (its Live sync stopped, its Syncthing paused through its REST API); the desktop set 130 -> 100; LinuxBox, on 130, moved XT Keys C's item a beat (7.384615 -> 7.846153); back online at 13:16:38. All three: XT Keys C at **10.1999995** (= 7.846153 x 1.3), 100 bpm. The desktop's log: "LinuxBox: changed an item on XT Keys C" and nothing else: no "theirs stands", no "as you did". |
+| 6 | (c) the renamer's auto-claim | **pass** | XT Gtr (one MIDI item, ReaEQ) made by the desktop; the desktop deleted it (.606) as the laptop renamed it (.633). The laptop: "James also changed something on XT Gtr at the same moment as you: theirs is in", then **"let go of your claim on XT Gtr renamed: no such track any more" 8 s later** (before any return). The desktop's Ctrl+Z (REAPER's Undo of "Remove tracks"): XT Gtr back on all three within 6 s; the laptop's claims empty (`mine [] auto []`). |
+| 7 | (d) one tempo marker to a place | **pass (the dialog action not tried)** | In one script call, put back before it returned (nothing synced, no log line): `SetTempoTimeSigMarker(p, -1, 10, -1, -1, 130, ...)` made a marker at 10 s; then `SetTempoTimeSigMarker(p, -1, 10, ..., 110, ...)` returned **true and changed nothing** (one marker at 10 s, 130); `AddTempoTimeSigMarker(p, 10, 115, ...)` the same; action 42330 "Tempo envelope: Insert tempo marker at edit cursor, without opening tempo edit dialog" with the cursor at 10 s: no second marker. 40256 (the same with its dialog, where another tempo could be typed) wasn't run: it opens a modal dialog. 42330 inserts the tempo already there, so "with another tempo" is only covered by the API calls. |
+
+**The laptop's leftover from rt-r4.**
+- **All three compared now:** desktop = laptop = LinuxBox (18 lines: tracks, items, notes, envelope, the region, tempo) before the burst and
+  after each check above. One cosmetic difference seen twice: XT Keys C's position read 7.38461 on the desktop and 7.38462 elsewhere in
+  `cmp.lua`'s 5 decimals; to 17 digits 7.3846149999999993 against 7.3846150000000002, one unit in the last place, after the desktop's tempo
+  round trip put it back (REAPER's arithmetic, not a sync difference).
+- **A 3-minute concurrent burst including the laptop, with StudioSync Undo and Redo in it** (rt-r4's driver, seeds 501/502/503, every 2-6 s:
+  move, rename, fader, tempo, add/delete a scratch track or item, StudioSync Undo or Redo through `undo.step` with no `reaper.MB` stub; an
+  Undo that asked was pressed again half the time, as a person would, else left): 43 ops on the desktop, **47 on the laptop**, 42 on
+  LinuxBox (13:24:56-13:27:52), no errors in any driver or log, no box anywhere. The laptop's Undo asked once (20:27:02, left) and the
+  laptop carried on; the desktop undid 4 times (one "1 not yours to change, left as they are"), the laptop twice, LinuxBox once (plus one
+  native Undo). **Desktop = laptop = LinuxBox at quiet + 90 s and + 180 s** (41 lines: 8 scratch tracks, 120 bpm, XT Rec A's 8 takes and
+  envelope retimed alike). Put back from the desktop (claims released on all three first): equal to the starting state on all three.
+  (The driver can make a MIDI item with a negative length, from `CreateNewMIDIItemInProj` with its end before its start: two such items
+  synced alike. A driver quirk, kept as found.)
+
+**Bugs.**
+- **A (rt-r4's bug A) is not fixed in REAPER**: four of four tries lost the desktop's rename, colour or mute under the laptop's fader
+  change made within 4-48 ms of it, silently, on the desktop too. Check 1 above has the evidence and the likely gap.
+- From the Undo script, not seen as a box here: `StudioSync - Undo.lua` still calls `band.msg(why)` (a modal `reaper.MB`) whenever
+  `undo.step` returns nil with a reason ("You haven't changed anything here yet.", "Nothing to redo ..."): a Ctrl+Z with nothing of yours
+  to undo still opens a modal box. rt-fix9 took the ask out of the modal; these reasons remain modal.
+
+**Left.** 8 (c) Undo of a marker made a second after a bandmate's panel Restore; 10 (a copied stand-in); 12's patched build; P1-9..P1-16;
+action 40256 with another tempo (a modal dialog).
