@@ -15,6 +15,9 @@
 -- 10. An edit beaten by a deletion stays beaten when the deletion is taken back, in whatever order they arrive (mirror.beaten_by).
 -- 11. Undo and Redo of an act with a marker or tempo change go by the timeline's own order (sync.undo_timeline).
 -- 12. No choice follows Lua's table order: heal and Undo work through their objects in one order (mirror.heal, mirror.revert): bug 8.
+-- 13. A plug-in knob turned here that no look has seen holds the band's chain back (mirror.receive): rt-r2's P1-4 and P1-1.
+-- 14. REAPER's own Undo of a track deletion brings the track back for everyone (mirror.watch, settle_ids): rt-r2's P1-6.
+-- 15. (a pin) which plug-in changes ask the bandmate who holds the track while they edit: rt-r2's P1-5.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -153,6 +156,7 @@ do
   assert(can("James", "Bass") == false, "today, Bass isn't James's to change")
   assert(can("James", "Bass", nil, nil, nil, iso(T - 3600)) == true, "but his change from an hour before Cee's claim is judged by the claims then: allowed")
   assert(can("James", "Bass", nil, nil, nil, iso(T + 5)) == false, "one made after the claim: refused, as before")
+  assert(can("James", "Bass", nil, nil, nil, iso(T)) == true, "one made in the claim's own second: the claim hadn't reached its maker, so it doesn't hold it back a minute (rt-r2's 61 s)")
   assert(can("James", "Keys", 12, nil, nil, iso(T - 5)) == true and can("James", "Keys", 12, nil, nil, iso(T + 5)) == false, "a claimed stretch of time the same way")
   assert(who.is_claimed("Bass", nil, iso(T - 1)) == nil and who.owner_of("Bass", nil, nil, iso(T + 1)) == "Cee", "is_claimed and owner_of take the time too")
   sync.room_mode = "open"
@@ -599,6 +603,39 @@ do
   assert(#sent == 8, "eight restores went out: " .. #sent)
   for i = 2, #sent do assert(sent[i - 1].oid < sent[i].oid, "in the order of their ids (was: the plan table's own order, another every run)") end
   print("rt-converge 12: heal and Undo work through their objects in one order on every computer and every run")
+end
+
+-- (plug-ins through the API, read from the chain's text as REAPER's would read: one knob per plug-in, the number in its state line. The
+-- stand-in has none, and with no knobs mirror takes a chain edit for REAPER re-encoding the chain. As tools/soak/node.lua.)
+local function fx_api(c)
+  local function blocks(tr)
+    local list, cur, d = {}, nil, 0
+    for l in (tr.body or ""):gmatch("[^\n]+") do
+      if l == "<FXCHAIN" then d = 1
+      elseif d == 1 and l:match("^BYPASS ") then cur = { l }; list[#list + 1] = cur
+      elseif d >= 1 then
+        if cur and not (d == 1 and l == ">") then cur[#cur + 1] = l end
+        if l:sub(1, 1) == "<" then d = d + 1 elseif l == ">" then d = d - 1 end
+      end
+    end
+    return list
+  end
+  local R = c.F.reaper
+  rawset(R, "TrackFX_GetCount", function(tr) return #blocks(tr) end)
+  rawset(R, "TrackFX_GetNumParams", function(tr, i) return blocks(tr)[i + 1] and 1 or 0 end)
+  rawset(R, "TrackFX_GetParamNormalized", function(tr, i) local b = blocks(tr)[i + 1]; return b and (tonumber((b[3] or ""):match("^QUFB(%d+)")) or 0) / 1000 or 0 end)
+  rawset(R, "TrackFX_GetFXName", function(tr, i) local b = blocks(tr)[i + 1]; return b ~= nil, b and b[2]:match('^<%u+ "([^"]*)"') or "" end)
+  rawset(R, "TrackFX_GetPreset", function() return false, "" end)
+  rawset(R, "TrackFX_GetOpen", function() return false end)
+  rawset(R, "TrackFX_GetEnabled", function(tr, i) return blocks(tr)[i + 1] ~= nil end)
+  rawset(R, "TrackFX_GetOffline", function() return false end)
+  rawset(R, "TrackFX_GetFXGUID", function(tr, i) for _, l in ipairs(blocks(tr)[i + 1] or {}) do local g = l:match("^FXID (%S+)"); if g then return g end end end)
+end
+local function chain(eq, comp, comp_first)
+  local a = { "BYPASS 0 0 0", '<VST "VST: ReaEQ (Cockos)" reaeq.dll 0 "" 1919247729<56535472656571726561657100000000> ""', "QUFB" .. eq .. "AAAA", ">", "FLOATPOS 0 0 0 0", "FXID {EQ-1}", "WAK 0 0" }
+  local b = { "BYPASS 0 0 0", '<VST "VST: ReaComp (Cockos)" reacomp.dll 0 "" 1919247213<56535472636D70726561636F6D7000> ""', "QUFB" .. comp .. "AAAA", ">", "FLOATPOS 0 0 0 0", "FXID {CO-1}", "WAK 0 0" }
+  local first, second = comp_first and b or a, comp_first and a or b
+  return "<FXCHAIN\nSHOW 0\nLASTSEL 0\nDOCKED 0\n" .. table.concat(first, "\n") .. "\n" .. table.concat(second, "\n") .. "\n>\n"
 end
 
 print("ok rt-converge")

@@ -689,7 +689,9 @@ function sync.authority(cfg, song, room, s)
   -- it, and showed the song without it for the minute a refused change waits; and a computer whose own auto-claim came after a bandmate's
   -- edit held that edit back a minute. The soak's bug 3. A claim that was there then and is released since is no longer known, and doesn't
   -- refuse either. sync.receive passes it; a look judges this person's own edit by the claims now. rt-converge)
-  local function then_(c, at) return c and not (at and type(c.time) == "string" and c.time > at) and c or nil end
+  -- (nor one made in the same second: the times are whole seconds from two clocks, and a claim that young hadn't reached the change's
+  -- maker. Two edits 20 ms apart, each auto-claiming, held each other's change back a minute: P1-1 and P1-2's "61 s", rt-r2)
+  local function then_(c, at) return c and not (at and type(c.time) == "string" and c.time >= at) and c or nil end
   local function in_time(pos, at)
     for _, t in ipairs(pos and times or {}) do if pos >= t.from and pos < t.to and then_(t, at) then return t end end
   end
