@@ -169,8 +169,8 @@ class EarsTest(unittest.TestCase):
         meta = dict(self.meta, pattern_at=1.0)
         got = np.concatenate([np.zeros(int(0.1 * SR)), signal.resample(ref, int(round(len(ref) * 47880 / 48000)))])
         r = ears.compare_wav(ref, got, SR, meta)
-        self.assertFalse(r["pass"]["speed"], r)
-        self.assertGreater(r["gap_ms"], 0, r)  # (the artefact: frames 25 ms apart by the pattern's end)
+        self.assertFalse(r["pass"]["speed"], r)  # (and "250 ms of gaps" then: frames 25 ms apart by the pattern's end. Not since a gap
+        # needs the 10 ms either side to be empty too: test_wav_live_path_that_wanders)
         r = ears.compare_wav(ref, got, SR, meta, rates=(48000.0, 47880.0))
         self.assertAlmostEqual(r["speed"], 1.0025, delta=0.0005)
         self.assertAlmostEqual(r["speed_error"], 1.0, delta=0.0005)
@@ -198,6 +198,50 @@ class EarsTest(unittest.TestCase):
         self.assertIsNone(ears.stamp_rate(gp))
         lag = 10 * SR  # (the receiver's tap started 10 s of samples before the sender's first sample was heard)
         self.assertAlmostEqual(ears.stamp_latency(rp, gp, lag, SR, 47860.0) - ears.stamp_latency(rp, gp, lag, SR), 10000.0 * (48000 / 47860.0 - 1), delta=0.01)
+
+    def test_wav_live_path_that_wanders(self):
+        # rt-r5: every comparison read "aligned: false" (corr 0.33-0.46), the good runs too, and 40-180 ms of "gaps" with no underrun.
+        # A live path's delay wanders by a few ms (here +-3 ms over 4 s): no one lag fits 9 s of it, and a click lands a frame over.
+        ref = np.concatenate([np.zeros(SR), self.x, np.zeros(SR // 2)])
+        meta = dict(self.meta, pattern_at=1.0)
+        n = np.arange(len(ref) + int(0.2 * SR))
+        got = np.interp(n - 0.1 * SR - 0.003 * SR * np.sin(2 * np.pi * n / (4.0 * SR)), np.arange(len(ref)), ref, left=0.0, right=0.0)
+        r = ears.compare_wav(ref, got, SR, meta)
+        self.assertLess(r["corr"], 0.8, r)                    # (what "aligned" went by)
+        self.assertGreaterEqual(r["corr_windows"], 0.9, r)    # (0.1 s at a time it is the same sound)
+        for k in ("aligned", "no_gaps", "level", "steady"):
+            self.assertTrue(r["pass"][k], (k, r))
+        # another sound altogether isn't aligned, and a real dropout is still a gap
+        other = 0.3 * np.random.default_rng(7).standard_normal(len(ref))
+        self.assertFalse(ears.compare_wav(ref, other, SR, meta)["pass"]["aligned"])
+        a, b = int((1.0 + 6.0) * SR), int((1.0 + 6.08) * SR)
+        cut = got.copy(); cut[a + int(0.1 * SR):b + int(0.1 * SR)] = 0  # (80 ms of the band excerpt)
+        r = ears.compare_wav(ref, cut, SR, meta)
+        self.assertGreaterEqual(r["gap_ms"], 40, r)
+        self.assertFalse(r["pass"]["no_gaps"], r)
+
+    def test_rate_over_the_sound(self):
+        # rt-r5's a2 (the laptop -> the desktop): the desktop's device ran 47777 Hz through the 9 s of sound and 47909 Hz over the whole
+        # 30 s tap; judged by the tap's average, a receiver in step read "speed 1.00232, 180 ms of gaps"
+        import json
+        import tempfile
+        d = tempfile.mkdtemp()
+        gp = os.path.join(d, "got.wav")
+        looks, cb, t = [], 0.0, 100.0
+        for i in range(1000):  # (a look every 30 ms; the sound is recorded from 10 s to 19.7 s of the tap)
+            looks.append([t, int(cb)])
+            hz = 47777.0 if 10.0 <= t - 100.0 < 19.7 else 47972.0
+            cb += 0.03 * hz / 512
+            t += 0.03
+        with open(gp + ".json", "w") as f:
+            json.dump({"t_first": 100.0, "me": "desk", "block": 512, "cbs": looks}, f)
+        whole, part = ears.stamp_rate(gp), ears.stamp_rate(gp, (10 * SR, int(19.7 * SR)), SR)
+        self.assertGreater(whole, 47850.0)  # (the tap as a whole: between the two, 47909 on average)
+        self.assertAlmostEqual(part, 47777.0, delta=12.0)
+        self.assertAlmostEqual(ears.stamp_rate(gp, (10 * SR, 10 * SR + 4800), SR), whole, delta=0.01)  # (too short a span to make a rate: the whole tap's)
+        x = np.zeros(30 * SR); x[10 * SR:int(19.7 * SR)] = 0.2
+        self.assertEqual(ears.sound_span(x), (10 * SR, int(19.7 * SR) - 1))
+        self.assertIsNone(ears.sound_span(np.zeros(100)))
 
     def _env(self, latency, block_s=512, block_r=128, gain=1.0, drops=(), offset_ms=0.0):
         sig = np.concatenate([np.zeros(SR), self.x, np.zeros(SR)])

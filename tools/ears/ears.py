@@ -480,6 +480,23 @@ def align(ref, got, max_lag=None):
     return int(lags[i]), float(abs(c[i]) / norm)
 
 
+def align_env(ref, got, sr):
+    """The same lag by loudness (|x| over 5 ms, a point a millisecond), to a millisecond or two. For a live path: its delay wanders by
+    more than a waveform's period, so no one lag lines the waveforms up and the strongest of the weak peaks can be anywhere (a +-3 ms
+    wander put it 108 ms off, and every check after it read wrong)."""
+    k = max(1, sr // 1000)
+
+    def env(x):
+        n = len(x) // k
+        e = np.convolve(np.abs(x[:n * k]).reshape(n, k).mean(axis=1), np.ones(5) / 5, mode="same")
+        return e - e.mean()
+    a, b = env(ref), env(got)
+    if not len(a) or not len(b):
+        return 0
+    c = signal.fftconvolve(b, a[::-1], mode="full")
+    return (int(np.argmax(c)) - (len(a) - 1)) * k
+
+
 def third_octave_db(x, sr):
     f, p = signal.welch(x, sr, nperseg=4096)
     centres = 1000 * 2 ** (np.arange(-14, 13) / 3)  # 62.5 Hz .. 16 kHz
@@ -556,14 +573,28 @@ def poll_rate(head, rows):
     return device_rate([(r.get("t"), r.get("cb")) for r in rows], (head or {}).get("block"))
 
 
-def stamp_rate(path):
-    """The same from an ears tap's stamp (<wav>.json: cbs and block, ears.lua "tap" since rt-audio3). None for an older stamp."""
+def sound_span(x, floor=1e-3):
+    """(first, last) sample of x with sound in it, or None."""
+    loud = np.flatnonzero(np.abs(x) >= floor)
+    return (int(loud[0]), int(loud[-1])) if len(loud) else None
+
+
+def stamp_rate(path, span=None, sr=48000):
+    """The same from an ears tap's stamp (<wav>.json: cbs and block, ears.lua "tap" since rt-audio3). None for an older stamp.
+    span: (first, last) sample of the WAV the rate is wanted for (sound_span): the looks taken while those samples were recorded, when
+    they make a rate (8 looks over 2 s), else the whole tap's. rt-r5: the desktop's device moves within a tap (47909 Hz over a 30 s tap,
+    47777 Hz through its 9 s of sound), and judged by the tap's average a receiver in step read "0.23 % sharp, 180 ms of gaps"."""
     try:
         with open(path + ".json") as f:
             s = json.load(f)
     except (OSError, ValueError):
         return None
-    return device_rate(s.get("cbs"), s.get("block"))
+    cbs, t0 = s.get("cbs"), s.get("t_first")
+    if span and cbs and t0 is not None:
+        part = device_rate([c for c in cbs if t0 + span[0] / sr <= c[0] <= t0 + span[1] / sr], s.get("block"))
+        if part:
+            return part
+    return device_rate(cbs, s.get("block"))
 
 
 def to_rate(x, want):
@@ -594,12 +625,20 @@ def compare_wav(ref, got, sr, meta=None, exact=False, rates=None, gain=1.0):
         got = got / gain
         raw = raw / gain
     lag, peak = align(ref, got)
+    if not exact and peak < 0.8:  # (no one lag fits the waveform: a live path. Its lag by loudness)
+        lag = align_env(ref, got, sr)
     r_off = max(0, -lag)  # (r[i] is ref[i + r_off], g[i] the got sample heard with it)
     g = got[max(0, lag):]
     r = ref[r_off:]
     m = min(len(r), len(g))
     r, g = r[:m], g[:m]
     res = {"lag_samples": lag, "lag_ms": round(lag / sr * 1000, 2), "corr": round(peak, 4), "overlap_s": round(len(g) / sr, 3)}
+    # (whether GOT is REF's sound at all: 0.1 s at a time, each at its own lag. One lag for the whole recording asks a live path's delay
+    # to hold within a fraction of a waveform's period for its whole length, which no jitter buffer does: rt-r5 read corr 0.33-0.46 and
+    # "aligned: false" on every run, the good ones too, where 85 % of the 0.1 s stretches match at 0.8 or better)
+    cw = [x[2] for x in steady_lags(ref, got, sr, lag, win_s=0.1)] if not exact else []
+    if len(cw) >= 10:
+        res["corr_windows"] = round(float(np.median(cw)), 4)
     hop = int(0.01 * sr)
     nf = len(r) // hop
     fr = np.array([np.sqrt(np.mean(r[i * hop:(i + 1) * hop] ** 2)) for i in range(nf)])
@@ -607,7 +646,10 @@ def compare_wav(ref, got, sr, meta=None, exact=False, rates=None, gain=1.0):
     loud = db(fr) > db(fr.max()) - 30
     d = db(fg) - db(fr)
     res["level_db"] = round(float(np.median(d[loud])), 2) if loud.any() else None
-    gaps = loud & (d < -GAP_DB)
+    # (a gap: a loud stretch of REF with nothing in GOT there nor in the 10 ms either side. A live path's delay wanders by a few ms, and
+    # a click that fell in the next frame over read as "10 ms of gap" a time: 40-120 ms of them in rt-r5's runs with no underrun)
+    near = np.maximum(fg, np.maximum(np.concatenate([fg[:1], fg[:-1]]), np.concatenate([fg[1:], fg[-1:]]))) if nf else fg
+    gaps = loud & (db(near) - db(fr) < -GAP_DB)
     res["gap_ms"] = int(gaps.sum() * 10)
     # longest run of gap frames
     run = best = 0
@@ -639,7 +681,7 @@ def compare_wav(ref, got, sr, meta=None, exact=False, rates=None, gain=1.0):
         res["rates_hz"] = [round(float(rates[0]), 1) if rates[0] else None, round(float(rates[1]), 1) if rates[1] else None]
     lim = SPEC_DB_EXACT if exact else SPEC_DB
     res["pass"] = {
-        "aligned": peak >= (0.999 if exact else 0.8),
+        "aligned": peak >= 0.999 if exact else res.get("corr_windows", peak) >= 0.8,
         "level": res["level_db"] is not None and abs(res["level_db"]) <= (0.01 if exact else LEVEL_DB),
         "no_gaps": res["gap_ms"] == 0,
         "spectrum": all(v <= lim for v in spec.values()),
@@ -797,8 +839,8 @@ def main(argv):
             rates = tuple(a.rates)
         elif a.polls:
             rates = tuple(poll_rate(*read_poll(p)) for p in a.polls)
-        elif a.stamps:
-            rates = (stamp_rate(a.ref), stamp_rate(a.got))
+        elif a.stamps:  # (each device's rate while its WAV's sound was recorded, not the whole tap's)
+            rates = (stamp_rate(a.ref, sound_span(ref), sr), stamp_rate(a.got, sound_span(got), sr))
         known = bool(rates and rates[0] and rates[1])
         res = compare_wav(ref, got, sr, meta, exact=a.exact, rates=rates if known else None, gain=a.gain)
         if not known and not a.exact:
