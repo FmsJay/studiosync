@@ -74,10 +74,10 @@ end
 for _, f in ipairs({ "lib/webui/guestworklet.js", "lib/webui/sharemix.js", "lib/webui/listen.js" }) do
   local s = read(f)
   -- (rt-audio3: one control in all three, the same text: the rate from the buffer as 1 + R + P, ssPace. It was 1 + (fill - size) x DRIFT_K)
-  assert(s:find("function ssPace(st, fill, target, dt)", 1, true) and s:find("PACE_KP * PACE_KP / 4", 1, true), f .. ": the drift's rate (ssPace)")
+  assert(s:find("function ssPace(st, fill, target, dt, age)", 1, true) and s:find("PACE_KP * PACE_KP / 4", 1, true), f .. ": the drift's rate (ssPace)")
 end
 do -- (and the same text: a worklet can't share a file with a page in every browser, so it is kept alike by this)
-  local function body(f) return read(f):match("function ssPace%(st, fill, target, dt%) %b{}") end
+  local function body(f) return read(f):match("function ssPace%(st, fill, target, dt, age%) %b{}") end
   local a, b2, c = body("lib/webui/guestworklet.js"), body("lib/webui/sharemix.js"), body("lib/webui/listen.js")
   assert(a and a == b2 and a == c, "ssPace is the same in the guest worklet, the share mix and the listening page")
   assert(read("extension/webui.cpp"):find("struct GPace", 1, true), "and the host's ring for a guest reads by the same control (gpace)")

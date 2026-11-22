@@ -30,7 +30,8 @@ function load(file) {
 // far (rt-audio3, rt-t1's guest 78 ms of round trip away through `tailscale serve`, TCP): { delay (s, one way), every, pause (s) }: every
 // `every` s or so the link holds everything for `pause` s (a lost segment's retransmit, a stalled tab), and what was held comes at once;
 // settle: the seconds left out of the counts. Also -> under (the worklet's own count from settle on), rateMean (its read rate from then
-// on, averaged) and size (its buffer's size at the end, s).
+// on, averaged), rateLo and rateHi (the lowest and highest it read at from then on) and size (its buffer's size at the end, s).
+// far.big, far.bigEvery (rt-audio3 round 2): a longer hold of ~big s every ~bigEvery s on top (rt-r5's link: ping 84-748 ms).
 function run(file, ppm, mk, secs = 600, seed = 7, far = null, settleS = 20) {
   const { scope, cls } = load(file);
   const proc = new cls({ processorOptions: {} });
@@ -38,7 +39,8 @@ function run(file, ppm, mk, secs = 600, seed = 7, far = null, settleS = 20) {
   const rand = () => { rnd = (rnd * 1103515245 + 12345) % 2147483648; return rnd / 2147483648; };
   const PIECE = 480, BLK = 128, srS = SR * (1 + ppm * 1e-6);
   const queue = []; // ([arrival time, pcm, t])
-  let sent = 0, phase = 0, nextSend = 0, lastArr = 0, heldTo = 0, nextPause = far ? far.every : 1e18;
+  let sent = 0, phase = 0, nextSend = 0, lastArr = 0, heldTo = 0, nextPause = far ? far.every : 1e18, nextBig = far && far.big ? far.bigEvery : 1e18;
+  let rateLo = 9, rateHi = 0;
   const L = new Float32Array(BLK), R = new Float32Array(BLK);
   let prev = 0, jumps = 0, quietRun = 0, gaps = 0, fillMin = 1e9, fillMax = -1e9, frames = 0, under0 = -1, rateSum = 0, rateN = 0;
   const settle = settleS * SR;
@@ -48,6 +50,7 @@ function run(file, ppm, mk, secs = 600, seed = 7, far = null, settleS = 20) {
       const pcm = new Int16Array(PIECE * 2);
       for (let i = 0; i < PIECE; i++) { const v = Math.round(0.5 * Math.sin(phase) * 32767); pcm[2 * i] = pcm[2 * i + 1] = v; phase += 2 * Math.PI * 440 / SR; }
       if (far && nextSend >= nextPause) { heldTo = nextSend + far.pause * (0.6 + 0.8 * rand()); nextPause = nextSend + far.every * (0.5 + rand()); }
+      if (nextSend >= nextBig) { heldTo = nextSend + far.big * (0.75 + 0.5 * rand()); nextBig = nextSend + far.bigEvery * (0.5 + rand()); }
       const arr = Math.max(lastArr, nextSend + (far ? far.delay : 0) + rand() * 0.015, heldTo);
       lastArr = arr;
       queue.push([arr, pcm, sent / SR]);
@@ -74,12 +77,13 @@ function run(file, ppm, mk, secs = 600, seed = 7, far = null, settleS = 20) {
         fillMin = Math.min(fillMin, st.fill); fillMax = Math.max(fillMax, st.fill);
         if (under0 < 0) under0 = st.under;
         rateSum += st.rate; rateN++;
+        rateLo = Math.min(rateLo, st.rate); rateHi = Math.max(rateHi, st.rate);
       }
     }
   }
   const st = scope.lastStats || {};
   return { jumps, gaps, fillMin: fillMin / SR * 1000, fillMax: fillMax / SR * 1000, stats: scope.lastStats, under: under0 < 0 ? -1 : st.under - under0,
-    rateMean: rateN ? rateSum / rateN : 0, size: st.target || 0 };
+    rateMean: rateN ? rateSum / rateN : 0, rateLo, rateHi, size: st.target || 0 };
 }
 const guest = (pcm, t) => ({ mix: pcm, t });
 const share = (pcm) => pcm;
@@ -103,6 +107,20 @@ for (const [name, file, mk, size] of [['guest page', files.guest, guest, 80], ['
   check(r.under >= 0 && r.under <= 4, 'guest page, far away: its buffer grew to what the link needs: 4 underruns at most in 11 minutes (it was 15 a minute: a fixed 80 ms)');
   check(Math.abs(r.rateMean - 1.0003) < 0.0006, 'guest page, far away: read at the two clocks\' ratio on average, not sharp (it was heard 0.2-0.85 % sharp for 15 minutes)');
   check(r.size > 0.1 && r.size <= 0.4, 'guest page, far away: and it says its buffer\'s size (stats target)');
+}
+
+// rt-audio3 round 2 (rt-r5's guests run, 2026-11-22, the guest pages on a laptop whose link to the host pinged 84-748 ms, 190 on average):
+// the pages' buffers sat at their 0.4 s most and still ran dry 12 and 14 times in 11 minutes, and a guest's 1500 Hz tone was heard at
+// 1492.8-1506.3 Hz (+-0.5 %): with every hold the buffer's mean fell and rose again, P ran at its bound either way and R wandered. Here
+// the link holds everything ~0.2 s every ~1.5 s and ~0.6 s every ~50 s. The buffer may now grow to 0.8 s, and the level the rate goes by
+// is a time (what waits plus how long ago the newest piece came), which a hold doesn't move.
+{
+  const r = run(files.guest, 300, guest, 900, 23, { delay: 0.08, every: 1.5, pause: 0.2, big: 0.6, bigEvery: 50 }, 240);
+  const off = Math.max(Math.abs(r.rateLo - 1.0003), Math.abs(r.rateHi - 1.0003));
+  console.log(`     guest page, a link that holds (~0.2 s every ~1.5 s, ~0.6 s every ~50 s, REAPER +300 ppm) for 15 minutes: ${r.under} underruns from 4 minutes on; read at ${((r.rateLo - 1) * 1e6).toFixed(0)} to ${((r.rateHi - 1) * 1e6).toFixed(0)} ppm (${((r.rateMean - 1) * 1e6).toFixed(0)} on average); its buffer's size ${(r.size * 1000).toFixed(0)} ms at the end`);
+  check(r.under >= 0 && r.under <= 8, 'guest page, a link that holds: 8 underruns at most in 11 minutes (12 and 14 at a 0.4 s most, rt-r5)');
+  check(off < 0.0015, 'guest page, a link that holds: read within 0.15 % of the two clocks\' ratio in every look (a tone moved +-0.5 %, rt-r5)');
+  check(r.size > 0.4 && r.size <= 0.8, 'guest page, a link that holds: its buffer grew past 0.4 s to what the link holds');
 }
 
 // The listening page: each decoded 20 ms is scheduled `ahead` of the context's clock at a playback rate ssListenPace gives; packets from a

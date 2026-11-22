@@ -445,6 +445,54 @@ static void guests_together_tests(int link, const std::string &th)
   printf("     guests: 200 ms of A's sound waiting: heard from the ramp's sample %.0f of 9600 on, at %.4f samples a sample\n", first, step);
   CHECK(first > 9600 - 0.075 * 48000 && first < 9600 - 0.055 * 48000, "a guest's ring starts at its size after a pause: what piled up behind it is skipped, not left as delay");
   CHECK(step > 0.9965 && step < 1.0035, "and it plays at one sample a sample, not sharp (it read the pile off at 0.5 %: a guest heard up to 0.85 % sharp)");
+  // A guest whose link holds its sound (rt-audio3 round 2, from rt-r5: the guest pages on a laptop whose link pinged 84-748 ms; the host's
+  // ring for each was a fixed 60 ms and ran dry at every hold, 437 times in 15 minutes). The ring now grows: when it has run dry it goes
+  // to the hold that did it. A's ring runs dry, its link holds for 0.3 s and lets 0.3 s of sound go at once: the ring's size is then
+  // that hold and more, and ten more 0.25 s bursts, each played out before the next comes, don't run it dry again.
+  auto gnum = [&](const char *key) { // (A's number in the status: -1 when it isn't there)
+    const std::string st = webui_status();
+    const size_t at = st.find(std::string("\"") + gids[0] + "\":{"), k = at == std::string::npos ? at : st.find(std::string("\"") + key + "\":", at);
+    return k == std::string::npos ? -1.0 : atof(st.c_str() + k + strlen(key) + 3);
+  };
+  auto drain = [&]() { // (the session mix each guest is sent, read and dropped: a guest that doesn't take it is let go once its socket is full)
+    for (int g = 0; g < 4; ++g)
+      for (;;) {
+        fd_set rs; FD_ZERO(&rs); FD_SET(ws[g], &rs);
+        timeval tv = { 0, 0 };
+        char buf[16384];
+        if (select(ws[g] + 1, &rs, nullptr, nullptr, &tv) <= 0 || recv(ws[g], buf, sizeof buf, 0) <= 0) break;
+      }
+  };
+  auto blocks = [&](int nb) {
+    for (int b = 0; b < nb; ++b) {
+      std::fill(L.begin(), L.end(), 0.0); std::fill(R.begin(), R.end(), 0.0);
+      double *out[2] = { L.data(), R.data() };
+      webui_guest_audio(out, 2, 240, 48000.0);
+      if (b % 10 == 9) drain();
+    }
+    drain();
+  };
+  blocks(40); // (what was left of the ramp, then dry)
+  const double u0 = gnum("under"), s0 = gnum("size");
+  for (int i = 0; i < 2; ++i) ws_put(ws[0], 2, frame(8192)); // (20 ms more, too little to start on: the hold is counted from here)
+  sleep_ms(60);
+  blocks(4);
+  sleep_ms(300);
+  for (int i = 0; i < 30; ++i) ws_put(ws[0], 2, frame(8192));
+  sleep_ms(150);
+  blocks(1);
+  const double s1 = gnum("size");
+  blocks(70); // (that burst, played out: dry again, once)
+  const double u1 = gnum("under");
+  for (int c = 0; c < 10; ++c) { // (in real time, as a link would: the socket takes sound no faster than three times that)
+    for (int i = 0; i < 25; ++i) ws_put(ws[0], 2, frame(8192));
+    sleep_ms(260);
+    blocks(50);
+  }
+  const double u2 = gnum("under"), s2 = gnum("size");
+  printf("     guests: A's ring ran dry (%.0f times so far, size %.2f s), then its link held 0.3 s: size %.2f s; ten 0.25 s bursts after: %.0f more times dry (size %.2f s)\n", u0, s0, s1, u2 - u1, s2);
+  CHECK(u0 >= 1 && s1 >= 0.3 && s1 <= 0.8, "a guest's ring that ran dry goes to the hold that did it (it was a fixed 60 ms: dry at every hold, 437 times in 15 minutes)");
+  CHECK(u2 - u1 <= 1 && s2 >= 0.25, "and bursts shorter than that don't run it dry again");
   for (int i = 0; i < 4; ++i) { webui_guest_set(gids[i], "", 0, 0); closesocket(ws[i]); }
   for (int i = 0; i < 100 && webui_mix_wanted() != 0; ++i) sleep_ms(10);
 }

@@ -817,24 +817,34 @@ void mix_stream(sock_t s)
 // lib/webui/guestworklet.js). Guests hear each other (rt-p11, 1.22): each slot's `oth` holds the other live guests' sum at the session
 // mix's frames, which its sender adds; and listeners hear them (webui_listen_feed after).
 // gpace (rt-audio3; lib/webui/guestworklet.js ssPace, the same control, as extension/rtaudio.cpp's read-rate control): once a GPACE_WIN,
-// P = GPACE_KP x (the window's mean fill - its size), within GPACE_P (0.3 %), brings the level back; R, the guest's clock against REAPER's
+// P = GPACE_KP x (the window's mean fill - its size), within GPACE_P (0.1 %; it was 0.3 %), brings the level back; R, the guest's clock against REAPER's
 // as learned (within GPACE_R), integrates the error only while P isn't getting its way (the level, against GPACE_BACK windows ago, came
 // back less than half of what P alone did since). It was 1 + (fill - size) x 0.05 within 0.5 %, level only: behind a burst the ring sat over
 // its size and was read off at the full 0.5 % for most of a minute, here and again in the hearing guest's page, so a guest was heard up
 // to 0.85 % sharp (rt-t1). And a guest's ring starts AT its size: what piled up behind a pause is skipped while it's silent anyway.
+// Round 2 (rt-r5: a guest over a link that held its sound 150-750 ms): the ring's size was a fixed 60 ms and ran dry at every hold, 437
+// times in 15 minutes; it now grows after an underrun, up to GUP_MAX, and comes back GUP_SHRINK at a time after `need` s without
+// one, `need` doubling when a shrink is followed by an underrun (as the guest page's own buffer, lib/webui/guestworklet.js). And the level
+// gpace holds is a time: what waits plus how long ago the guest's newest piece came (`arr`), so it holds still while the link holds
+// pieces and lets them go together; a window whose level jumped more than GPACE_JUMP isn't a rate. A ring that ran dry grows when the
+// guest's sound comes again: to the hold that did it and a step, when that was longer than its size (`gap`), and not at all after a wait
+// of GUP_HOLD_MAX or more (a pause, not the link).
 const unsigned long long GMIX_N = 1ull << 17;
-const double GPACE_WIN = 0.5, GPACE_KP = 0.2, GPACE_P = 0.003, GPACE_R = 0.01, GPACE_I = 0.05, GFRESH_OVER = 0.06;
+const double GPACE_WIN = 0.5, GPACE_KP = 0.2, GPACE_P = 0.001, GPACE_R = 0.01, GPACE_I = 0.05, GFRESH_OVER = 0.06;
+const double GPACE_JUMP = 0.03, GPACE_AGE = 1;
 const int GPACE_BACK = 4;
 struct GPace { // (the audio thread's)
   double sum = 0, t = 0, r = 0, p = 0, rate = 1, he[GPACE_BACK] = {}, hp[GPACE_BACK] = {};
   int n = 0;
   void again() { sum = t = p = 0; n = 0; rate = 1 + r; } // (a start or a cut: the level anew, R kept)
-  double step(double fill, double target, double dt)
+  double step(double fill, double target, double dt, double age)
   {
+    fill += std::max(0.0, std::min(GPACE_AGE, age)); // (the level as a time: what waits plus how long ago the newest piece came)
     sum += fill * dt; t += dt;
     if (t < GPACE_WIN) return rate;
     const double e = sum / t - target, T = t, was = std::fabs(p) * T;
     sum = t = 0;
+    if (n > 0 && std::fabs(e - he[n - 1]) > GPACE_JUMP) n = 0; // (a jump between two windows isn't a rate: R learns nothing from it)
     double did = was;
     for (int i = 1; i < n; ++i) did += hp[i];
     if (n >= 2 && std::fabs(e) > std::fabs(he[0]) - 0.5 * did) r = std::max(-GPACE_R, std::min(GPACE_R, r + GPACE_KP * GPACE_KP / 4 * std::max(-GPACE_I, std::min(GPACE_I, e)) * T));
@@ -851,8 +861,8 @@ std::atomic<unsigned> g_gstamp_seq{ 0 };
 std::atomic<unsigned long long> g_gstamp_w{ 0 };
 std::atomic<double> g_gstamp_t{ 0 };
 const int GUEST_LIVE = 4;              // guests live at once (lib/guestweb.lua MAX: 4 at a time; it was 2 while they couldn't hear each other)
-const unsigned long long GUP_N = 1ull << 15; // frames of a guest's sound waiting: 0.68 s at 48 kHz
-const double GUP_TARGET = 0.06, GUP_OVER = 0.15; // s
+const unsigned long long GUP_N = 1ull << 16; // frames of a guest's sound waiting: 1.36 s at 48 kHz
+const double GUP_TARGET = 0.06, GUP_MAX = 0.8, GUP_HOLD_MAX = 1, GUP_GROW = 0.02, GUP_SHRINK = 0.01, GUP_NEED = 60, GUP_NEED_MAX = 960, GUP_OVER = 0.15; // s
 const size_t WS_MAX = 65536;           // bytes in one frame from a guest (a 10 ms message is ~1 KB)
 struct GuestSlot {
   std::atomic<int> taken{ 0 };         // 0 free, 2 being set up, 1 live
@@ -863,6 +873,11 @@ struct GuestSlot {
   std::atomic<float> gain{ 1.f }, peak{ 0.f };
   std::atomic<long long> under{ 0 }, drops{ 0 };
   double frac = 0, fresh = 0;          // (the audio thread's: the read position past r; s since it started playing)
+  std::atomic<double> size{ GUP_TARGET }; // (the ring's size now, s: the audio thread's, read for the status)
+  double need = GUP_NEED, calm = 0, shrunk = 1e9; // (the audio thread's: s without an underrun before a shrink; s since one; s since it shrank)
+  std::atomic<double> arr{ 0 };        // (when the guest's newest piece came, now_s: its socket's thread)
+  std::atomic<double> gap{ 0 };        // (the longest wait between two of its pieces since the audio thread last took it, s)
+  bool dry = false;                    // (the audio thread's: it ran dry, and hasn't sized itself to the hold yet)
   GPace pace;                          // (and its read rate: gpace)
   short oth[GMIX_N];                   // (the other live guests' sum at each session-mix frame: the audio thread writes, this guest's sender adds)
 };
@@ -909,6 +924,7 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
   snprintf(slot->gid, sizeof(slot->gid), "%s", gid.c_str());
   slot->w.store(0); slot->r.store(0); slot->playing.store(false); slot->peak.store(0); slot->under.store(0); slot->drops.store(0);
   slot->frac = 0; slot->fresh = 0; slot->pace = GPace();
+  slot->size.store(GUP_TARGET); slot->need = GUP_NEED; slot->calm = 0; slot->shrunk = 1e9; slot->arr.store(now_s()); slot->gap.store(0); slot->dry = false;
   { std::lock_guard<std::mutex> l(g_mx); auto it = g_guests.find(gid); slot->gain.store(it != g_guests.end() ? it->second.gain : 1.f); }
   slot->taken.store(1, std::memory_order_release);
   g_guests_live.fetch_add(1);
@@ -967,6 +983,10 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
         slot->ring[(w + i) % GUP_N] = (float)v / 32768.f;
       }
       slot->w.store(w + frames, std::memory_order_release);
+      { // (when it came, and the longest wait between two pieces: how long the guest's link holds them)
+        const double t = now_s(), wait = t - slot->arr.exchange(t, std::memory_order_relaxed);
+        if (wait > slot->gap.load(std::memory_order_relaxed)) slot->gap.store(wait, std::memory_order_relaxed);
+      }
     }
     if (in.size() > 4 * WS_MAX) return;
     const double sr = g_gmix_sr.load();
@@ -1229,7 +1249,16 @@ void webui_guest_audio(double *const *out, int nout, int len, double srate)
     if (g.taken.load(std::memory_order_acquire) != 1) continue;
     const unsigned long long gw = g.w.load(std::memory_order_acquire);
     unsigned long long gr = g.r.load(std::memory_order_relaxed);
-    const double target = srate * GUP_TARGET;
+    double size = g.size.load(std::memory_order_relaxed);
+    { // (a ring that ran dry, and the sound is back: a bigger ring, the hold that did it and a step when that was longer. 20 ms an
+      // underrun was 30 dropouts on the way to a 0.7 s hold)
+      const double gap = g.gap.exchange(0, std::memory_order_relaxed);
+      if (g.dry && gap > 0) {
+        if (gap < GUP_HOLD_MAX) { size = std::min(GUP_MAX, std::max(size, gap) + GUP_GROW); g.size.store(size, std::memory_order_relaxed); }
+        g.dry = false;
+      }
+    }
+    const double target = srate * size;
     double have = (double)(gw - gr) - g.frac;
     if (!g.playing.load(std::memory_order_relaxed)) {
       if (have < target + n) continue; // (filling up first: a little buffer against the network's jitter)
@@ -1245,8 +1274,15 @@ void webui_guest_audio(double *const *out, int nout, int len, double srate)
       if (!fresh) g.drops.fetch_add(1, std::memory_order_relaxed);
     }
     g.fresh += n / srate;
-    if (have < n * (1 + GPACE_R + GPACE_P) + 3) { g.playing.store(false, std::memory_order_relaxed); g.under.fetch_add(1, std::memory_order_relaxed); continue; }
-    const double rate = g.pace.step(have / srate, GUP_TARGET, n / srate);
+    if (have < n * (1 + GPACE_R + GPACE_P) + 3) { // (ran dry: a bigger ring from here; one that follows a shrink means that size was the edge)
+      g.playing.store(false, std::memory_order_relaxed); g.under.fetch_add(1, std::memory_order_relaxed);
+      if (g.shrunk < g.need) g.need = std::min(GUP_NEED_MAX, g.need * 2);
+      g.calm = 0; g.dry = true;
+      continue;
+    }
+    g.calm += n / srate; g.shrunk += n / srate;
+    if (g.calm > g.need && size > GUP_TARGET) { g.size.store(std::max(GUP_TARGET, size - GUP_SHRINK), std::memory_order_relaxed); g.calm = 0; g.shrunk = 0; } // (gpace reads the 10 ms off)
+    const double rate = g.pace.step(have / srate, size, n / srate, now_s() - g.arr.load(std::memory_order_relaxed));
     const float gain = g.gain.load(std::memory_order_relaxed);
     float pk = 0;
     double p = g.frac;
@@ -1387,7 +1423,7 @@ const char *webui_status()
     for (auto &sl : g_gslot) {
       if (sl.taken.load(std::memory_order_acquire) != 1 || g.first != sl.gid) continue;
       char b[160];
-      snprintf(b, sizeof(b), ",\"live\":true,\"peak\":%.4f,\"under\":%lld,\"drops\":%lld", sl.peak.load(), sl.under.load(), sl.drops.load());
+      snprintf(b, sizeof(b), ",\"live\":true,\"peak\":%.4f,\"under\":%lld,\"drops\":%lld,\"size\":%.2f", sl.peak.load(), sl.under.load(), sl.drops.load(), sl.size.load());
       o += b;
     }
     o += '}';
