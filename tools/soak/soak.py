@@ -339,7 +339,10 @@ class Sim:
         if not (a and b):
             return False
         sa, sb = a.call(self.t, "show", oid), b.call(self.t, "show", oid)
-        r = lambda s: re.sub(r"-?\d+\.\d+(e-?\d+)?", lambda m: "%.9f" % float(m.group(0)), s)
+        def num9(m):  # (and a whole number as one: "0.99999999999997" against "1", a rate that went to another map and back)
+            s = ("%.9f" % float(m.group(0))).rstrip("0").rstrip(".")
+            return "0" if s == "-0" else s
+        r = lambda s: re.sub(r"-?\d+\.\d+(e-?\d+)?", num9, s)
         if sa != "(not here)" and sb != "(not here)" and r(sa) == r(sb):
             self.stats["float_noise"] = self.stats.get("float_noise", 0) + 1
             return True

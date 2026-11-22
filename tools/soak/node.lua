@@ -267,9 +267,14 @@ function N.state()
     seen[o.oid] = true
     -- (a part's text with every decimal to its 9th place: a time REAPER moved for a tempo map and back is written to its 14th digit, the
     -- event's text has it rounded. Nobody hears 1e-12 s; mirror.rounded makes the same allowance)
+    -- (and a whole number written as one: a rate of 1 that went to another map and back reads 0.99999999999997 on the computer REAPER
+    -- moved it on, and "1" where the change landed: "1.000000000" against "1" was a difference. rt-converge)
     if type(o.state) == "string" and o.state:find("%d%.%d") then
-      hashes[o.oid] = mirror.hash((o.state:gsub("%-?%d+%.%d+e%-?%d+", function(x) return string.format("%.9f", tonumber(x)) end)
-        :gsub("%-?%d+%.%d+", function(x) return string.format("%.9f", tonumber(x)) end)))
+      local function num9(x)
+        local s = string.format("%.9f", tonumber(x)):gsub("0+$", ""):gsub("%.$", "")
+        return s == "-0" and "0" or s
+      end
+      hashes[o.oid] = mirror.hash((o.state:gsub("%-?%d+%.%d+e%-?%d+", num9):gsub("%-?%d+%.%d+", num9)))
     else hashes[o.oid] = o.hash end
     if o.kind == "track" then order[#order + 1] = o.oid end
   end
