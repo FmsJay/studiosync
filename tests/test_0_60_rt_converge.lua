@@ -725,4 +725,26 @@ do
   print("rt-converge 14: Ctrl+Z after a track delete sends the track back; a reopened file's deleted track goes without errors")
 end
 
+-- ---- 15. (a pin, no fix: rt-r2's P1-5) which plug-in changes ask a bandmate who holds the track while they edit --------------------------------
+do
+  local hlc = math.floor(T * 1000)
+  local function put(id, user, state, base, age)
+    local ev = { type = "obj", obj = "fx", oid = "F-P15", id = id, user = user, state = state, base_ev = base, hlc = hlc - age * 1000, time = iso(T - age), mg = 1 }
+    files[R .. "/events/" .. id .. ".json"] = ev
+    return ev
+  end
+  local function c(eq, comp) return (chain(eq, comp):gsub("\n$", "")) end
+  -- the chain was Cee's, an hour ago; James changes the EQ now, which makes the track his while he edits
+  local added = put("Cee-20270115-070000Z-00001-0151", "Cee", c(100, 200), nil, 3600)
+  local eq = put("James-20270115-080000Z-00001-0152", "James", c(150, 200), added.id, 5)
+  assert(mirror.clashes(R, "fx", c(150, 250), eq, "James") == false, "a change to another plug-in of the chain than James changed: no ask, it merges by plug-in")
+  assert(mirror.clashes(R, "fx", c(170, 200), eq, "James") == true, "a change to the plug-in he changed: asked")
+  -- as rt-r2 ran it: James added both plug-ins two minutes before
+  local added2 = put("James-20270115-075800Z-00001-0153", "James", c(100, 200), nil, 120)
+  local eq2 = put("James-20270115-080000Z-00002-0154", "James", c(150, 200), added2.id, 5)
+  assert(mirror.clashes(R, "fx", c(150, 250), eq2, "James") == true,
+    "the other plug-in is his recent work too when he added the chain within the claim's ten minutes: asked (why P1-5 asked in rt-r2)")
+  print("rt-converge 15: (pin) another plug-in than the claimer changed merges without an ask; one they added lately asks")
+end
+
 print("ok rt-converge")
