@@ -6542,7 +6542,9 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     -- that very change of yours may take it away again.)
     -- (nor what your own going back revived after a bandmate deleted it: forward left a glue's pieces under the glued part: laptop, 0.42.10)
     -- (opts.exact: a room made to look at that moment, where nothing is anybody's to keep)
-    local theirs_new = not opts.exact and not p.t and not mirror.is_creator(p.oid, cfg.user) and not (opts.undoes and last and last.user == cfg.user)
+    -- (nor what your own Undo brought back: its Redo takes it away again, as the deletion it redoes did. "0 change(s) brought back (kept
+    -- what collaborators added since)" left a bandmate's item you had deleted, undone, and redone. The soak's bug 9. rt-converge)
+    local theirs_new = not opts.exact and not p.t and not mirror.is_creator(p.oid, cfg.user) and not ((opts.undoes or opts.redoes) and last and last.user == cfg.user)
       and not (last and last.user == cfg.user and last.revived)
     local mine_gone = p.t and last and last.gone and last.user == cfg.user
     if not p.t and (h or "") == "" then -- gone then, gone now
@@ -6624,11 +6626,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     local names = {}
     for n in pairs(kept_names) do names[#names + 1] = n end
     table.sort(names)
-    if done == 0 and there > 0 and refused == 0 and kept == 0 and waiting == 0 and edited == 0 then return "it's already back: REAPER rebuilt it from its pass, so nothing changed" end
+    if done == 0 and there > 0 and refused == 0 and kept == 0 and waiting == 0 and edited == 0 then return "it's already back: REAPER rebuilt it from its pass, so nothing changed", 0 end
+    -- (and how many, for lib/undo.lua: an Undo that took nothing back leaves nothing to redo. rt-converge)
     return string.format("%d change(s) brought back and sent to the others%s%s%s%s", done, refused > 0 and string.format(" (%d not yours to change, left as they are)", refused) or "",
       kept > 0 and string.format(" (kept what collaborators added since: %s)", table.concat(names, ", ")) or "",
       edited > 0 and string.format(" (%d left as they are: you've changed them here since, and that hasn't gone out yet. Let it go out, or undo it, then do this again)", edited) or "",
-      waiting > 0 and string.format(". %d couldn't change here yet and weren't sent (plug-ins change only while stopped, and plug-ins, automation and sends only with this project's tab in front; an item may still be arriving, or open in the MIDI editor): do it again then", waiting) or "")
+      waiting > 0 and string.format(". %d couldn't change here yet and weren't sent (plug-ins change only while stopped, and plug-ins, automation and sends only with this project's tab in front; an item may still be arriving, or open in the MIDI editor): do it again then", waiting) or ""), done
   end
   if #list <= mirror.REVERT_AT_ONCE or opts.at_once then
     reaper.Undo_BeginBlock2(proj)

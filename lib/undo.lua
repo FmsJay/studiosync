@@ -123,6 +123,23 @@ function undo.step(proj, cfg, b, redo, opts)
   if not i then
     return nil, redo and "Nothing to redo: you haven't undone anything since your last change." or "You haven't changed anything here yet."
   end
+  -- (an Undo that took nothing back (not yours to change any more, changed here since, the map changed since) wrote nothing, so the Redo after
+  -- it found your Undo before that one still waiting and redid it: Undo then Redo brought back a copy you had undone two minutes earlier.
+  -- The soak's bug 9. Noted per tab, by your newest change then; anything of yours since (a change, an Undo that did something) and it's
+  -- spent. Not in the project: a ProjExtState write counts as a project change. rt-converge)
+  local newest_mine = ""
+  for j = #all, 1, -1 do
+    local x = all[j]
+    if x.user == cfg.user and (x.kind == "obj" or x.kind == "timeline") then newest_mine = tostring(x.id); break end
+  end
+  local nothing_key = "undo nothing " .. tostring(proj)
+  if redo and reaper.GetExtState(band.SECTION, nothing_key) == newest_mine then
+    return nil, "Nothing to redo: your last Undo took nothing back."
+  end
+  local function took(n) -- (n: how many changes this press made; nil when it can't say)
+    if not redo and n == 0 then reaper.SetExtState(band.SECTION, nothing_key, newest_mine, false)
+    elseif reaper.GetExtState(band.SECTION, nothing_key) ~= "" then reaper.DeleteExtState(band.SECTION, nothing_key, false) end
+  end
   local e = all[i]
   local what = (redo and "redo: " or "undo: ") .. (opts.describe or recall.describe)(e)
   local others = mirror.later_by_others(all, i)
@@ -147,8 +164,10 @@ function undo.step(proj, cfg, b, redo, opts)
         ids[#ids + 1] = e.id
         reaper.SetProjExtState(proj, band.SECTION, "undo passed", table.concat(ids, " ", math.max(1, #ids - 19)))
       end
+      took(0)
       return nil, "The tempo map or markers have changed since: nothing was taken back." .. (redo and "" or " Undo again goes to your change before it.")
     end
+    took(1)
     return what
   end
   local o = { can = can, mode = who and who.mode, driver = who and who.driver, is_claimed = who and who.is_claimed, local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1" }
@@ -160,6 +179,13 @@ function undo.step(proj, cfg, b, redo, opts)
     for _, id in ipairs(ids or {}) do mine[id] = true end
     for _, x in ipairs(all) do if mine[x.id] and x.oid and plan[x.oid] then newest[x.oid] = x end end
     for oid, x in pairs(newest) do
+      -- (a change built on a merge of two made apart: that merge is the version before it, which History has no row for. By the rows, "before"
+      -- was one of the two alone, so an Undo of your edit, or the Redo of an Undo, took a bandmate's merged-in change away with it: the soak's
+      -- undo probe, "Undo then Redo didn't bring the song back". rt-converge)
+      if plan[oid] and type(x.base_ev) == "string" and mirror.split_merge(x.base_ev) then
+        local was = mirror.event_file(room_dir, x.base_ev)
+        if was and not was.gone and was.obj == plan[oid].obj then plan[oid] = was end
+      end
       local _, _, kev = mirror.known(proj, oid)
       plan[oid] = mirror.undo_keeping(x, plan[oid], (kev or "") ~= "" and mirror.event_file(room_dir, kev) or nil)
     end
@@ -182,8 +208,9 @@ function undo.step(proj, cfg, b, redo, opts)
     if not okt then band.log("undo: the tempo map and markers stay as they are (" .. tostring(err) .. ")") end
     o.retimed = okt and err == true and tempo == true -- (REAPER just moved things for the map: mirror.revert)
   end
-  local ok, res = pcall(mirror.revert, proj, cfg, b.song, b.room, plan, o)
+  local ok, res, n = pcall(mirror.revert, proj, cfg, b.song, b.room, plan, o)
   if not ok then return nil, "undo failed: " .. tostring(res) end
+  took(n)
   return res
 end
 

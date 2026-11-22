@@ -9,6 +9,7 @@
 --  5. Two holders of one track, by its old name and its new, don't answer each other's rename for ever (sync.receive): bug 2.
 --  6. An item's deletion lands though the item had moved off its deleted track here (mirror.receive).
 --  7. What was refused doesn't stay on this computer alone, asked about every 90 s (W.put_back).
+--  8. Undo then Redo brings the song back (mirror.revert, lib/undo.lua): bug 9 and the soak's undo probe.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -377,6 +378,80 @@ do
   assert(#keys.items == 0 and S.items(A, "Keys (yours, not sent)") == 1, "put back: off Keys, kept on a track of James's own (was: 'couldn't put back', and it stayed on Keys)")
   assert(not told("couldn't put back"), "and nothing says the studio's version hasn't arrived: " .. (told("couldn't put back") or ""))
   print("rt-converge 7: refused automation on a track that had none is taken off; a deleted item brought back here goes to a track of your own")
+end
+
+-- ---- 8. Undo then Redo brings the song back (the soak's bug 9 and its undo probe) ------------------------------------------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv8", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) local k = F.add_track("Keys"); F.add_item(k, midi(1, 2)); F.add_item(k, midi(8, 2)) end)
+  S.recv(B)
+  local function step(c, redo)
+    S.as(c)
+    c.F.clock = c.F.clock + 1
+    T = T + 2
+    local res, why = undo.step(c.F.proj, c.cfg, S.b, redo, {})
+    S.settle(c)
+    return tostring(res or why)
+  end
+  local function pos_of(c, i) return num(S.track(c, "Keys").items[i].text, "POSITION") end
+  -- a. Bee deletes James's item, undoes that, and redoes it: gone again
+  T = T + 2
+  S.edit(B, function(F) reaper.DeleteTrackMediaItem(S.track(B, "Keys"), S.track(B, "Keys").items[2]) end)
+  assert(S.items(B, "Keys") == 1, "deleted on Bee's")
+  local u = step(B, false)
+  assert(S.items(B, "Keys") == 2, "Bee's Undo brought it back (" .. u .. ")")
+  local r = step(B, true)
+  assert(S.items(B, "Keys") == 1, "and her Redo took it away again (was: '0 change(s) brought back (kept what collaborators added since)'): " .. r)
+  S.recv(A)
+  assert(S.items(A, "Keys") == 1, "on James's too")
+  -- b. James mutes the item while Bee moves it: merged on both. James then lengthens it, undoes that, and redoes it
+  T = T + 2
+  S.edit(A, function(F) reaper.SetMediaItemInfo_Value(S.track(A, "Keys").items[1], "B_MUTE", 1) end)
+  S.edit(B, function(F) reaper.SetMediaItemInfo_Value(S.track(B, "Keys").items[1], "D_POSITION", 3) end)
+  S.recv(A); S.recv(B)
+  local function shape(c) local it = S.track(c, "Keys").items[1]; S.as(c); return string.format("%g %g %g", pos_of(c, 1), reaper.GetMediaItemInfo_Value(it, "B_MUTE"), num(it.text, "LENGTH")) end
+  assert(shape(A) == "3 1 2" and shape(B) == "3 1 2", "both changes are in, on both (" .. shape(A) .. " / " .. shape(B) .. ")")
+  T = T + 40 -- (another edit, not a nudge of the last)
+  A.F.clock = A.F.clock + 40
+  S.edit(A, function(F) reaper.SetMediaItemInfo_Value(S.track(A, "Keys").items[1], "D_LENGTH", 5) end)
+  assert(shape(A) == "3 1 5", "lengthened (" .. shape(A) .. ")")
+  u = step(A, false)
+  assert(shape(A) == "3 1 2", "James's Undo takes back the length alone: Bee's move and his mute, merged in before it, stay (was: one of the two went too): " .. shape(A))
+  r = step(A, true)
+  assert(shape(A) == "3 1 5", "and his Redo brings the length back on top of both (" .. shape(A) .. ")")
+  S.recv(B)
+  assert(shape(B) == "3 1 5", "on Bee's too (" .. shape(B) .. ")")
+  -- c. an Undo that takes nothing back leaves nothing to redo (Claims mode: the change it reaches isn't James's to change any more)
+  local S2 = studio("Conv8c", "open")
+  local J = S2.computer("James")
+  here_now = { James = true }
+  S2.edit(J, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)); F.add_track("Drums") end)
+  local function step2(redo)
+    S2.as(J)
+    J.F.clock = J.F.clock + 1
+    T = T + 2
+    local res, why = undo.step(J.F.proj, J.cfg, S2.b, redo, {})
+    S2.settle(J)
+    return tostring(res or why)
+  end
+  T = T + 2
+  S2.edit(J, function(F) reaper.SetMediaItemInfo_Value(S2.track(J, "Keys").items[1], "D_POSITION", 4) end)
+  T = T + 40
+  J.F.clock = J.F.clock + 40
+  S2.edit(J, function(F) F.add_item(S2.track(J, "Drums"), midi(6, 2)) end)
+  assert(S2.items(J, "Drums") == 1, "a new item on Drums")
+  u = step2(false)
+  assert(S2.items(J, "Drums") == 0, "undone (" .. u .. ")")
+  T = T + 120
+  files[S2.dir .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Keys" }, since = { ["tracks:keys"] = iso(T) } }
+  T = T + 5
+  u = step2(false)
+  assert(u:find("^0 change") and u:find("not yours to change"), "the next Undo reaches the move on Keys, Cee's now: nothing taken back (" .. u .. ")")
+  r = step2(true)
+  assert(r:find("took nothing back") and S2.items(J, "Drums") == 0, "and the Redo after it redoes nothing (was: it redid the Undo before, and the item was back): " .. r)
+  print("rt-converge 8: a Redo takes away what your own Undo brought back; Undo and Redo of a change built on a merge keep the merge; no Redo after an Undo of nothing")
 end
 
 print("ok rt-converge")
