@@ -33,6 +33,21 @@ static std::vector<std::pair<long long, double>> segs(const std::string &j)
   while (sscanf(j.c_str() + at, "[%lld,%lld,%lf]%n", &i, &n, &p, &used) == 3) { out.push_back({ n, p }); at += (size_t)used; if (j[at] == ',') ++at; }
   return out;
 }
+// A WAV as a reader finds it now (the writer may still have it open): its RIFF and data sizes and the file's own size. false: no header yet.
+static bool wav_now(const std::string &path, unsigned &riff, unsigned &data, long long &size)
+{
+  FILE *f = fopen(path.c_str(), "rb");
+  if (!f) return false;
+  unsigned char h[44];
+  const bool ok = fread(h, 1, 44, f) == 44 && !memcmp(h, "RIFF", 4) && !memcmp(h + 36, "data", 4);
+  fseek(f, 0, SEEK_END);
+  size = ftell(f);
+  fclose(f);
+  if (!ok) return false;
+  riff = (unsigned)h[4] | ((unsigned)h[5] << 8) | ((unsigned)h[6] << 16) | ((unsigned)h[7] << 24);
+  data = (unsigned)h[40] | ((unsigned)h[41] << 8) | ((unsigned)h[42] << 16) | ((unsigned)h[43] << 24);
+  return true;
+}
 static void feed(int blocks, int len, double sr, double &pos, bool playing, float &v)
 {
   std::vector<float> L((size_t)len), R((size_t)len);
@@ -110,6 +125,28 @@ int main()
   check(d0 == -r0, "left and right as fed (right = -left)");
   direct_jam_stop(); // (twice: nothing)
   remove(path.c_str());
+  // rt-audio3 (rt-fix8's proposal, docs/rt/rt-p12.md): while a run goes on, the growing WAV's header says the sizes so far (it said RIFF 36,
+  // data 0 until the run's end: a reader going by the header saw an empty file), never more than is on disk, whole frames
+  {
+    check(direct_jam_start(path.c_str()) == 1, "sizes mid-run: starts");
+    double p2 = 0;
+    float v2 = 0;
+    unsigned riff = 0, data = 0, riff2 = 0, data2 = 0;
+    long long size = 0, size2 = 0;
+    feed(40, len, sr, p2, true, v2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    const bool got = wav_now(path, riff, data, size);
+    feed(40, len, sr, p2, true, v2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(400));
+    const bool got2 = wav_now(path, riff2, data2, size2);
+    printf("     sizes mid-run: data %u of %lld bytes on disk, then %u of %lld\n", data, size - 44, data2, size2 - 44);
+    check(got && data > 0 && data % 4 == 0 && (long long)data == size - 44 && riff == 36 + data, "sizes mid-run: the header says the frames on disk (not 0), all of them once they are 250 ms old");
+    check(got2 && data2 > data && (long long)data2 == size2 - 44 && riff2 == 36 + data2, "sizes mid-run: and more as it grows");
+    direct_jam_stop();
+    const bool got3 = wav_now(path, riff, data, size);
+    check(got3 && data == 80u * (unsigned)len * 4 && size == 44 + (long long)data, "sizes mid-run: the real sizes at the end, as before");
+    remove(path.c_str());
+  }
 #ifdef JAM_OPUS
   // rt-p12: Jam over Ogg Opus (a path ending .opus), and a receiver's decoder turning the growing copy into a growing 16-bit WAV whose frame k
   // is the frame k fed (the segments' file frames hold for it), trimmed to exactly what was fed
@@ -124,14 +161,24 @@ int main()
     for (int k = 0; k < total; ++k) { L[(size_t)k] = (float)(0.5 * sin(2 * 3.14159265358979 * 440 * k / 48000.0)); R[(size_t)k] = (float)(0.4 * sin(2 * 3.14159265358979 * 660 * k / 48000.0)); }
     double p = 3.0;
     std::string mid;
+    bool mid_ok = false;
+    unsigned mid_riff = 0, mid_data = 0;
+    long long mid_size = 0;
     for (int at = 0; at < total; at += 256) {
       const int n = std::min(256, total - at);
       const float *ch[2] = { L.data() + at, R.data() + at };
       direct_jam_feed(ch, 2, n, 48000, p, true);
       p += n / 48000.0;
       if (at == 256 * 200) { std::this_thread::sleep_for(std::chrono::milliseconds(300)); direct_jam_decode(op.c_str(), dw.c_str(), 0); }
-      if (at == 256 * 300) { std::this_thread::sleep_for(std::chrono::milliseconds(300)); mid = direct_jam_decode(op.c_str(), dw.c_str(), 0); }
+      if (at == 256 * 300) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(300));
+        mid = direct_jam_decode(op.c_str(), dw.c_str(), 0);
+        mid_ok = wav_now(dw, mid_riff, mid_data, mid_size); // (rt-fix8: the growing .opus.wav's header, as REAPER would find it now)
+      }
     }
+    printf("     opus: mid-run the decoded WAV's header says %u bytes of data, %lld on disk\n", mid_data, mid_size - 44);
+    check(mid_ok && mid_data > 0 && mid_data % 4 == 0 && (long long)mid_data <= mid_size - 44 && mid_riff == 36 + mid_data,
+          "the growing .opus.wav says the sizes so far (not RIFF 36 / data 0 until the run's end)");
     check(num(mid, "frames") > 0 && dstate(mid) == "decoding", "a receiver decodes the copy while it grows");
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     direct_jam_stop();

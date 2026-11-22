@@ -57,6 +57,22 @@ void wav_header(FILE *f, int nch, int srate, unsigned frames, int bits = 32) // 
   le16(f, bits == 32 ? 3 : 1); le16(f, (unsigned)nch); le32(f, (unsigned)srate); le32(f, (unsigned)srate * nch * bytes); le16(f, (unsigned)nch * bytes); le16(f, (unsigned)bits);
   fwrite("data", 1, 4, f); le32(f, data);
 }
+// A growing Jam WAV says the sizes so far every JAM_HDR_MS (rt-audio3, from rt-fix8's proposal in docs/rt/rt-p12.md): it said RIFF 36 / data 0
+// for the whole run and the real sizes only at its end, so a reader that goes by the header (Python's wave, perhaps REAPER's
+// GetMediaSourceLength: lib/jam.lua's `covered`) saw an empty file until then. The audio is flushed first, so the header never says more than
+// is on disk; then back to the end for the next frames. As keep_loop does once a second.
+const int JAM_HDR_MS = 250;
+void wav_sizes_now(FILE *f, int srate, long long frames, long long &said, std::chrono::steady_clock::time_point &at)
+{
+  const auto now = std::chrono::steady_clock::now();
+  if (frames == said || now - at < std::chrono::milliseconds(JAM_HDR_MS)) return;
+  fflush(f);
+  wav_header(f, 2, srate, (unsigned)frames, 16);
+  fseek(f, 0, SEEK_END);
+  fflush(f);
+  said = frames;
+  at = now;
+}
 FILE *open_w(const std::string &p)
 {
 #ifdef _WIN32
@@ -232,11 +248,17 @@ void jam_loop(std::string path)
     wav_header(f, 2, sr, 0, 16);
   fflush(f);
   static short buf[4096 * 2];
-  long long frames = 0;
+  long long frames = 0, hdr_frames = 0;
+  std::chrono::steady_clock::time_point hdr_at; // (the epoch: the first frames' sizes are said at once)
   for (;;) {
     const bool last = g_jstop.load(); // (read before draining: whatever came before the stop is written)
     const size_t r = g_jr.load(std::memory_order_relaxed), w = g_jw.load(std::memory_order_acquire);
-    if (w == r) { if (last) break; std::this_thread::sleep_for(std::chrono::milliseconds(10)); continue; }
+    if (w == r) {
+      if (last) break;
+      if (g_jcodec == 0) wav_sizes_now(f, sr, frames, hdr_frames, hdr_at); // (the last frames before a pause: said once they're 250 ms old)
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
     const size_t n = std::min<size_t>(w - r, 4096);
 #ifdef SS_JAM_OPUS
     if (enc) {
@@ -258,6 +280,7 @@ void jam_loop(std::string path)
     fflush(f); // (the link reads the file by its size: every 10 ms of it is there to send)
     frames += (long long)n;
     g_jfile_frames = frames;
+    if (g_jcodec == 0) wav_sizes_now(f, sr, frames, hdr_frames, hdr_at); // (the sender's own 16-bit WAV: the sizes so far)
   }
 #ifdef SS_JAM_OPUS
   if (enc) { // (the encoder's lookahead flushed out with silence; the last page's granule trims the copy to exactly the frames fed)
@@ -297,7 +320,8 @@ struct JamDec {
 #ifdef SS_JAM_OPUS
   OpusDecoder *dec = nullptr;
 #endif
-  long long off = 0, frames = 0, limit = -1;
+  long long off = 0, frames = 0, limit = -1, hdr_frames = 0; // (hdr_frames, hdr_at: the sizes its WAV's header says now, wav_sizes_now)
+  std::chrono::steady_clock::time_point hdr_at;
   int pkts = 0, ch = 2, pre = 0, skipped = 0, state = 1; // (state: 1 decoding, 2 done, 3 failed)
   bool finish = false, eos = false;
   const char *err = "";
@@ -388,6 +412,7 @@ void dec_step(JamDec &j)
   }
   if (j.state != 1) return;
   fflush(j.out);
+  wav_sizes_now(j.out, 48000, j.frames, j.hdr_frames, j.hdr_at); // (the growing .opus.wav says what it holds while the run goes on: rt-fix8)
   if (j.eos || (j.finish && at_end)) { // (whole: the header's real sizes)
     wav_header(j.out, 2, 48000, (unsigned)j.frames, 16);
     dec_close(j);
