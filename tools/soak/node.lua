@@ -55,6 +55,9 @@ local function handle(p, data, writing)
   end
   function h:lines() return function() return h:read("l") end end
   function h:seek(whence, off)
+    -- (a file being written: its end is what's been written so far. band.lua's atomic write reads its size this way since rt-fix7; answered
+    -- 0, every write "failed (is the disk full?)" and no soak computer could share the song. rt-converge)
+    if buf then local n = 0; for _, s in ipairs(buf) do n = n + #s end; return n end
     if whence == "end" then pos = #data + 1 + (off or 0) elseif whence == "set" then pos = (off or 0) + 1 end
     return pos - 1
   end
@@ -240,7 +243,21 @@ function N.link(kind, text)
   elseif kind == "claim_answer" then pcall(claimask.on_answer, cfg, B, w.d) end
   return true
 end
-function N.drain() local o = outbox; outbox = {}; return json(o) end
+-- (a file taken away and put again within one drain is one change of it: band.lua's atomic write on Windows moves the old file aside, puts
+-- the new one in place and removes the old (since rt-fix7 for every write), which Syncthing's watcher sees as the file changing, seconds
+-- later. Sent on as a deletion and a new file, each with its own delay, a bandmate's claims or order list was gone for seconds on the other
+-- computers: a soak artifact. rt-converge)
+function N.drain()
+  local o, put_later, out = outbox, {}, {}
+  outbox = {}
+  for i = #o, 1, -1 do
+    local e = o[i]
+    if e[1] == "put" then put_later[e[2]] = true
+    elseif e[1] == "del" and put_later[e[2]] then o[i] = false end
+  end
+  for _, e in ipairs(o) do if e then out[#out + 1] = e end end
+  return json(out)
+end
 function N.shared_files() -- every file of the studio's folder here, for a late joiner's Syncthing
   local out = {}
   for p, d in pairs(fs) do if shared(p) then out[#out + 1] = { p, d } end end
