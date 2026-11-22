@@ -3520,9 +3520,13 @@ end
 mirror.studio_item = studio_item
 -- The studio's item itself, still here off its track (on a track of your own): not a copy of it that kept its id. A copy taken for it
 -- meant deleting the original was never sent (W.gone). No GUID recorded: anything carrying the id, as before. Round 1 review, 0.59.45
+-- (a grey stand-in carrying the id isn't it either, third value true: one stands only where the item isn't, so with the item's record here it's
+-- a copy of the stand-in the item landed on (a track or a stretch duplicated while the audio was arriving), or one made for a version that
+-- hadn't landed when the item was deleted. Taken for "still here", deleting the item was never sent, on this computer alone. rt-converge)
 function mirror.local_copy_is_it(proj, oid)
   local it = mirror.find(proj, "item", oid)
   if not it then return false end
+  if (select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_arriving", "", false)) or "") ~= "" then return false, it, true end
   local g = select(2, reaper.GetProjExtState(proj, mirror.GSEC, oid))
   return g == "" or item_guid(it) == g or not local_track(reaper.GetMediaItem_Track(it)), it -- (not on a track of your own, a stand-in say: as before)
 end
@@ -5940,8 +5944,8 @@ function W.gone(w)
     -- overwritten with "0|||" every pass: knob checks failed after the first minute and the band's master FX switch went back on. Review, 0.58.92)
     if not seen[oid] and rev and h ~= "" then
       w.gone_seen[#w.gone_seen + 1] = oid
-      local is_it, stray
-      if oid:sub(1, 1) == "I" then is_it, stray = mirror.local_copy_is_it(proj, oid) end
+      local is_it, stray, standin
+      if oid:sub(1, 1) == "I" then is_it, stray, standin = mirror.local_copy_is_it(proj, oid) end
       if is_it then
         -- still here, on a track of this machine's own (Real time, "yours, not sent"): not deleted. Sent as gone, it
         -- went for everyone (review, 2026-10-31); the band keeps it where it was
@@ -5949,7 +5953,9 @@ function W.gone(w)
       else
         -- (a copy that kept the deleted original's id is yours alone from now: left with it, the band's next change or a restore of the
         -- original landed on it. Round 1 review, 0.59.45)
-        if stray then reaper.GetSetMediaItemInfo_String(stray, "P_EXT:band_oid", "", true) end
+        -- (a stand-in for it goes with it: grey for good otherwise. One is made again if a version of it still has to land. rt-converge)
+        if stray and standin then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(stray), stray)
+        elseif stray then reaper.GetSetMediaItemInfo_String(stray, "P_EXT:band_oid", "", true) end
         gone[#gone + 1] = { oid = oid, rev = rev, evid = evid }
       end
     end

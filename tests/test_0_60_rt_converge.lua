@@ -21,6 +21,7 @@
 -- 16. A track's lanes that only read differently here, with no edit behind the look, don't go out (W.one): LinuxBox2's lane names.
 -- 17. A merge isn't built while a version it rests on is still on its way (mirror.event_file, mirror.merge_for).
 -- 18. An item moved onto a track a bandmate deleted that moment goes with the track on every computer (mirror.receive).
+-- 19. Deleting an item goes out though a grey stand-in still carries its id here (mirror.local_copy_is_it, W.gone).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -984,6 +985,28 @@ do
   for _ = 1, 2 do S.recv(A); S.recv(B); S.recv(C) end
   assert(S.items(A, "Tmp") == 1 and S.items(B, "Tmp") == 1 and S.items(C, "Tmp") == 1, "back with its track on all three: " .. S.items(A, "Tmp") .. S.items(B, "Tmp") .. S.items(C, "Tmp"))
   print("rt-converge 18: an item moved onto a track deleted that moment goes with it everywhere, and comes back with it")
+end
+
+-- ---- 19. deleting an item goes out though a copy of its grey stand-in is still here (the soak at 150 edits, seed 6042) -------------------------
+do
+  local S = studio("Conv19", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)); F.add_track("Gtr") end)
+  S.recv(B)
+  local item = S.track(B, "Keys").items[1]
+  local oid = item.ext.band_oid
+  -- (what duplicating a track or a stretch leaves while a take's audio is still arriving: a copy of the stand-in, with the take's id)
+  S.as(B)
+  mirror.placeholder(S.track(B, "Gtr"), oid, midi(1, 2), "Keys")
+  S.settle(B)
+  assert(S.items(B, "Gtr") == 1 and #S.events(function(v) return v.oid == oid end) == 1, "a stand-in is never sent")
+  T = T + 2
+  S.edit(B, function(F) F.remove_item(item) end)
+  assert(#S.events(function(v) return v.oid == oid and v.gone end) == 1, "the item's deletion goes out (was: the stand-in read as the item still here, and nothing was sent)")
+  assert(S.items(B, "Gtr") == 0, "and the stand-in for it goes with it")
+  S.recv(A)
+  assert(S.items(A, "Keys") == 0, "deleted on James's too")
+  print("rt-converge 19: an item's deletion goes out past a stand-in carrying its id")
 end
 
 print("ok rt-converge")
