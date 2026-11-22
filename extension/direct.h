@@ -30,6 +30,10 @@ void direct_set_nat(unsigned long long (*connect)(void *user, const char *dev, s
 // A connection a bandmate opened over that link (the local end of its loopback pair): served as the listener's connections are, frames
 // checked the same way, never handed to the web UI. Runs without a Tailscale listener too.
 void direct_adopt(unsigned long long sock);
+// (P13, backlog 4.7) Phone pages on this computer's own network, without Tailscale: the web UI (direct_set_http_handler's, with its token)
+// on this computer's private address (bind_ip "": found from the default route; RFC 1918 only) at `port`, from private addresses only, and
+// nothing else there (a frame is refused). port <= 0 stops it. -> 1 listening. Plain HTTP: browsers give such pages no microphone.
+int direct_lan(int port, const char *bind_ip);
 
 // ---- 1.0.8: the live layer --------------------------------------------------------------------------------------------------------------
 // Small messages: kind a short lower-case word ([a-z][a-z0-9_-]{0,31}: presence, heartbeat, claim, chat, cue, transport, midi, json...),

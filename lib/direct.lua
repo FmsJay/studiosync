@@ -5,7 +5,7 @@
 -- extension, Tailscale off, no studio network or secret, the setting off, a computer that can't be reached: Syncthing alone. (The extension is
 -- mandatory: a missing or older one is a red Health row, direct.health_rows. James, 0.60.0-rt)
 local band = require("band")
-local direct = { PORT = 47281, KEEP_SECS = 86400, RULE = "StudioSync direct link", START_EVERY = 10, PRUNE_EVERY = 10 }
+local direct = { PORT = 47281, KEEP_SECS = 86400, RULE = "StudioSync direct link", START_EVERY = 10, PRUNE_EVERY = 10, STALE = 60 }
 -- The extension's JSON answers (StudioSync_DirectClock, DirectStatus, DirectStreams), decoded once while they read the same: the clock was
 -- decoded every tick by keep_clock and again by every shared_now (Ableton Link's ten looks a second, each streamed take, each cue), the
 -- status and streams by several callers a tick. Shared: never change what comes back. (James, rt: efficiency pass)
@@ -146,6 +146,7 @@ function direct.ensure(cfg)
   -- (no firewall rule yet on Windows: send only. Listening without it brings Windows' own box up in REAPER's face)
   reaper.StudioSync_DirectStart(id, secret, direct.inbox(root), direct.firewall_ok() and direct.port() or -1)
   started[root] = { at = now, ok = true }
+  pcall(function() require("nat").lan_tick(root) end) -- (P13: phone pages on this computer's own network, when this computer has them on)
   return true
 end
 
@@ -204,11 +205,23 @@ end
 -- (strangers). -> "name:port" list (sorted), peer -> user. (rt-p3)
 function direct.studio_peers(cfg, song)
   local t = require("groups").tailnet(cfg.root)
-  if not t then return {}, {} end
-  local removal, ok = require("removal"), sendable(cfg, song, reaper.time_precise())
-  local list, _, users = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), nil, function(d)
-    return not removal.mark(cfg.root, d.user) and ok(d)
-  end)
+  local list, users = {}, {}
+  if t then
+    local removal, ok = require("removal"), sendable(cfg, song, reaper.time_precise())
+    local l, _, u = direct.peers_from(devices(cfg.root), t.suffix, require("services").my_device_id(), direct.port(), nil, function(d)
+      return not removal.mark(cfg.root, d.user) and ok(d)
+    end)
+    list, users = l, u
+  end
+  -- (P13, rt-linkmove round 6 item 8: and those reached without Tailscale whose person isn't here, over their quiet link (lib/nat.lua checked
+  -- them as it checks those here). The hello reaches them, so two computers whose status files are stale to each other meet over it)
+  local okn, quiet = pcall(function() return require("nat").quiet_up() end)
+  local seen = {}
+  for _, p in ipairs(list) do seen[p] = true end
+  for p, user in pairs(okn and type(quiet) == "table" and quiet or {}) do
+    if not seen[p] then list[#list + 1] = p; users[p] = user end
+  end
+  table.sort(list)
   return list, users
 end
 function direct.refresh_peers(cfg, song, room) -- -> the list, peer -> device id, and peer -> user
@@ -471,12 +484,17 @@ function direct.health_line(cfg)
   if not s.available or not direct.live_available() then return nil, "Direct link: needs StudioSync's extension " .. direct.WANT .. " (Extensions > ReaPack > Synchronize packages, or StudioSync's installer, then restart REAPER). Changes come through Syncthing meanwhile." end
   if not s.enabled then return nil, "Direct link: turned off for this studio. Changes come through Syncthing." end
   local reached, failed, ms, nat_ok = {}, {}, nil, false
+  local now = os.time()
   for _, p in ipairs(s.peers) do
-    -- (one reached without Tailscale says so, and how; the others are Tailscale's, their way in the link speed row. rt-nat2)
-    local isnat = tostring(p.path):sub(1, 4) == "nat "
-    local who = direct.peer_name(p.peer) .. (isnat and (" (" .. direct.way_text(p.path) .. ")") or "")
-    if p.ok then reached[#reached + 1] = who; ms = ms and math.min(ms, p.ms or ms) or p.ms; nat_ok = nat_ok or isnat
-    else failed[#failed + 1] = direct.peer_name(p.peer) .. " (" .. tostring(p.error) .. ")" end
+    -- (P13, backlog 1.31: a peer the link stopped trying (a bandmate now reached as "nat:<device>" instead of by Tailscale, or gone) keeps its
+    -- last failure in the extension's status until REAPER restarts; one in use is tried at least every ~10 s, so one older than STALE isn't)
+    if p.ok or not (p.at and now - p.at > direct.STALE) then
+      -- (one reached without Tailscale says so, and how; the others are Tailscale's, their way in the link speed row. rt-nat2)
+      local isnat = tostring(p.path):sub(1, 4) == "nat "
+      local who = direct.peer_name(p.peer) .. (isnat and (" (" .. direct.way_text(p.path) .. ")") or "")
+      if p.ok then reached[#reached + 1] = who; ms = ms and math.min(ms, p.ms or ms) or p.ms; nat_ok = nat_ok or isnat
+      else failed[#failed + 1] = direct.peer_name(p.peer) .. " (" .. tostring(p.error) .. ")" end
+    end
   end
   -- (no Tailscale listener but bandmates reached without it: what they send comes over those links, so that's no warning. rt-nat2)
   local text = "Direct link: " .. (s.listening and ("listening on " .. tostring(s.bind)) or nat_ok and "over the connection without Tailscale" or ("sending only" .. (not s.firewall and ": press Set up direct link so the others' changes reach you directly too" or (s.error and s.error ~= "" and (": " .. s.error) or ""))))

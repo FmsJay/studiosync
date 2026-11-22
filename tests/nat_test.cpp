@@ -20,6 +20,8 @@
 #else
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <sys/select.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #define make_dir(p) mkdir(p, 0700)
@@ -230,10 +232,12 @@ static bool hub_wait(NatHub *a, NatHub *b, const char *pa, const char *pb, doubl
 }
 // ---- stage 2: reliable streams (NatRel alone, through a simulated lossy path; then the direct link over two hubs) --------------------------
 static unsigned rnd(unsigned &r) { r = r * 1103515245u + 12345u; return (r >> 8) % 1000; }
-struct Hop { double at; std::string seg; };
+struct Hop { double at; std::string seg; bool sack = false; };
 // a -> b `ab` bytes and b -> a `ba` bytes, each segment dropped / doubled per mille, every one delayed 20-50 ms (so they reorder); the reader
 // on b takes nothing until `stall` s (the window shuts, then opens). -> both sides got everything in order and finished.
-static bool rel_run(const char *what, int drop, int dup, size_t ab, size_t ba, double stall = 0, bool show = true)
+// (P13) sack: the receivers send selective acks too (lost at the same rate); res: the simulated time and the timer rounds, both sides.
+struct RelOut { double t = 0; long long timeouts = 0; };
+static bool rel_run(const char *what, int drop, int dup, size_t ab, size_t ba, double stall = 0, bool show = true, bool sack = false, RelOut *res = nullptr)
 {
   NatRel a, b;
   unsigned r = 7;
@@ -257,6 +261,10 @@ static bool rel_run(const char *what, int drop, int dup, size_t ab, size_t ba, d
         if ((int)rnd(r) < drop) continue;
         for (int k = (int)rnd(r) < dup ? 2 : 1; k-- > 0;) (side ? to_a : to_b).push_back({ t + 0.020 + rnd(r) * 0.00003, w });
       }
+      if (sack && s.sack_due) {
+        const NatSack held = s.sack_blocks();
+        if (!held.empty() && (int)rnd(r) >= drop) (side ? to_a : to_b).push_back({ t + 0.020 + rnd(r) * 0.00003, nat_sack_encode(1, s.ack_no(), held), true });
+      }
     }
     for (int side = 0; side < 2; ++side) {
       std::vector<Hop> &q = side ? to_a : to_b;
@@ -264,7 +272,9 @@ static bool rel_run(const char *what, int drop, int dup, size_t ab, size_t ba, d
       for (size_t i = 0; i < q.size();) {
         if (q[i].at > t) { ++i; continue; }
         unsigned char f; uint32_t id, w; uint64_t off, ack; const char *d; size_t dn;
-        if (nat_seg_decode(q[i].seg.data(), q[i].seg.size(), f, id, off, ack, w, d, dn)) s.input(f, off, ack, w, d, dn, t);
+        NatSack held;
+        if (q[i].sack) { if (nat_sack_decode(q[i].seg.data(), q[i].seg.size(), id, ack, held)) s.sack(ack, held, t); }
+        else if (nat_seg_decode(q[i].seg.data(), q[i].seg.size(), f, id, off, ack, w, d, dn)) s.input(f, off, ack, w, d, dn, t);
         q.erase(q.begin() + (long)i);
       }
     }
@@ -272,8 +282,43 @@ static bool rel_run(const char *what, int drop, int dup, size_t ab, size_t ba, d
     got_ba += a.rbuf; a.took(a.rbuf.size());
   }
   const bool ok = got_ab == want_ab && got_ba == want_ba && a.done() && b.done() && !a.dead && !b.dead;
-  if (show) printf("     %s: %.2f s simulated, %lld segments, %lld + %lld sent again, %lld + %lld refused\n", what, t, segs, a.resent, b.resent, a.dropped, b.dropped);
+  if (show) printf("     %s: %.2f s simulated, %lld segments, %lld + %lld sent again (%lld + %lld timer rounds), %lld + %lld refused\n", what, t, segs, a.resent, b.resent,
+                  a.timeouts, b.timeouts, a.dropped, b.dropped);
+  if (res) { res->t = t; res->timeouts = a.timeouts + b.timeouts; }
   return ok;
+}
+// (P13, backlog 1.31) Selective acks: the same lossy runs with and without them. Without, each loss past the first in a window waits out its
+// timer (the window halves each time); with them, the gaps go again within a round trip.
+static void sack_checks()
+{
+  RelOut off10, on10, off3, on3;
+  const bool a = rel_run("10% lost, no SACK", 100, 0, 300000, 5000, 0, true, false, &off10), b = rel_run("10% lost, SACK", 100, 0, 300000, 5000, 0, true, true, &on10);
+  CHECK(a && b, "SACK: 10% lost each way: all of it arrives, in order, with selective acks as without");
+  CHECK(on10.timeouts * 2 <= off10.timeouts, "SACK: 10% lost: under half the timer rounds (each one a stall of an RTO or more; the run's length is set by its last losses)");
+  const bool c = rel_run("3% lost, no SACK", 30, 0, 600000, 1000, 0, true, false, &off3), d = rel_run("3% lost, SACK", 30, 0, 600000, 1000, 0, true, true, &on3);
+  CHECK(c && d && on3.timeouts * 2 <= off3.timeouts, "SACK: 3% lost (a loss now and then on a long transfer): under half the timer rounds");
+  CHECK(rel_run("SACK, lost, doubled, reordered", 150, 150, 200000, 20000, 0, true, true), "SACK: lost, doubled and reordered together: each byte once, in order");
+  { // what a selective ack may not be
+    uint32_t id; uint64_t ack; NatSack h;
+    const std::string ok = nat_sack_encode(7, 100, { { 200, 300 }, { 400, 500 } });
+    CHECK(nat_sack_decode(ok.data(), ok.size(), id, ack, h) && id == 7 && ack == 100 && h.size() == 2 && h[1].second == 500, "SACK: a good one reads back");
+    const std::string back = nat_sack_encode(7, 100, { { 300, 200 } }), below = nat_sack_encode(7, 100, { { 50, 150 } });
+    std::string five = nat_sack_encode(7, 100, { { 200, 300 } });
+    five[12] = 5;
+    for (int i = 0; i < 4; ++i) five += std::string(16, '\1');
+    CHECK(!nat_sack_decode(back.data(), back.size(), id, ack, h) && !nat_sack_decode(below.data(), below.size(), id, ack, h) &&
+          !nat_sack_decode(five.data(), five.size(), id, ack, h) && !nat_sack_decode(ok.data(), ok.size() - 1, id, ack, h),
+          "SACK: a backwards range, one at or below the ack, more than 4 ranges, a short one: refused");
+    NatRel s;
+    std::string data(NAT_SEG * 4, 'x');
+    s.write(data.data(), data.size());
+    std::vector<NatSeg> out;
+    s.pump(0, out);
+    s.sack(0, { { NAT_SEG, 2 * NAT_SEG }, { 3 * NAT_SEG, 4 * NAT_SEG } }, 0.5);
+    out.clear();
+    s.pump(0.5, out);
+    CHECK(out.size() == 2 && out[0].off == 0 && out[1].off == 2 * NAT_SEG && s.timeouts == 0, "SACK: the two gaps go again at once, the two segments held don't, and no timer round");
+  }
 }
 static void rel_checks()
 {
@@ -640,6 +685,106 @@ static void lock_checks(int stun)
   nat_hub_free(a); nat_hub_free(b);
   drop_files(dir);
 }
+// (P13) A stand-in home router for the relay hub's UPnP look: an SSDP answer on 127.0.0.1:<udp> naming its description, the description
+// (one WANIPConnection service) and GetExternalIPAddress's answer over HTTP on 127.0.0.1:<tcp>. wan: the address it gives as its own.
+struct FakeIgd {
+  tsock u = (tsock)-1, t = (tsock)-1;
+  int uport = 0, tport = 0;
+  std::mutex mx;
+  std::string wan;
+  std::atomic<bool> run{ true };
+  std::atomic<int> asked{ 0 };
+  std::thread th;
+  bool start(const std::string &w)
+  {
+    wan = w;
+    u = socket(AF_INET, SOCK_DGRAM, 0); t = socket(AF_INET, SOCK_STREAM, 0);
+    sockaddr_in a{};
+    a.sin_family = AF_INET;
+    inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+    socklen_t al = sizeof a;
+    if (bind(u, (sockaddr *)&a, sizeof a) != 0 || bind(t, (sockaddr *)&a, sizeof a) != 0 || listen(t, 4) != 0) return false;
+    getsockname(u, (sockaddr *)&a, &al); uport = ntohs(a.sin_port);
+    al = sizeof a; getsockname(t, (sockaddr *)&a, &al); tport = ntohs(a.sin_port);
+    th = std::thread([this] { loop(); });
+    return true;
+  }
+  void loop()
+  {
+    while (run.load()) {
+      fd_set rf;
+      FD_ZERO(&rf); FD_SET(u, &rf); FD_SET(t, &rf);
+      timeval tv = { 0, 50000 };
+      if (select((int)(u > t ? u : t) + 1, &rf, nullptr, nullptr, &tv) <= 0) continue;
+      if (FD_ISSET(u, &rf)) {
+        char b[1500];
+        sockaddr_in f{};
+        socklen_t fl = sizeof f;
+        const int n = (int)recvfrom(u, b, sizeof b, 0, (sockaddr *)&f, &fl);
+        if (n > 0 && std::string(b, (size_t)n).compare(0, 8, "M-SEARCH") == 0) {
+          const std::string r = "HTTP/1.1 200 OK\r\nST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\nLocation: http://127.0.0.1:" + std::to_string(tport) + "/rootDesc.xml\r\n\r\n";
+          sendto(u, r.data(), (int)r.size(), 0, (sockaddr *)&f, fl);
+        }
+      }
+      if (FD_ISSET(t, &rf)) {
+        tsock c = accept(t, nullptr, nullptr);
+        std::string req;
+        char b[4096];
+        const double t0 = now_ms();
+        while (now_ms() - t0 < 1000 && !(req.find("\r\n\r\n") != std::string::npos && (req.compare(0, 4, "GET ") == 0 || req.find("</s:Envelope>") != std::string::npos))) {
+          fd_set cf;
+          FD_ZERO(&cf); FD_SET(c, &cf);
+          timeval ct = { 0, 50000 };
+          if (select((int)c + 1, &cf, nullptr, nullptr, &ct) <= 0) continue;
+          const int k = (int)recv(c, b, sizeof b, 0);
+          if (k <= 0) break;
+          req.append(b, (size_t)k);
+        }
+        std::string body;
+        if (req.compare(0, 5, "POST ") == 0 && req.find("SOAPAction: \"urn:schemas-upnp-org:service:WANIPConnection:1#GetExternalIPAddress\"") != std::string::npos) {
+          std::lock_guard<std::mutex> g(mx);
+          body = "<?xml version=\"1.0\"?><s:Envelope xmlns:s=\"http://schemas.xmlsoap.org/soap/envelope/\"><s:Body><u:GetExternalIPAddressResponse xmlns:u=\"urn:schemas-upnp-org:service:WANIPConnection:1\">"
+                 "<NewExternalIPAddress>" + wan + "</NewExternalIPAddress></u:GetExternalIPAddressResponse></s:Body></s:Envelope>";
+          asked.fetch_add(1);
+        } else if (req.compare(0, 17, "GET /rootDesc.xml") == 0) {
+          body = "<?xml version=\"1.0\"?><root><device><deviceType>urn:schemas-upnp-org:device:InternetGatewayDevice:1</deviceType><serviceList><service>"
+                 "<serviceType>urn:schemas-upnp-org:service:Layer3Forwarding:1</serviceType><controlURL>/ctl/L3F</controlURL></service><service>"
+                 "<serviceType>urn:schemas-upnp-org:service:WANIPConnection:1</serviceType><serviceId>urn:upnp-org:serviceId:WANIPConn1</serviceId>"
+                 "<controlURL>/ctl/IPConn</controlURL></service></serviceList></device></root>";
+        }
+        const std::string ans = "HTTP/1.1 200 OK\r\nContent-Type: text/xml\r\nContent-Length: " + std::to_string(body.size()) + "\r\nConnection: close\r\n\r\n" + body;
+        send(c, ans.data(), (int)ans.size(), 0);
+        sock_close((unsigned long long)c);
+      }
+    }
+  }
+  ~FakeIgd() { run.store(false); if (th.joinable()) th.join(); if (u != (tsock)-1) sock_close((unsigned long long)u); if (t != (tsock)-1) sock_close((unsigned long long)t); }
+};
+// (P13, backlog 1.32) A hub behind CGNAT: the relay hub reads its router's WAN address by UPnP and says when it isn't the public one.
+static void cgnat_checks(int stun)
+{
+  CHECK(nat_ip_class("100.70.1.2") == 2 && nat_ip_class("192.168.1.1") == 1 && nat_ip_class("10.0.0.1") == 1 && nat_ip_class("172.20.0.1") == 1 &&
+        nat_ip_class("8.8.8.8") == 0 && nat_ip_class("127.0.0.1") == 3 && nat_ip_class("198.18.4.5") == 3 && nat_ip_class("x") == -1,
+        "addresses: carrier-grade NAT, private, public, loopback and synthetic told apart");
+  const std::string dg = temp_dir();
+  std::string why;
+  nat_key_public(dg + "/r.key", why);
+  FakeIgd igd;
+  if (!igd.start("100.70.1.2")) { CHECK(false, "the stand-in router started"); return; }
+  NatHub *g = nat_hub_new();
+  nat_test_only(g, 0, "127.0.0.1");
+  nat_test_upnp(g, ("127.0.0.1:" + std::to_string(igd.uport)).c_str());
+  nat_hub_setup(g, hub_json(dg, "devR", "r.key", stun, {}, ",\"relay\":{\"port\":0,\"users\":[\"devA\"]}").c_str());
+  const bool seen = wait_for(15000, [&] { const std::string st = nat_hub_status(g); return json_field(st, "wan") == "100.70.1.2" && st.find("\"cgnat\":true") != std::string::npos; });
+  printf("     relay hub behind a carrier's NAT: %s\n", nat_hub_status(g).c_str());
+  CHECK(seen, "relay hub whose router's own WAN address (UPnP) is 100.70.1.2, not its public address: cgnat, so a port forward can't reach its relay");
+  { std::lock_guard<std::mutex> l(igd.mx); igd.wan = "127.0.0.1"; } // (now the router is on the internet itself: its WAN address is the public one)
+  nat_test_netchange(g);
+  const bool clear = wait_for(15000, [&] { const std::string st = nat_hub_status(g); return json_field(st, "wan") == "127.0.0.1" && st.find("\"cgnat\":false") != std::string::npos; });
+  CHECK(clear, "the same hub once its router's WAN address is the public one: not cgnat");
+  nat_hub_free(g);
+  drop_files(dg);
+}
 static void stage3_checks(int stun)
 {
   const std::string dr = temp_dir(), dir = temp_dir();
@@ -731,6 +876,42 @@ static void stage3_checks(int stun)
     sleep_ms(500);
     CHECK(burst(100, 5, 1) >= 95 && peer_up(a, "devB"), "the caps back to normal: the same link carries everything again");
     nat_set_rx(b, nullptr, nullptr);
+    // (P13, backlog 1.32) a relay that answers STUN and then relays nothing: the link it was given fails through it, so it's held back
+    // (relay_ok false, relay_bad counted) instead of trusted until the next 10-minute probe; once it relays again, its hold over, the pair
+    // meets through it again and the count clears
+    const std::string held = ",\"timeout\":8,\"relay_hold\":2" + turn;
+    nat_hub_setup(a, hub_json(dir, "devA", "a.key", stun, { { "devB", pb } }, held).c_str());
+    nat_hub_setup(b, hub_json(dir, "devB", "b.key", stun, { { "devA", pa } }, held).c_str());
+    nat_test_relay_mute(true);
+    nat_test_netchange(a); // (the links made again at once, through the relay that no longer relays)
+    const bool bad = wait_for(45000, [&] { return json_num(nat_hub_status(a), "relay_bad") >= 1; }, &took);
+    printf("     relay muted: %.0f ms; A: %s\n", took, nat_hub_status(a).c_str());
+    CHECK(bad && !peer_up(a, "devB") && nat_hub_status(a).find("\"relay_answers\":true") != std::string::npos,
+          "a relay that answers STUN but stops relaying: the link it was given fails through it and it's held back (relay_bad), its STUN still answering");
+    nat_test_relay_mute(false);
+    const bool again = wait_for(90000, [&] { return peer_up(a, "devB") && peer_up(b, "devA") && json_num(nat_hub_status(a), "relay_bad") == 0; }, &took);
+    CHECK(again && json_field(peer_part(nat_hub_status(a), "devB"), "path") == "relayed", "that relay relaying again: asked again after its hold, the pair meets through it and the count clears");
+    printf("     relayed again after %.0f ms\n", took);
+    // (P13, rt-linkmove round 6 item 8) a quiet peer (a studio computer whose person isn't here: its link is only for the hello) is never
+    // given the relay, even where an ordinary one is
+    const std::string pc = nat_key_public(dir + "/c.key", why);
+    NatHub *q = nat_hub_new();
+    nat_test_only(q, 1, "127.0.0.2");
+    const std::string qd = temp_dir();
+    nat_key_public(qd + "/a.key", why);
+    std::string qj = hub_json(qd, "devA", "a.key", stun, { { "devB", pb }, { "devC", pc } }, ",\"timeout\":20" + turn);
+    const size_t qc = qj.find("\"device\":\"devC\"");
+    qj.insert(qj.find('}', qc), ",\"quiet\":true");
+    nat_hub_setup(q, hub_json(qd, "devA", "a.key", stun, {}, ",\"timeout\":20" + turn).c_str()); // (the relay's STUN asked first: links made before it go without)
+    wait_for(10000, [&] { return nat_hub_status(q).find("\"relay_ok\":true") != std::string::npos; });
+    nat_hub_setup(q, qj.c_str());
+    const bool links = wait_for(15000, [&] { const std::string st = nat_hub_status(q); return st.find("\"relay_ok\":true") != std::string::npos && has_link(q, "devB") && has_link(q, "devC"); });
+    const std::string qb = peer_part(nat_hub_status(q), "devB"), qc2 = peer_part(nat_hub_status(q), "devC");
+    printf("     quiet peer: %s\n", qc2.c_str());
+    CHECK(links && qb.find("\"turn\":true") != std::string::npos && qc2.find("\"quiet\":true") != std::string::npos && qc2.find("\"turn\":false") != std::string::npos,
+          "a quiet peer (only for the hello) is never given the relay; an ordinary one is");
+    nat_hub_free(q);
+    drop_files(qd);
   }
   nat_hub_free(a); nat_hub_free(b); nat_hub_free(r);
   drop_files(dr);
@@ -854,6 +1035,7 @@ static void ice_checks()
   }
   hub_checks(port);
   stage3_checks(port);
+  cgnat_checks(port);
   lock_checks(port);
   juice_server_destroy(srv);
 }
@@ -955,6 +1137,7 @@ int main(int argc, char **argv)
   if (getenv("NAT_TEST_HANG")) { std::mutex m; m.lock(); std::thread([&m] { m.lock(); }).join(); } // (to see the watchdog work: a lock nobody lets go)
   crypto_checks();
   rel_checks();
+  sack_checks();
   ice_checks();
   g_finished.store(true);
   printf(fails ? "FAILED %d\n" : "all ok\n", fails);

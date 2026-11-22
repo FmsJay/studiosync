@@ -42,4 +42,15 @@ files[path] = { user = "James", device = "OTHEROTHEROT", stray = "x" }
 ext[band.SECTION .. "/devices publish rt"] = nil
 removal.publish_all(now + 80)
 assert(files[path].device == "MEMEMEMEMEME" and files[path].stray == nil, "another computer's file: written over, nothing of it kept")
+-- (rt-p13) the relay reached from outside (relay_reach) and CGNAT change the entry too: written at the next pass, not only for a new key or relay
+local reach, cg
+package.loaded.nat.entry = function() return { pub = string.rep("ab", 32), tailnet = false, relay_reach = reach, cgnat = cg } end
+reach = "198.51.100.7"
+ext[band.SECTION .. "/devices publish rt"] = nil
+removal.publish_all(now + 120)
+assert(files[path].nat.relay_reach == "198.51.100.7", "relay_reach learnt: the devices file says so at the next pass")
+cg = true
+ext[band.SECTION .. "/devices publish rt"] = nil
+removal.publish_all(now + 160)
+assert(files[path].nat.cgnat == true, "and CGNAT")
 print("ok")

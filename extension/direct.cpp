@@ -416,6 +416,8 @@ bool direct_wav_layout(const std::string &h, long long &data_off, int &block_ali
 
 // ---- sockets ---------------------------------------------------------------------------------------------------------------------------
 static bool tailnet_v4(unsigned a, unsigned b) { return a == 100 && b >= 64 && b <= 127; } // 100.64.0.0/10
+// (P13: phone pages on this computer's own network) RFC 1918's private ranges, where a home network's phones are
+static bool lan_v4(const sockaddr_in &sa) { const unsigned char *p = (const unsigned char *)&sa.sin_addr; return p[0] == 10 || (p[0] == 172 && p[1] >= 16 && p[1] <= 31) || (p[0] == 192 && p[1] == 168); }
 static bool addr_ok(const sockaddr_in &sa, bool loopback_ok)
 {
   const unsigned char *p = (const unsigned char *)&sa.sin_addr;
@@ -524,7 +526,7 @@ struct InStream {
   long long len = 0, total = -1, data_off = -1, ds64_off = -1; int block_align = 0, codec = 0; bool rf64 = false, finalizing = false, done = false, ok = false; long long at = 0;
   std::string held; // (the file's start while it isn't yet a WAV header worth showing: zeros on disk meanwhile. wav_append)
 };
-struct Conn { sock_t s; std::vector<char> buf; double last; bool nat = false; }; // (nat: one a bandmate opened over the connection without Tailscale)
+struct Conn { sock_t s; std::vector<char> buf; double last; bool nat = false; bool lan = false; }; // (nat: one a bandmate opened over the connection without Tailscale; lan: from this computer's own network, P13: the web UI only)
 
 std::mutex g_mx; // guards everything below but the sockets and stream files, which only their own thread touches
 std::map<std::string, Studio> g_studios;
@@ -534,6 +536,13 @@ size_t g_msg_bytes = 0;
 int g_seq = 0, g_msg_seq = 0;
 long long g_received = 0, g_rejected = 0, g_msgs_received = 0;
 std::string g_last_reject, g_listen_err, g_bind;
+// (P13, backlog 4.7: phone pages on this computer's own network, without Tailscale: a second listener on its private address, the web UI's
+// HTTP only, with its token as from Tailscale; plain HTTP, so browsers give those pages no microphone)
+sock_t g_lan_sock = BAD_SOCK;
+std::thread g_lan_thr;
+std::atomic<bool> g_stop_lan{ false };
+std::string g_lan_bind, g_lan_err;
+int g_lan_port = 0;
 int g_port = 0;
 bool g_listening = false, g_kick = false;
 double g_next_due = 0;
@@ -554,7 +563,7 @@ std::atomic<unsigned long long (*)(void *, const char *, std::string &)> g_nat_c
 std::atomic<void *> g_nat_user{ nullptr };
 // (a thread still joinable when the DLL's statics go would end the process: if REAPER exits without unloading or atexit, they're let go)
 struct ExitGuard { ~ExitGuard() {
-  if (g_listen_thr.joinable()) g_listen_thr.detach(); if (g_send_thr.joinable()) g_send_thr.detach(); if (g_nat_thr.joinable()) g_nat_thr.detach();
+  if (g_listen_thr.joinable()) g_listen_thr.detach(); if (g_send_thr.joinable()) g_send_thr.detach(); if (g_nat_thr.joinable()) g_nat_thr.detach(); if (g_lan_thr.joinable()) g_lan_thr.detach();
   for (auto &kv : g_lanes) if (kv.second->thr.joinable()) { kv.second->thr.detach(); kv.second.release(); } // (released: a detached thread may still use it)
 } } g_exit_guard;
 std::atomic<bool> g_stop_listen{ false }, g_stop_send{ false }, g_stop_nat{ false };
@@ -847,6 +856,11 @@ bool take_conn(Conn &c, long long t_recv)
   for (;;) {
     auto http = c.nat ? nullptr : g_http.load(); // (the web UI stays Tailscale-only: never over the connection without it)
     if (http && c.buf.size() >= 4 && http((unsigned long long)c.s, c.buf.data(), c.buf.size())) { c.s = BAD_SOCK; return false; }
+    if (c.lan) { // (from this computer's own network: the web UI's pages or nothing; a frame never)
+      if (c.buf.size() < 4) return true;
+      reject("not a web page request, from this computer's network");
+      return false;
+    }
     if (c.buf.size() < 12) return true;
     const char *f = c.buf.data();
     const char m = f[2];
@@ -866,7 +880,7 @@ bool take_conn(Conn &c, long long t_recv)
 }
 
 // The listener (ls: its socket) or, with ls BAD_SOCK and nat, the connections bandmates open over the connection without Tailscale (direct_adopt).
-void listen_loop(sock_t ls, bool loopback_ok, std::atomic<bool> *stop, bool nat)
+void listen_loop(sock_t ls, bool loopback_ok, std::atomic<bool> *stop, bool nat, bool lan)
 {
   std::vector<Conn> conns;
   std::vector<char> chunk(65536);
@@ -894,9 +908,10 @@ void listen_loop(sock_t ls, bool loopback_ok, std::atomic<bool> *stop, bool nat)
       sock_t s = accept(ls, (sockaddr *)&from, &len);
       if (s != BAD_SOCK) {
         direct_noinherit(s);
-        if (from.sin_family != AF_INET || !addr_ok(from, loopback_ok)) { reject("a connection from outside Tailscale"); close_sock(s); }
+        const bool from_ok = from.sin_family == AF_INET && (lan ? lan_v4(from) || (loopback_ok && ((const unsigned char *)&from.sin_addr)[0] == 127) : addr_ok(from, loopback_ok));
+        if (!from_ok) { reject(lan ? "a connection from outside this computer's network" : "a connection from outside Tailscale"); close_sock(s); }
         else if (conns.size() >= 32) { reject("too many connections"); close_sock(s); }
-        else { set_nonblock(s, true); no_sigpipe(s); no_delay(s); conns.push_back({ s, {}, t }); }
+        else { set_nonblock(s, true); no_sigpipe(s); no_delay(s); conns.push_back({ s, {}, t, false, lan }); }
       }
     }
     // (only those polled: one accepted just now has no poll entry yet, and read past the list's end it was closed at once. Laptop over
@@ -1407,10 +1422,20 @@ void stop_listening()
   g_bind.clear();
 }
 
+static sock_t bind_listen(const std::string &ip, int port, std::string &why);
 bool start_listening(const std::string &ip, int port, std::string &why)
 {
+  const sock_t s = bind_listen(ip, port, why);
+  if (s == BAD_SOCK) return false;
+  g_listen_sock = s;
+  const bool loopback = ip.compare(0, 4, "127.") == 0;
+  g_listen_thr = std::thread(listen_loop, s, loopback, &g_stop_listen, false, false);
+  return true;
+}
+static sock_t bind_listen(const std::string &ip, int port, std::string &why)
+{
   sock_t s = socket(AF_INET, SOCK_STREAM, 0);
-  if (s == BAD_SOCK) { why = "no socket"; return false; }
+  if (s == BAD_SOCK) { why = "no socket"; return BAD_SOCK; }
   direct_noinherit(s);
 #ifndef _WIN32
   int one = 1;
@@ -1425,12 +1450,39 @@ bool start_listening(const std::string &ip, int port, std::string &why)
     char buf[160];
     snprintf(buf, sizeof(buf), "can't listen on %s:%d (another REAPER, or something else, has the port)", ip.c_str(), port);
     why = buf;
-    return false;
+    return BAD_SOCK;
   }
-  g_listen_sock = s;
-  const bool loopback = ip.compare(0, 4, "127.") == 0;
-  g_listen_thr = std::thread(listen_loop, s, loopback, &g_stop_listen, false);
-  return true;
+  return s;
+}
+// This computer's address on its own network: where a UDP socket "connected" out of the default route would send from (nothing is sent),
+// only when it's a private one (RFC 1918). -> "" and why.
+static std::string lan_ip(std::string &why)
+{
+  sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
+  if (s == BAD_SOCK) { why = "no socket"; return ""; }
+  direct_noinherit(s);
+  sockaddr_in to = {}, me = {};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(9);
+  inet_pton(AF_INET, "192.0.2.1", &to.sin_addr); // (TEST-NET-1: reached by the default route, never answered)
+  socklen_t len = sizeof(me);
+  std::string ip;
+  if (connect(s, (sockaddr *)&to, sizeof(to)) == 0 && getsockname(s, (sockaddr *)&me, &len) == 0) {
+    if (lan_v4(me)) { char b[INET_ADDRSTRLEN] = ""; inet_ntop(AF_INET, &me.sin_addr, b, sizeof b); ip = b; }
+    else why = "this computer's address on its network isn't a private one (10.x, 172.16-31.x, 192.168.x): no phone pages there";
+  } else why = "no network";
+  close_sock(s);
+  return ip;
+}
+void stop_lan()
+{
+  g_stop_lan = true;
+  if (g_lan_thr.joinable()) g_lan_thr.join();
+  if (g_lan_sock != BAD_SOCK) { close_sock(g_lan_sock); g_lan_sock = BAD_SOCK; }
+  g_stop_lan = false;
+  std::lock_guard<std::mutex> l(g_mx);
+  g_lan_bind.clear();
+  g_lan_port = 0;
 }
 
 std::vector<std::string> parse_peers(const char *peers)
@@ -1468,7 +1520,26 @@ void direct_adopt(unsigned long long sock)
   }
   if (s != BAD_SOCK) { close_sock(s); return; } // (shutting down, or 64 waiting: the other side's stream sees it close)
   std::lock_guard<std::mutex> l(g_nat_mx);
-  if (!g_nat_thr.joinable()) g_nat_thr = std::thread(listen_loop, BAD_SOCK, false, &g_stop_nat, true);
+  if (!g_nat_thr.joinable()) g_nat_thr = std::thread(listen_loop, BAD_SOCK, false, &g_stop_nat, true, false);
+}
+int direct_lan(int port, const char *bind_ip)
+{
+#ifdef _WIN32
+  if (!g_wsa) { WSADATA w; g_wsa = WSAStartup(MAKEWORD(2, 2), &w) == 0; }
+#endif
+  std::string why, ip = port <= 0 ? "" : bind_ip && *bind_ip ? bind_ip : lan_ip(why);
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    if (port > 0 && g_lan_sock != BAD_SOCK && g_lan_bind == ip && g_lan_port == port) return 1;
+  }
+  stop_lan(); // (off, or this computer's address on its network changed)
+  const sock_t s = ip.empty() ? BAD_SOCK : bind_listen(ip, port, why);
+  if (s != BAD_SOCK) { g_lan_sock = s; g_lan_thr = std::thread(listen_loop, s, ip.compare(0, 4, "127.") == 0, &g_stop_lan, false, true); }
+  std::lock_guard<std::mutex> l(g_mx);
+  g_lan_bind = s != BAD_SOCK ? ip : "";
+  g_lan_port = s != BAD_SOCK ? port : 0;
+  g_lan_err = port > 0 && s == BAD_SOCK ? why : "";
+  return s != BAD_SOCK ? 1 : 0;
 }
 
 #ifdef DIRECT_STANDALONE
@@ -1721,6 +1792,8 @@ const char *direct_status()
   o = "{\"listening\":";
   o += g_listening ? "true" : "false";
   o += ",\"bind\":"; json_str(o, g_bind);
+  o += ",\"lan\":{\"bind\":"; json_str(o, g_lan_bind); // (P13: phone pages on this computer's network)
+  o += ",\"port\":" + std::to_string(g_lan_port) + ",\"error\":"; json_str(o, g_lan_err); o += "}";
   size_t queued = g_jobs.size();
   for (const auto &kv : g_lanes) queued += kv.second->q.size();
   snprintf(num, sizeof(num), ",\"port\":%d,\"received\":%lld,\"rejected\":%lld,\"queued\":%d,\"messages\":%lld", g_port, g_received, g_rejected,
@@ -1754,6 +1827,7 @@ const char *direct_status()
 void direct_shutdown()
 {
   stop_listening();
+  stop_lan();
   {
     std::lock_guard<std::mutex> n(g_nat_mx);
     g_stop_nat = true;
@@ -1815,6 +1889,8 @@ static int api_stream_end(const char *studio, const char *rel) { return direct_s
 static const char *api_streams() { return direct_streams(); }
 static double api_file_time(const char *path) { return direct_file_time(path); }
 static void api_trace(const char *path) { direct_trace(path); }
+static int api_lan(int port) { return direct_lan(port, ""); }
+static void *va_lan(void **a, int n) { return (void *)(INT_PTR)api_lan(n > 0 ? (int)(INT_PTR)a[0] : 0); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
 static void *va_msg(void **a, int n) { return (void *)(INT_PTR)api_msg(S_(0), S_(1), S_(2), S_(3)); }
 static void *va_msg_poll(void **a, int n) { return (void *)api_msg_poll(n > 0 ? (int)(INT_PTR)a[0] : 0); }
@@ -1836,6 +1912,9 @@ void direct_register(reaper_plugin_info_t *rec)
       "StudioSync's direct link: add a studio (its folder id, shared secret, inbox folder) and listen on this computer's Tailscale address "
       "(port 0: 47281; below 0: send only). Returns 1 when listening." },
     { "StudioSync_DirectStop", (void *)api_stop, (void *)va_stop, "void\0const char*\0studio\0Forget a studio; \"\" stops the direct link." },
+    { "StudioSync_DirectLan", (void *)api_lan, (void *)va_lan,
+      "int\0int\0port\0Phone pages on this computer's own network (no Tailscale): the web UI, with its token, on this computer's private address "
+      "(10.x, 172.16-31.x, 192.168.x) at port, from that kind of address only; nothing but the web UI's pages there. 0 stops it. Returns 1 when listening." },
     { "StudioSync_DirectSend", (void *)api_send, (void *)va_send,
       "int\0const char*,const char*,const char*,const char*\0studio,relpath,path,peers\0"
       "Queue an event file (relpath: <song>/rooms/<room>/events/<id>.json) for peers \"host:port host:port\". Returns 1 when queued." },

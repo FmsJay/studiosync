@@ -133,3 +133,189 @@ Stage 1 and 2's checks first. Then:
   "restart" to make a link start over (a nuisance, not access).
 - Each link's reassembly holds at most 4 half-arrived messages of at most 9.6 KB for 5 s.
 - `nat_relay_sendto` returns success for a dropped datagram (as the network might drop it); libjuice never learns it was capped.
+
+# Round 2: package P13, the rest of Connect without Tailscale (rt-p13, 2026-11-21)
+
+Backlog items 1.31, 1.32, 3.2 A and 4.7 (default yes), plus rt-linkmove round 6 item 8 (the `nat:` peers' hello). Offline and native tests
+only; not run in REAPER, between the real computers or in the VM lab. The extension's version isn't raised (the coordinator releases).
+
+| Item | Result | Where |
+|---|---|---|
+| 1.31 No SACK: a loss stalls a stream | **Built**: selective acks | `extension/nat.cpp`, `nat.h` (`NatRel::sack_blocks`, `NatRel::sack`, kind-4 datagrams) |
+| 1.31 Health's stale "can't reach" after a swap to `nat:` | **Built** (Lua, works with the extension already out) | `lib/direct.lua` `health_line`, `direct.STALE` |
+| 1.32 A hub behind CGNAT is never detected | **Built**: UPnP's WAN address against the public one, and the computer's own 100.64/10 address; a Health row; `cgnat` in the devices file | `extension/nat.cpp` (`upnp_wan`, `nat_ip_class`), `lib/nat.lua` |
+| 1.32 The role moves to a computer without the forward | **Built**: a relay reached from outside keeps the role while it's online | `extension/nat.cpp` (relay `outside`), `lib/nat.lua` (`relay_plan`, `learn`, `entry`), `lib/removal.lua` (one comparison) |
+| 1.32 A relay that answers STUN and stops relaying | **Built**: held back after a link fails through it, back-off 30 s to 10 min | `extension/nat.cpp` (`relay_bad`, `relay_hold`), `lib/nat.lua` Health |
+| 3.2 A The hub's TURN for video-call pages | **Built** | `extension/nat.cpp` (`StudioSync_NatIce`), `lib/nat.lua` `ice`, `lib/webcall.lua`, `lib/webui/call.js` (one line) |
+| 3.2 A Health naming the Tailscale-only features | **Built** | `lib/nat.lua` `tailscale_row` |
+| 4.7 Phone pages without Tailscale (LAN listener, no microphone) | **Built**, off per computer until ticked | `extension/direct.cpp` (`direct_lan`, `StudioSync_DirectLan`), `lib/nat.lua` (switch, firewall rule, Health) |
+| rt-linkmove r6 item 8: `nat:` peers' hello | **Built**: quiet links to the studio's computers not here | `extension/nat.cpp` (`quiet`), `lib/nat.lua` (`peers`, `quiet_up`), `lib/direct.lua` `studio_peers` |
+| 3.2 A Invitations over a NAT link | **Not built** (needs a first-contact channel and P10's files): design below | |
+
+## What each does
+
+**Selective acks.** A receiver holding bytes past a gap sends, beside its usual ack, a kind-4 datagram naming up to 4 held ranges. The sender
+marks segments the peer holds (never resent by a timer) and resends every gap below the highest held byte at once, at most once a round trip
+each. Before, only the first gap went again (after three repeated acks) and every other loss in the window waited out its timer, halving the
+window each time. An older extension ignores a kind it doesn't know, so a mixed pair works as before. Simulated path (20-50 ms, reordering),
+300 KB: 10% lost each way, timer rounds 15 -> 6 and segments sent 735 -> 476; 3% lost on 600 KB, timer rounds 7 -> 0. Over two hubs' real
+links on localhost (10% lost, 5% doubled, 10% held back), the 1 MB event file now lands in 2.7 s (4.3 s in rt-nat2's run).
+
+**The stale row.** The extension keeps a status entry for every peer it ever tried. Health's direct-link row now leaves out a failed peer
+whose last try is over `direct.STALE` (60) s old: one in use is tried at least every ~10 s. Fixed in Lua, so it works with extension 1.0.35.
+
+**A hub behind CGNAT.** The relay hub asks its router for its own internet address by UPnP (an SSDP search on its network, the description
+and `GetExternalIPAddress` only from the IP that answered, 2 s and 64 KB at most, on a thread of its own every 10 minutes). When that isn't
+the public address STUN sees (or the computer's own address is in 100.64.0.0/10: a carrier's NAT, or a Tailscale exit node), the status says
+`relay.cgnat` and Health says no forward on that router can reach the relay. The devices file carries `cgnat = true` (remembered per public
+address), and no such computer counts as a proven relay. No UPnP answer: nothing is said (many routers have it off).
+
+**The role stays with a forward that works.** The relay records when it last answered a public address (someone outside its network reached
+it, so the forward works); the computer remembers that public address (ExtState, across restarts) and its devices file says `relay_reach`.
+Every computer picks the relay from the same files: the studio hub if it's proven or nobody else is; else the proven computer that's online
+(lib/hub.lua's candidates; the lowest name when several). So handing the hub role on, or the hub going to sleep and coming back, no longer
+moves the relay to a computer without the forward. A new public address knows nothing until it's reached there.
+
+**A relay that stops relaying.** A link the hub's relay was given that fails through it (no path, its relayed path stopped, or no relayed
+address at all) holds the relay back: links go without it (`relay_ok` false) for 30 s, doubling per failure in a row to 10 minutes, its STUN
+asked again at once (a relay that's gone altogether shows as not answering) and when the hold ends. A link it carries clears the count. Health:
+"the studio's relay (James, ip:port) answers but didn't carry the last link that needed it (its router may forward UDP 47298 but not
+47299-47314, or not loop it back): links go without it for N s". Before, links kept asking it (each one more allocation of the computer's 32)
+until the next 10-minute probe, and Health said nothing.
+
+**Video-call pages.** With the studio's connection without Tailscale on, the "rtc" model carries `ice`: the studio's STUN servers and the relay
+as TURN (`turn:<ip>:47298?transport=udp`, this computer's own relay user and password from `StudioSync_NatIce`; this computer's own relay on
+127.0.0.1 when it is the relay). call.js hands it to `RTCPeerConnection`. With it off: no ICE servers, host candidates only, as before.
+
+**What still needs Tailscale.** A grey Health row, when this computer is off the studio's tailnet or reaches anyone without it: changes, chat,
+claims, the shared clock, live audio and video calls go the connection without Tailscale; the Hop plug-in, Listen along, listening links,
+browser guests, invite links and phone pages from other devices still need Tailscale (the last on this computer's own network with the switch
+below).
+
+**Phone pages on this network.** Settings > Studio, under Connect without Tailscale: "Phone pages on this network (this computer)", a
+per-computer switch, off until ticked. Then the web UI, with the studio's token as over Tailscale, also listens on this computer's private
+address (10.x, 172.16-31.x, 192.168.x) at the direct link's port, from private addresses only; a frame there is refused. On Windows only once
+its own firewall rule is in ("StudioSync phone pages on this network": reaper.exe, TCP 47281, `remoteip=LocalSubnet`; Health's button, one
+UAC), so Windows' own box never comes up in REAPER's face. Health gives the address with the token. Plain HTTP: browsers give such pages no
+microphone, so the Record page still needs Tailscale (4.7's "no microphone").
+
+**The hello for computers not here.** The direct link's call to `nat.peers` also sets up quiet links to the studio's other computers whose
+pair goes this way and whose person isn't here (trusted, not removed, the song in a guest's list): no relay for them and retries every 30 s
+doubling to 10 minutes (each try is a rendezvous file in the folder). Live audio's calls keep the same setup for 6 s, so the two don't drop and
+remake the links. `direct.studio_peers` adds the quiet peers whose link is up, so `presence`'s hello (and the studio-wide signed files) reach
+them; once the other side's Live sync hears it, each is here for the other and the link is an ordinary one. As rt-linkmove said, a first link
+still needs the folder or another link that's up: with Syncthing paused on both and no other link this can't meet.
+
+## Invitations over a NAT link (not built)
+A joiner without Tailscale has no channel to the inviter before it's in: the rendezvous is the shared folder (not shared yet) or another link
+(none yet). Two ways that would work, both outside P13's files:
+1. **Syncthing as the channel** (`lib/joins.lua`, `lib/services.lua`): the joiner offers the inviter a tiny folder whose id is derived from the
+   invite code and whose label carries its signed ask (device id, name, `nat.pub`, an HMAC with the code). The inviter's Live sync sees the
+   pending offer (Syncthing's REST), checks the HMAC, and lets that device in as Let them in does today. Syncthing's own discovery and relays
+   carry it, so no Tailscale and no router change. Then the folder, the devices file and the NAT link follow as now.
+2. **The hub's public address in the token**: only with the relay's forward in (section 4.2's default is no forward), and it needs a TURN
+   credential in the link (sealed to the code) and a TURN client in the joiner's extension. More code, and a dependency on James's router.
+Today a joiner without Tailscale gets an honest note (rt-p10) and is let in with Let them in.
+
+## Extension changes for the release
+New ReaScript: `StudioSync_NatIce()` (JSON user/pass for a browser's TURN), `StudioSync_DirectLan(port)` (phone pages on this network; 0
+stops). `StudioSync_NatStatus` gains `relay_answers`, `relay_bad`, `relay_hold`, `relay.wan`, `relay.cgnat`, `relay.outside`, and per peer
+`quiet`, `turn`; setup peers take `quiet`, and the setup takes `relay_hold` (tests). `StudioSync_DirectStatus` gains `lan { bind, port, error }`.
+A new datagram kind (4, selective acks) on the links: an older extension ignores it. Lua checks each new function exists, so an older
+extension simply goes without (no TURN for pages, no LAN pages, no SACK).
+
+## Tests (JAMES-MAIN, 2026-11-21)
+- `tests/nat_test.cpp` (built with `tests/build_nat_test.cmd`'s steps into a scratch folder): all ok. New: "SACK: ..." (6 checks, the
+  timer-round comparisons fail with `sack()` taken out), "a relay that answers STUN but stops relaying ..." and "that relay relaying again ..."
+  (a test knob mutes every relay's Data indications and ChannelData while its STUN answers; without the hold no `relay_bad` is ever set), "a
+  quiet peer ... is never given the relay", the address classes, and "relay hub whose router's own WAN address (UPnP) is 100.70.1.2 ..." and
+  its clearing (a stand-in router on 127.0.0.1 answering SSDP, the description and the SOAP call).
+- `tests/direct_test.cpp`: `fails 0` (`SS_TEST_PORT=47591`). New: phone pages on this network: listening, a page goes to the web UI, a
+  well-signed frame refused there, off again.
+- `tests/test_0_60_rt_p13.lua` (new): the relay plan (proven, offline, CGNAT, an untrusted file), learning and publishing `relay_reach` and
+  `cgnat`, the Health rows, the stale row, the quiet peers and the hello's peers, the pages' ICE servers, phone pages on this network.
+  `tests/test_0_60_rt_nat3_publish.lua`: the devices file rewritten when `relay_reach` or `cgnat` changes (fails against HEAD's
+  `lib/removal.lua`). Two expectations updated: `test_0_60_rt_nat.lua` (Health's new grey row), `test_0_60_rt_webcall.lua` (call.js's line).
+- `python tests/run.py --no-luals`: fails 0. `extension\build_windows.cmd` with `DLL_OUT` in a scratch folder: builds (the tracked DLL untouched).
+
+## REAPER checks on the real computers (after a release with this extension)
+Stage 1-3's checks first. Desktop = studio hub, laptop off the tailnet.
+1. **Stale row.** Laptop on the tailnet, Live sync running on both; take the laptop off the tailnet (its link goes `nat:`). Within about a minute
+   Health's direct-link row on the desktop reads "reaches ... James-Laptop (without Tailscale ...)" with no "can't reach james-laptop".
+2. **What still needs Tailscale.** On the laptop (off the tailnet): a grey row "Without Tailscale on this computer: ... these still need
+   Tailscale here: the Hop plug-in, ...". On the desktop: "Reached without Tailscale: James-Laptop ...".
+3. **Video call.** Laptop off the tailnet: open the web UI on both and Call the other: video both ways. In the browser's
+   `chrome://webrtc-internals`, the selected pair is srflx or host (on the same LAN) or relay (only with James's forward in).
+4. **Phone pages on this network.** Desktop: Settings > Studio > Phone pages on this network; Health asks for its firewall rule (one UAC) and
+   then shows `http://192.168.x.y:47281/?t=...`. On the S23 on the home Wi-Fi (CDP over adb, a new tab, rt-lab "The S23"): the page opens, Home
+   and Chat work; the Record page says the microphone isn't available. Untick: the address stops answering.
+5. **The relay's rows** (only if James forwards UDP 47298-47314 to the desktop, section 4.2): from the laptop on the phone's hotspot, after
+   one relayed link, the desktop's relay row says "Reached from outside this network N min ago"; `_band/devices/James.json` has
+   `nat.relay_reach`. Hand the hub role on (Health: Hand it on): the laptop's turn stays the desktop's relay.
+
+## Lab checks (the router VM; nothing on the real PCs' firewalls)
+
+### The router VM (James's steps: creating VMs is outside an agent's scope)
+1. Power LinuxBox2 off and take a powered-off snapshot `pre-router` (its netplan already matches any NIC: rt-lab).
+2. `./lab.sh clone RouterBox` (a linked clone of LinuxBox2's snapshot: about 300 MB). In its .vmx (VM off): keep ethernet0 and set it to a
+   LAN segment `lab-wan`; add ethernet1 on a LAN segment `lab-lan` (Workstation: VM Settings > Network Adapter > LAN segment). Turn XFCE off
+   if you like (`systemctl set-default multi-user.target`).
+3. `./lab.sh clone LinuxBox3` the same way, ethernet0 on `lab-wan`: the bandmate "on the internet", the STUN servers and (for the relay
+   checks) the hub. Run `vm_identity.sh` in it as in rt-lab.
+4. LinuxBox2's ethernet0 to `lab-lan` (VM off). Static addresses (no DHCP on LAN segments): LinuxBox2 `10.77.0.2/24` via `10.77.0.1`;
+   LinuxBox3 `203.0.113.10/24`; RouterBox's WAN `203.0.113.1/24`. (203.0.113.0/24 is a documentation range: "public" in the lab only.)
+5. Copy `tools/lab/routerlab.sh`, `stun.py`, `fake_igd.py` into RouterBox and LinuxBox3 (`scp` through the desktop). In RouterBox:
+   `sudo ./routerlab.sh up ens192 203.0.113.1/24 ens224` (interface names from `ip -br link`).
+6. On LinuxBox3: `python3 stun.py --port 3478 & python3 stun.py --port 3479 &`. In the test studio's band.json (owner): `nat` true,
+   `nat_stun` "203.0.113.10:3478 203.0.113.10:3479". Neither VM has Tailscale: the lab is the hour-long gate's "Tailscale off".
+7. Two strict NATs (L2) need a second router: clone RouterBox as RouterBox2 with its LAN on `lab-lan2` and a client there (another clone),
+   `up` with WAN 203.0.113.2.
+
+### The checks
+- **L1 NAT kinds.** For each `routerlab.sh mode open|restricted|cone|symmetric` (a new mode drops the old mappings: restart Live sync on
+  LinuxBox2 after each): LinuxBox2's `StudioSync_NatStatus().nat` is `easy` for open, restricted and cone, `strict` for symmetric; with
+  LinuxBox3 as the bandmate, Health on both says "direct (through both NATs)" for the first three. For symmetric with LinuxBox3 as the hub
+  (relay on, its address public in the lab): "relayed by <LinuxBox3's person>" only if LinuxBox3 is strict too; otherwise direct through the
+  strict side's relayed address.
+- **L2 Two symmetric NATs.** RouterBox and RouterBox2 both `mode symmetric`, LinuxBox3 the hub: the two clients' rows read "relayed by ...";
+  without the hub's relay (hand the hub role to one of them): "no path ... trying again shortly".
+- **L3 SACK.** `lab.sh net x2 shape 203.0.113.10 --delay 40 --loss 5` on LinuxBox2. Record a 3-minute take on LinuxBox2 with the streamed
+  copy on; LinuxBox3's copy keeps up (the stream trace, `direct.trace_path`); compare `resent` in `StudioSync_NatStatus` with extension 1.0.35
+  on the same shaping (expect fewer, and no multi-second stalls in the trace). `undo` after.
+- **L4 Hub behind CGNAT.** `routerlab.sh double on`, `routerlab.sh forward on` (the forward on the home router, which can't help), and in
+  RouterBox: `sudo ip netns exec home python3 fake_igd.py --wan 100.64.77.2 --lan 10.77.0.1`. Make LinuxBox2 the preferred studio hub. Within
+  ~30 s its Health shows "this computer's network is behind another NAT (its router's own internet address is 100.64.77.2 ...)" and its
+  devices file has `nat.cgnat = true`. LinuxBox3's relay row says the relay doesn't answer. `double off` and stop fake_igd after.
+- **L5 The role stays.** `double off`, `forward on`, LinuxBox2 the hub; LinuxBox3 strict (or `nat_stun` making it so) reaches LinuxBox2's
+  relay: LinuxBox2's relay row "Reached from outside this network ..." and `nat.relay_reach` in its devices file. Then make LinuxBox3 the
+  preferred hub: LinuxBox3's `StudioSync_NatStatus().turn` stays LinuxBox2's relay (it's proven and online); stop LinuxBox2's Live sync: within
+  ~45 s (the candidates' age) the role goes to LinuxBox3.
+- **L6 A relay that answers but can't relay.** `forward stun` (47298 only): a link that needs the relay fails; Health on the far side says
+  "answers but didn't carry the last link that needed it ... for 30 s", then 60, 120 s on further failures. `forward on`: the next try after
+  the hold meets through it and the row goes.
+- **L7 Network change.** With a link up, `routerlab.sh wanip 203.0.113.5/24`: LinuxBox2's links make themselves again within a few seconds
+  (`restarts` +1), Health back to "direct" or "relayed".
+- **L8 Hairpin.** LinuxBox2 the hub behind RouterBox (`forward on`), a second client behind the same RouterBox, both relayed (`only` isn't
+  available in REAPER: make both strict with `mode symmetric`): with `hairpin off` their relay-to-relay path through the public address
+  fails; `hairpin on`: it works.
+- **L9 The hour.** No Tailscale anywhere in the lab: LinuxBox2 and LinuxBox3 in one room for an hour with live audio playing (a tone track),
+  edits every few minutes, chat: Health stays green; the NAT status `fails` stays 0 after the first minute.
+- **L10 The hello.** LinuxBox2 and LinuxBox3 linked; pause Syncthing on LinuxBox2 and restart its Live sync: it's "here" for LinuxBox3 within
+  ~10 s (rt-fix5's timing) while a link to anyone else is up (the rendezvous goes over it); with no other link up, it waits for Syncthing (the
+  limit above).
+
+## Review later (security), added this round
+- Video-call pages get this computer's relay password (`StudioSync_NatIce`) in the rtc model: any page with the web UI's token (a phone
+  included) can use this computer's relay quota and bandwidth within the caps. With the connection without Tailscale on, browsers also ask
+  the public STUN servers (they learn the browser's address, as the extension's own probe already lets them).
+- Phone pages on this network: plain HTTP on the LAN, so the token in the address and the cookie cross the Wi-Fi in the clear; any device with
+  a private address on that network may try (the token is the only bar; the Windows rule allows the local subnet). Off per computer until
+  ticked.
+- UPnP: the relay hub sends an SSDP search and reads the description and control URL from whatever answers on its network (only from the IP
+  that answered, 64 KB and 2 s at most); a device there could claim any WAN address, making Health say CGNAT and the role move.
+- `relay_reach` is a member's own claim about its own computer: a member could set it to draw the relay role (and see sizes and timing of
+  relayed links, as any relay does). "Reached from outside" counts any public sender the relay answered, a scanner included.
+- Selective acks are trusted like the cumulative ack (the link's sealing): a member's SACK can claim bytes it never got, so they aren't
+  resent and its own stream stalls; resends it triggers are bounded to once a round trip per segment.
+- Quiet links: one rendezvous file per offline studio computer whose pair goes this way, every 30 s doubling to 10 minutes, and hellos to them.
+- The relay's hold: a member that makes links through the relay fail can hold it back for others on that computer (a nuisance).

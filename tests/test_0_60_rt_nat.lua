@@ -132,5 +132,6 @@ here = { "Chilio" }
 clock = clock + 5
 nat.peers(cfg, { song = "Nostalgia", room = "main" })
 rows = nat.health_rows(cfg)
-assert(#rows == 1 and rows[1][4]:find("^Without Tailscale: Chilio: direct"), "Health: Chilio by name, the rule there: one green row")
+assert(#rows == 2 and rows[1][4]:find("^Without Tailscale: Chilio: direct") and rows[2][1] == "nat tailscale" and rows[2][4]:find("^Reached without Tailscale: Chilio%."),
+  "Health: Chilio by name, the rule there: one green row, and (P13) what still needs Tailscale with Chilio")
 print("ok")

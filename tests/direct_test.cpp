@@ -823,6 +823,44 @@ static int stream_to(const char *peer, int secs)
   return ok ? 0 : 1;
 }
 
+// (P13, backlog 4.7) Phone pages on this computer's own network, without Tailscale: the web UI's pages there and nothing else (a frame,
+// even a well-signed one, is refused); off again. On 127.0.0.1 here, as the Tailscale listener's own checks are.
+static std::atomic<int> g_pages{ 0 };
+static bool fake_page(unsigned long long s, const char *b, size_t n)
+{
+  if (n < 4 || memcmp(b, "GET ", 4) != 0) return false;
+  ++g_pages;
+  const char ok[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok";
+  send((int)s, ok, (int)sizeof ok - 1, 0);
+  closesocket((int)s);
+  return true;
+}
+static void lan_tests(const std::string &studio, const std::string &key, int port)
+{
+  direct_set_http_handler(fake_page);
+  const int lp = port + 7;
+  CHECK(direct_lan(lp, "127.0.0.1") == 1 && std::string(direct_status()).find("\"lan\":{\"bind\":\"127.0.0.1\"") != std::string::npos,
+        "phone pages on this network: listening (127.0.0.1 in the test)");
+  int s = (int)socket(AF_INET, SOCK_STREAM, 0);
+  sockaddr_in a = {}; a.sin_family = AF_INET; a.sin_port = htons((unsigned short)lp); inet_pton(AF_INET, "127.0.0.1", &a.sin_addr);
+  std::string got;
+  if (connect(s, (sockaddr *)&a, sizeof a) == 0) {
+    const char req[] = "GET /?t=x HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n";
+    send(s, req, (int)sizeof req - 1, 0);
+    char b[256];
+    int k;
+    while ((k = recv(s, b, sizeof b, 0)) > 0) got.append(b, (size_t)k);
+  }
+  closesocket(s);
+  CHECK(g_pages.load() == 1 && got.find("200 OK") != std::string::npos, "phone pages on this network: a page request goes to the web UI");
+  const std::string frame = direct_frame(key, studio, "chat", "{\"text\":\"hi\"}", "SSM1");
+  CHECK(raw(lp, frame) == -1 && std::string(direct_status()).find("not a web page request") != std::string::npos,
+        "phone pages on this network: a frame, even a well-signed one, is refused (only the web UI there)");
+  direct_lan(0, "");
+  CHECK(std::string(direct_status()).find("\"lan\":{\"bind\":\"\"") != std::string::npos && raw(lp, frame) == -2, "phone pages on this network: off again, nothing listens");
+  direct_set_http_handler(nullptr);
+}
+
 int main(int argc, char **argv)
 {
   setvbuf(stdout, nullptr, _IONBF, 0); // (each line as it's made: a run that stops says where)
@@ -948,6 +986,7 @@ int main(int argc, char **argv)
   CHECK(std::string(direct_status()).find("\"8.8.8.8:47281\":{\"ok\":false,\"ms\":-1.0,\"at\":") != std::string::npos &&
         std::string(direct_status()).find("isn't on Tailscale") != std::string::npos, "...but never connected to");
 
+  lan_tests(studio, key, port);
   live_layer_tests(studio, secret, key, port, peer, inbox, dir);
   audio_tests(dir);
 

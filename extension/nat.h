@@ -69,6 +69,7 @@ struct NatLinkConfig {
   void (*on_data)(void *user, const char *d, size_t n) = nullptr; // each opened datagram (juice's thread); null: queued for nat_link_recv
   void *user = nullptr;
   void (*on_stream)(void *user, const char *d, size_t n) = nullptr; // (stage 2) each opened stream segment (juice's thread); null: dropped
+  void (*on_sack)(void *user, const char *d, size_t n) = nullptr;   // (P13) each opened selective ack (juice's thread); null: dropped
   // (stage 3) the rendezvous over other links: the peer's message as another way brought it ("" none), this side's message handed on too,
   // and each opened signal fragment (juice's thread)
   std::string (*signal_in)(void *user) = nullptr;
@@ -101,10 +102,18 @@ void nat_hub_free(NatHub *h);
 int nat_hub_setup(NatHub *h, const char *json);
 void nat_hub_stop(NatHub *h);           // every link down, nothing configured
 // JSON: on, me, error, nat ("easy", "strict", "blocked", "unknown"), public, turn, relay_ok, restarts, signals { in, carried, forwarded, bad },
+// (P13) relay_answers, relay_bad (links it was given that failed through it, in a row), relay_hold (s it's held back), relay { wan (the
+// router's own WAN address by UPnP, the relay hub only), cgnat (that isn't the public address, or this computer's is 100.64/10), outside
+// (s since it last answered a public address; -1 never) }, per peer quiet (only for the hello) and turn (its link was given the relay),
 // relay { on, running, port, external, error, bytes, over_cap }, peers = { [device] = { state, path, local, remote, why, nopath, fails, up_s, sent, opened, refused, ... } }
 std::string nat_hub_status(NatHub *h);
 // The relay's password for a computer (its device id is the user name): only those with the studio secret can make it.
 std::string nat_relay_pass(const std::string &studio_key, const std::string &user);
+// An IPv4 address's kind (P13): 0 public, 1 private (RFC 1918), 2 shared / carrier-grade NAT (100.64.0.0/10), 3 loopback, link-local,
+// benchmark (198.18/15), multicast; -1 not an address.
+int nat_ip_class(const std::string &ip);
+// This computer's relay credentials as JSON {"user","pass"} for a browser's TURN (P13: the video-call pages); "" before a setup.
+std::string nat_ice(NatHub *h);
 // The relay's caps (process-wide: one relay per REAPER). libjuice's server sends every datagram through nat_relay_sendto (built with
 // -Dudp_sendto=nat_relay_sendto for server.c only: third_party/build_*), which drops what's over them.
 void nat_relay_caps(long long rate, long long rate_each);
@@ -141,19 +150,26 @@ unsigned long long nat_connect(NatHub *h, const char *dev, std::string &why);
 #define NAT_STREAMS 16        // streams per bandmate at once
 #define NAT_TRIES 10          // a segment sent this many times unanswered: the stream is dead (~20 s with the back-off)
 enum { NAT_F_OPEN = 1, NAT_F_FIN = 2, NAT_F_RST = 4 };
+#define NAT_SACK_MAX 4        // ranges in one selective ack (P13)
 // One stream's reliable, ordered bytes over datagrams: cumulative acks, a retransmit timer per segment (doubling to 3 s), a fast resend on
 // three repeated acks, a congestion window (halved on a loss), the receiver's window, a FIN each way. Pure: time is passed in, segments out.
+// Selective acks (P13, backlog 1.31): a receiver holding bytes past a gap says which (sack_due, sack_blocks) in a datagram of its own
+// (kind 4: an older extension ignores an unknown kind, so nothing changes for it), and the sender resends every gap at once (sack) instead
+// of one per three repeated acks and the rest at their timers: a loss no longer stalls the stream for a timeout.
 struct NatSeg { unsigned char flags; uint64_t off; std::string data; };
+typedef std::vector<std::pair<uint64_t, uint64_t>> NatSack; // [start, end) byte ranges held past the cumulative ack
 struct NatRel {
   std::string sbuf;               // bytes from `una` on: sent and unanswered, then not sent yet
   uint64_t una = 0, nxt = 0;      // the first unanswered byte, the next new one
-  struct Fl { uint64_t off; uint32_t n; double at; int tries; bool fin; };
+  struct Fl { uint64_t off; uint32_t n; double at; int tries; bool fin; bool sacked = false; };
   std::deque<Fl> fl;              // in flight, oldest first
   bool closing = false, fin_sent = false, fin_acked = false, need_ack = false, dead = false, heard = false;
   uint64_t fin_off = 0, peer_wnd = NAT_RCV_WND, adv = NAT_RCV_WND;
   double cwnd = 16, srtt = -1, rto = 0.3;
   int dup = 0;
   long long resent = 0, dropped = 0; // (segments sent again; segments refused here: past the window, past the FIN)
+  long long timeouts = 0;         // (rounds of resends by a timer: each halves the window after waiting out an RTO)
+  bool sack_due = false;          // (bytes arrived past a gap since the last selective ack: send one)
   uint64_t rcv = 0;               // the next byte expected
   std::map<uint64_t, std::string> ooo; // arrived ahead of `rcv`
   std::string rbuf;               // in order, not yet taken by the reader
@@ -165,12 +181,18 @@ struct NatRel {
   void took(size_t n);                   // the reader took n bytes from rbuf's front
   void input(unsigned char flags, uint64_t off, uint64_t ack, uint32_t wnd, const char *d, size_t n, double now);
   void pump(double now, std::vector<NatSeg> &out); // what to send now: new data, what timed out, an ack
+  NatSack sack_blocks();                 // the ranges held past the gap (NAT_SACK_MAX at most, lowest first); clears sack_due
+  void sack(uint64_t ack, const NatSack &held, double now); // the peer's selective ack: what it holds isn't resent, the gaps go again now
   uint64_t ack_no() const { return rcv + (rclosed ? 1 : 0); }
   uint32_t wnd() const { return rbuf.size() >= NAT_RCV_WND ? 0 : (uint32_t)(NAT_RCV_WND - rbuf.size()); }
   bool done() const { return closing && fin_acked && rclosed && rbuf.empty(); }
 };
 std::string nat_seg_encode(unsigned char flags, uint32_t id, uint64_t off, uint64_t ack, uint32_t wnd, const std::string &data);
 bool nat_seg_decode(const char *p, size_t n, unsigned char &flags, uint32_t &id, uint64_t &off, uint64_t &ack, uint32_t &wnd, const char *&data, size_t &dn);
+// A selective ack: stream u32, ack u64, count u8, then count x (start u64, end u64), big-endian. Decode refuses a count over NAT_SACK_MAX,
+// an empty or backwards range, one at or before the ack, and a size that doesn't match.
+std::string nat_sack_encode(uint32_t id, uint64_t ack, const NatSack &held);
+bool nat_sack_decode(const char *p, size_t n, uint32_t &id, uint64_t &ack, NatSack &held);
 #ifdef NAT_STANDALONE
 // The test: what a link sends of the streams' segments is dropped, doubled or held back behind the next one, at these rates (per mille).
 void nat_test_lossy(NatHub *h, int drop, int dup, int reorder);
@@ -185,6 +207,8 @@ void nat_test_only(NatHub *h, int only, const char *bind = nullptr);
 void nat_test_netchange(NatHub *h);           // as if this computer's network changed (Wi-Fi to tethering)
 void nat_test_carry(NatHub *h, bool on);      // rendezvous messages over other links (on by default)
 void nat_test_gap(int ms);                    // every link waits this long between having its keys and telling libjuice the peer's addresses
+void nat_test_relay_mute(bool on);            // (P13) every relay in this process answers STUN but relays nothing
+void nat_test_upnp(NatHub *h, const char *to); // (P13) the relay hub's UPnP search goes to this "ip:port" (a stand-in router), not the multicast group
 #endif
 #ifndef NAT_STANDALONE
 struct reaper_plugin_info_t;

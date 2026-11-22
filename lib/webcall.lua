@@ -82,13 +82,21 @@ function webcall.model(me, now, live)
   for i = #q, 1, -1 do if now - q[i].time >= webcall.KEEP_FOR then table.remove(q, i) end end
   for _, m in ipairs(q) do msgs[#msgs + 1] = m end
   dirty = false
-  return { boot = webcall.boot, me = me, open = list, msgs = msgs, live = live and true or nil }
+  return { boot = webcall.boot, me = me, open = list, msgs = msgs, live = live and true or nil, ice = webcall.ice() }
+end
+-- (P13, backlog 3.2 A) The pages' ICE servers: with the studio's connection without Tailscale on, its STUN servers and the studio's relay as
+-- TURN (lib/nat.lua ice), so two browsers that aren't on each other's Tailscale or network still meet; nil otherwise (host candidates only,
+-- as over Tailscale). For the studio webcall.me was last asked about (lib/webui.lua's tick asks it right before the model).
+local ice_root
+function webcall.ice()
+  local ok, list = pcall(function() return ice_root and require("nat").ice(ice_root) end)
+  return ok and list or nil
 end
 function webcall.dirty() return dirty end
 function webcall.reset() q, seq, open, dirty, view_until, view_at = {}, 0, {}, true, -math.huge, -math.huge end -- (tests)
 
 -- ---- Live sync's side (lib/webui.lua's tick) ---------------------------------------------------------------------------------------------
-function webcall.me(cfg) return { user = cfg.user, dev = require("services").my_device_id() } end
+function webcall.me(cfg) ice_root = cfg.root; return { user = cfg.user, dev = require("services").my_device_id() } end
 -- ---- a screen share's extras (rt-share; lib/webui/call.js) -------------------------------------------------------------------------------
 -- Two of a page's messages stay on this computer: "duck" (watching a bandmate's share with its sound: their live Play is in that mix, so it's
 -- muted here meanwhile, lib/liveaudio.lua ducks) and "view" (this computer is sharing its screen: Live sync publishes REAPER's arrange view

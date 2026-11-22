@@ -11,6 +11,9 @@ Rule (James, 2026-11-21): a blocked link, lost packets or latency are made **ins
 | `lab.sh` | desktop (Git Bash) | `vms`, `start`/`stop`/`ip` `x`/`x2`, `clone NAME`, `net x/x2 ...`, `identity x2 NAME`. `x` = LinuxBox, `x2` = LinuxBox2. IPs from `vmrun getGuestIPAddress`, or set `X_IP` / `X2_IP`. |
 | `netlab.sh` | inside a VM (root) | `block`, `unblock`, `shape` (netem delay, jitter, loss, rate, reorder), `undo`, `status`. Idempotent; every change prints a `changed:` line, a repeat prints `already ...`. |
 | `vm_identity.sh` | inside the clone (root) | hostname, machine-id, ssh host keys, Syncthing keys, StudioSync device key. Refuses if Syncthing or Tailscale runs there; `lab.sh` refuses to run it on LinuxBox. |
+| `routerlab.sh` | inside RouterBox (root) | the router VM for Connect without Tailscale (rt-p13): NAT kinds `open`, `restricted`, `symmetric`, `cone`; the relay's port forward (`on`, `stun`: 47298 only, `off`); hairpin; `double` (a carrier's NAT in front: CGNAT); a new WAN address. Idempotent (renders one nftables table). Not run yet: RouterBox isn't built (docs/rt/rt-nat3.md round 2). |
+| `stun.py` | the lab's "internet" side | a STUN binding responder (stdlib Python): two on two ports let the extension tell the NAT kinds apart without the internet (band.json `nat_stun`). Checked on the desktop with `--check`. |
+| `fake_igd.py` | RouterBox's `home` namespace | a stand-in router's UPnP (SSDP, description, GetExternalIPAddress) naming a WAN address, for the relay hub's CGNAT check. Not run yet. |
 
 ```bash
 cd tools/lab

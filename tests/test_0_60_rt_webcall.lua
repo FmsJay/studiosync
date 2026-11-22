@@ -129,7 +129,7 @@ assert(app:find("dispatchEvent(new CustomEvent('ss-state'", 1, true) and js:find
   "call.js reads app.js's snapshot, the rtc topic")
 for _, t in ipairs({ "here", "offer", "answer", "bye", "busy" }) do assert(js:find("t: '" .. t .. "'", 1, true), "call.js sends " .. t) end
 assert(js:find("topic: 'rtc'", 1, true) and js:find("'X-StudioSync': '1'", 1, true), "as an rtc action, with the server's header")
-assert(js:find("iceServers: []", 1, true), "no STUN or TURN: nothing outside")
+assert(js:find("iceServers: model && Array.isArray(model.ice) ? model.ice : []", 1, true), "no STUN or TURN but the model's (only with the connection without Tailscale on, rt-p13): nothing outside over Tailscale")
 assert(js:find("getDisplayMedia", 1, true) and js:find("audio: sys ?", 1, true), "the screen's own audio only when System audio is picked (rt-share)")
 assert(not js:find("innerHTML", 1, true) and not js:find("insertAdjacentHTML", 1, true), "bandmates' names go in as text")
 assert(js:find("You’re sharing your screen", 1, true) and js:find("'Stop', stopSharing", 1, true), "the sharing bar says so, with Stop")

@@ -41,7 +41,8 @@ function removal.publish(root, user, id, ts, keep)
   local okn, n = pcall(function() return require("nat").entry(root, ts ~= nil) end)
   n = okn and n or nil
   local hn = type(d) == "table" and d.device == id and type(d.nat) == "table" and d.nat or nil
-  local same_nat = (n == nil and hn == nil) or (n ~= nil and hn ~= nil and hn.pub == n.pub and hn.tailnet == n.tailnet and hn.relay == n.relay)
+  local same_nat = (n == nil and hn == nil) or (n ~= nil and hn ~= nil and hn.pub == n.pub and hn.tailnet == n.tailnet and hn.relay == n.relay
+    and hn.relay_reach == n.relay_reach and hn.cgnat == n.cgnat) -- (rt-p13: whether its relay was reached from outside, or is behind CGNAT)
   -- (and this computer's signing key, lib/signed.lua: what the others learn its signatures by once they believe this file. rt-linkfirst)
   local okk, key = pcall(function() return require("signed").key() end)
   key = okk and key or (type(d) == "table" and d.device == id and d.key) or nil
