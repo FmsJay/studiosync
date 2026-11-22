@@ -550,3 +550,96 @@ positions, tempo 130, room back to Claims): desktop = LinuxBox = LinuxBox2 = the
 **Left for the next re-check.** Answer the laptop's box and compare the three; the laptop's part of the soak (re-run with the MB stub); 8 (c)
 with the panel's Restore; 10 (a copied stand-in, needs a take); 12's patched build (only in a non-synced copy); 7's Health on all four;
 P1-9..P1-16 as listed in rt-p1.md.
+
+## rt-fix9: the fixes for rt-r4's findings (2026-11-22)
+
+Files: `lib/mirror.lua`, `lib/sync.lua`, `lib/undo.lua`, `lib/claimask.lua`, `tools/soak/node.lua`, `tools/soak/soak.py`; tests: parts 32-36
+of `tests/test_0_60_rt_converge.lua` and an assert in its part 22; one line each in `tests/test_0_60_rt_converge.lua` and
+`tests/test_0_60_rt_merge.lua` (`undo.confirm` in place of their `reaper.MB` stub). No shared file touched (`StudioSync - Live sync.lua`,
+the panel, the web UI, `tests/fixtures/editreaper.lua`). **Nothing here was run in REAPER**: the re-checks are at the end. Each fix's test
+was run against a copy of the repo with that one fix taken out: each fails there with its own assertion (A, B's two halves, 4a-4d, the
+Undo ask, and the merge's own-base condition).
+
+**A. A rename made at the same moment as a bandmate's change to that track was lost on the renamer's computer.** The bandmate's track
+version, built on the old name, was applied whole over a rename no look had seen yet. Why Live sync's gate (`sync.seen_mine`) let it
+through isn't proven: the desktop log shows the laptop's change landing and no look of the desktop's rename at all (`05:35:15`, `05:37:30`),
+so the receive ran before any look saw the rename. The fix doesn't depend on that answer: `mirror.receive` now holds a bandmate's track
+change while the track's settings here differ from what the last look read or a change put in place (`mirror.track_seen`, compared by
+`mirror.track_line`, so the track's place in the list doesn't count), exactly as commit 16 holds a plug-in chain for an unseen knob. The
+look then sends the rename built on the version both came from and the two merge by setting (`merge_track`): name and fader both stand.
+It covers every setting a track object carries, so the other track-level attributes asked about (colour, mute, volume and pan, lanes,
+phase, automation mode) have the same hold; solo is each person's own and never travelled. Items and automation were already held by
+`mirror.unsent` and the gate; nothing changed there. Cost: one `track_state` read per incoming track change, one `track_line` per track
+per look. A held change waits one look (`mirror.unsettled` makes Live sync look at once).
+
+**B. A tempo change made after a bandmate's auto-claimed XT Rec A.** Of the 11 changes the desktop sent at 05:24:04 and 05:27:48 (8 takes,
+the automation, XT Keys C's and XT Drums A's items) one of XT Rec A's was judged "not only the map's move" by `mirror.only_map_moved`,
+which compares this computer's reading with the band's text, here LinuxBox's. The items can't be it: they read back byte for byte as
+LinuxBox sent them (no "came out different" in the log). The automation, the one object only XT Rec A has, is compared by
+`env_sans_tempo` text equality, and the likely cause is that LinuxBox's REAPER writes a point's line its own way and the desktop's rewrites
+it in its own once its tempo change moves the points. Likely, not proven: no log names the object. Two changes, so a tempo change can't
+claim either way:
+- `mirror.env_same_but_times`: automation compared line by line and number by number (other digits, trailing fields that are absent read
+  as 0). Used by `only_map_moved`, `map_landing` and the new check below. `env_sans_tempo` also leaves out automation items' places and
+  their points' times (`BANDAI` / `BANDAIPT`), which a tempo change moves too.
+- `mirror.moved_by_map` in `W.send`: an item or automation that was the band's at the last look (`L.clean`) and differs since only as the
+  map moved it (that look's reading, kept in the quick look's record, retimed from that look's map, `N.map`, to this one) is the map's
+  move, whatever the band's text says. It reads only this computer's own two readings, as `map_landing` does for a bandmate's map. An
+  automation item's lines aren't in the look record, so automation with automation items still goes by the band's text.
+A version that went out as only the map's move says so (`retimed = true`), which 4b uses.
+
+**3. StudioSync's Undo asked with a modal `reaper.MB`.** Chosen: no box at all, the panel's existing ask bar plus "press it again".
+`undo.step` notes the ask per tab (ExtState `undo ask <proj>`: the change, Undo or Redo, the words, 30 s), says it in the log and in a
+tooltip by the mouse when the panel isn't showing, and returns. The same Undo (or Redo) pressed again within `undo.ASK_WAIT` = 30 s is
+Yes; the panel's bar shows the ask with Yes / No (`claimask.bar`, beside the claim asks it already draws), and Yes goes to Live sync
+through ExtState `undo answer <proj>`, which `claimask.tick` carries out (`undo.step` with `confirmed`). No answer is No: nothing changes
+and the ask runs out. The panel's own Undo (which always asks) asks the same way. Nothing in Live sync's loop waits on it. Not done: the
+web page doesn't show the Undo ask (it would need `lib/webui.lua` and `app.js`, which have other agents' uncommitted edits); a timed-out
+modal wasn't needed. Tests replace the answer with `undo.confirm`; the soak presses the key a second time, and its `reaper.MB` now records
+an error if anything opens a modal box.
+
+**Small ones.**
+- **(a) "now 130 bpm".** An Undo or Redo of a tempo or marker change now says what that change changed against the timeline it was made on
+  (`sync.timeline_words`, sharing `undo_timeline`'s choice of "the version before"): "undo: changed the markers", "changed the tempo map
+  (130 -> 100 bpm)". History's own words stay as they were.
+- **(b) "theirs stands" on the computer that only changed the tempo.** Check 1's XT Keys C: the version both sides came from was made
+  before versions named their map, so the tempo-maker's re-sent version (only REAPER's move) read as changing the item's timing, and the
+  bandmate's move "clashed" with it. Where the map's side won the order it was worse than the words: the hand's move was lost. Now a side
+  that says `retimed` and builds straight on the shared version brings nothing to the merge but the map (`mirror.event_file`: its state is
+  taken as the base's), and nothing is said on its maker's computer. A side built on a change of its own made since keeps that change.
+- **(c) A renamer's auto-claim outlived the track's return.** `sync.drop_gone_claims` lets an auto-claim on a track name nothing has go at
+  once (a lasting claim still waits `sync.GONE_WAIT`). This also ends rt-converge's "a track deleted by StudioSync's Undo keeps its
+  auto-claim until it idles out".
+- **(d) One tempo marker to a place.** The soak's stand-in now does what check 9 found: an insert (`SetTempoTimeSigMarker` with index -1,
+  or `AddTempoTimeSigMarker`) at a marker's time does nothing and says true; changing a marker by its index still changes it. Done in
+  `tools/soak/node.lua`, not the shared `tests/fixtures/editreaper.lua`; `soak.py --selfcheck` (run by `--quick`, so by `tests/run.py`)
+  checks it. In lib, `band.apply_tempo` and `lib/histhear.lua` delete every marker and insert the map's points with index -1: only a map
+  with two points at one time would come out differently in REAPER (the first kept), and `band.capture_tempo` never reads one. Nothing
+  relies on the stand-in's old behaviour. Not checked in REAPER: whether `SetTempoTimeSigMarker(-1)` at a marker's time is ignored as
+  `AddTempoTimeSigMarker` was (assumed the same).
+
+**Not fixed here:** P1-4's two contradicting lines for a raw knob ("both changes go in" and "asked ... to release" in the same second),
+seed 15033 of the long run below (an item's length differs on one computer, pre-existing), and the soak can't catch bug A (a lost edit
+converges: the oracle has no idea of intent), so there's no soak scenario for it; parts 32 and 33 are the scenarios.
+
+**Review-later (security).** `retimed` on a change is a bandmate's word: it only makes that sender's own side count for nothing in a merge
+(no power over anyone else's change). The Undo ask is ExtState on this computer only.
+
+**Soak.** `python tools/soak/soak.py --long --minutes 10 --no-shrink --first 15000`, 150 edits a seed, from clean clones: before (9018131)
+44 seeds, 43 passed (97.7 %; 15033: an item's length differs between James and Cee); after: SOAK_AFTER.
+
+**REAPER re-checks for rt-fix9.**
+1. **A again** (check 4): the desktop renames a track in the same moment the laptop moves that track's fader (timed on the shared clock, as
+   rt-r4). Pass: both computers end with the new name and the laptop's fader; the desktop's log has its "1 change(s) went"; no "which you've
+   claimed". Then the same with a colour change and a mute instead of the rename.
+2. **B again**: LinuxBox changes the first tempo; once it has landed, the desktop changes it. Pass: no "claimed XT Rec A" on the desktop
+   (three tries). Then the desktop changes the tempo and moves an automation point on XT Rec A in one undo block: claimed, as an edit.
+3. **The Undo ask**: the desktop moves the laptop's item, the laptop renames it, the desktop presses StudioSync's Undo (Ctrl+Z). Pass: no
+   box; a tooltip and the log say "... Press Ctrl+Z again within 30 s"; Live sync carries on (a bandmate's edit lands meanwhile); Ctrl+Z
+   again undoes it. Again with the panel open: its bar shows the ask with Yes / No; Yes undoes it, No and silence leave it.
+4. **(a)**: rename a marker, have a bandmate change the first tempo, Undo: the log says "undo: changed the markers", no bpm.
+5. **(b)**: check 1 again with XT Keys C: no "theirs stands" and no "as you did" on the desktop; LinuxBox's move stands everywhere.
+6. **(c)**: P1-6 again (the desktop deletes XT Gtr while the laptop renames it, then the desktop's Ctrl+Z): the laptop's Who controls has no
+   claim on "XT Gtr renamed" within 10 s of the track's return.
+7. **(d)**: run "Insert tempo marker" (the action, not the API) at an existing marker's place with another tempo; and
+   `SetTempoTimeSigMarker(proj, -1, t, ...)` at an existing marker's time. Pass: one marker, the first tempo, for both.
