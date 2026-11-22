@@ -6588,7 +6588,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     if p.t and p.t.obj == "track" then place(p) elseif not placed[p] then placed[p] = true; sorted[#sorted + 1] = p end
   end
   list = sorted
-  local done, refused, kept, kept_names, there, waiting, edited = 0, 0, 0, {}, 0, 0, 0
+  local done, refused, kept, kept_names, there, waiting, edited, gone_since = 0, 0, 0, {}, 0, 0, 0, 0
   local now_map -- (the tempo map in place, read once: opts.map_of below)
   local function one(p)
     local rev, h, evid = mirror.known(proj, p.oid)
@@ -6667,6 +6667,11 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     elseif theirs_new then
       kept = kept + 1
       kept_names[name ~= "" and name or "an unnamed track"] = true
+    -- (an Undo or Redo of your change to something a bandmate deleted since: their deletion stays, as what they changed since stays. It
+    -- brought the deleted item back for everyone, as it was before your edit; Undo then Redo left an item the song didn't have. A Restore
+    -- still brings back what it's asked to. The soak's undo probe, seed 113. rt-converge)
+    elseif p.t and (opts.undoes or opts.redoes) and last and last.gone and last.user ~= cfg.user then
+      gone_since = gone_since + 1
     elseif mine_gone then
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
       if ok then
@@ -6732,7 +6737,8 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     if done == 0 and there > 0 and refused == 0 and kept == 0 and waiting == 0 and edited == 0 then return "it's already back: REAPER rebuilt it from its pass, so nothing changed", 0 end
     -- (and how many, for lib/undo.lua: an Undo that took nothing back leaves nothing to redo. rt-converge)
     return string.format("%d change(s) brought back and sent to the others%s%s%s%s", done, refused > 0 and string.format(" (%d not yours to change, left as they are)", refused) or "",
-      kept > 0 and string.format(" (kept what collaborators added since: %s)", table.concat(names, ", ")) or "",
+      (kept > 0 and string.format(" (kept what collaborators added since: %s)", table.concat(names, ", ")) or "")
+        .. (gone_since > 0 and string.format(" (%d deleted by a bandmate since, left deleted)", gone_since) or ""),
       edited > 0 and string.format(" (%d left as they are: you've changed them here since, and that hasn't gone out yet. Let it go out, or undo it, then do this again)", edited) or "",
       waiting > 0 and string.format(". %d couldn't change here yet and weren't sent (plug-ins change only while stopped, and plug-ins, automation and sends only with this project's tab in front; an item may still be arriving, or open in the MIDI editor): do it again then", waiting) or ""), done
   end

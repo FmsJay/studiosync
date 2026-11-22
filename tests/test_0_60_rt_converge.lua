@@ -491,7 +491,25 @@ do
   assert(u:find("^0 change") and u:find("not yours to change"), "the next Undo reaches the move on Keys, Cee's now: nothing taken back (" .. u .. ")")
   r = step2(true)
   assert(r:find("took nothing back") and S2.items(J, "Drums") == 0, "and the Redo after it redoes nothing (was: it redid the Undo before, and the item was back): " .. r)
-  print("rt-converge 8: a Redo takes away what your own Undo brought back; Undo and Redo of a change built on a merge keep the merge; no Redo after an Undo of nothing")
+  -- d. an Undo of your edit doesn't bring back what a bandmate deleted since
+  local S4 = studio("Conv8d", "everyone")
+  local P, Q = S4.computer("James"), S4.computer("Bee")
+  S4.edit(P, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)) end)
+  S4.recv(Q)
+  T = T + 2
+  S4.edit(Q, function(F) reaper.SetMediaItemInfo_Value(S4.track(Q, "Keys").items[1], "D_POSITION", 5) end)
+  S4.recv(P)
+  T = T + 2
+  S4.edit(P, function(F) reaper.DeleteTrackMediaItem(S4.track(P, "Keys"), S4.track(P, "Keys").items[1]) end)
+  S4.recv(Q)
+  assert(S4.items(Q, "Keys") == 0, "James deleted the item Bee had moved: gone on Bee's")
+  S4.as(Q)
+  Q.F.clock = Q.F.clock + 1
+  T = T + 2
+  u = tostring(undo.step(Q.F.proj, Q.cfg, S4.b, false, {}))
+  S4.settle(Q)
+  assert(S4.items(Q, "Keys") == 0 and u:find("deleted by a bandmate since"), "Bee's Undo of her move leaves his deletion (was: the item came back for everyone, as it was before her move): " .. u)
+  print("rt-converge 8: a Redo takes away what your own Undo brought back; Undo and Redo of a change built on a merge keep the merge; no Redo after an Undo of nothing; an Undo doesn't revive what a bandmate deleted")
 end
 
 -- ---- 9. the studio's track order is the order everyone landed (the soak's late joiner, "track order differs") ----------------------------------
