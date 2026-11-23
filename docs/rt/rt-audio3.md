@@ -521,3 +521,33 @@ of that, and for each other within +-300.
     devices' rates from the whole sound (9 s). On the desktop's device that alone is +-0.3 % of noise. Take `stamp_rate` over the tone's
     own span (`tone_scan` knows where it found it), and report the latency's slope over the pattern beside it: a real speed error moves
     the latency, wobble doesn't.
+
+### Left: the Mac CI job's `vm` test (run 45122848964, 4 attempts of 4; stopped here on the usage limit, found so far, not fixed)
+
+What fails there: `vm`'s "no re-buffer and no gap once settled" in all four, its pitch check in two. Attempts 1 and 4: V's buffer underran
+once after 15 s (quietest 10 ms RMS 0.000, the tone at 437.45 for 439.94, size 130). Attempts 2 and 3: no underrun, shed or overrun
+counted, a near-silent 10 ms (RMS 0.001 and 0.008), the pitch right. The test's own stall was 4-10 ms, under the 15 ms that
+`check_unless_stalled` passes over. Windows (164 checks) and Linux pass.
+
+Found, on Windows, with V's receive hold made a few ms longer than its callbacks' hold in a scratch copy of the test (what the hosted
+Mac's 1 ms sleep, 5-13 ms long, does to `rt_test_hold`: the comment at `tick_ms`):
+- **13 ms longer: 1.0.39 and round 3 both fail the same way** (underran 1, RMS 0.000, 436.53 and 437.50 Hz, size 130): the Mac's
+  attempts 1 and 4 to the number.
+- **8 ms longer: 1.0.39 fails (437.36 Hz, underran 1) and round 3 passes** (439.99 Hz, no underrun, RMS 0.349).
+- So round 3 isn't the more fragile of the two here, and nothing points at the settle or the bound under the Mac's timing: which one
+  fails goes with where the hold's extra length falls against V's bursts. The test runs the burst that was due during a guest hold at
+  `held_until`, while V's receive thread is still inside its hold (it ends on a 1 ms sleep, and `rt_test_hold` counts from a later
+  now than the test's `due`): ten blocks drain the buffer before the packets held are let in. The test's loop doesn't see that, so
+  its stall detection says nothing. 1.0.39 was green on the Mac by where its level happened to sit.
+
+Not explained yet: attempts 2 and 3 (a dropout with nothing counted). Best guess, not checked: the same dry burst just before the 15 s
+mark, its re-buffer falling after it, or at the very end, where AOO counts the underrun only once packets come again.
+
+To do (nothing below is done or tested):
+1. Fix the test, not the code: either hold V's callbacks until its receive hold has really ended (`held_until = due + ms / 1000` plus
+   `tick_ms()`, so the race is gone on every platform), or pass the two checks over on coarse timers (`coarse()`, as the other checks
+   that count what one hold costs do). The first keeps the check meaningful on the Mac.
+2. Run it on Windows with the scratch variant at 0, 8 and 13 ms (it must pass at all three), then the Mac CI job.
+3. Explain attempts 2 and 3 from a Mac log with V's `underruns` printed for the whole run, not only from 15 s.
+4. The real question behind it stays open for a real VM: after a guest hold, callbacks that resume before the network thread run the
+   buffer dry once; the adaptive size then grows 10 ms. Worth a line in the re-check on LinuxBox (underruns after a hold, size).
