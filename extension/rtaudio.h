@@ -41,6 +41,9 @@ void rt_test_drift(RtLink *l, int resample);
 // tests only: the times this computer hands AOO made to run wrong by ppm on purpose (rt-r1's laptop read its sinks' rate 1.5-2 % off: the
 // read-rate control must still match what arrives). rt-fix6b
 void rt_test_clock_bias(RtLink *l, double ppm);
+// tests only: what this computer's Talk stream from that peer has learned of its ratio is set to ppm, as if it had learned it (rt-r6's
+// desktop held +29673 for the muted laptop; no link in the lab makes it). rt-audio3
+void rt_test_ratio(RtLink *l, const char *peer, double ppm);
 // tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate; handed: how
 // far the times AOO was handed ran from the nominal ones, ppm (0: nothing reads at the estimate. rt-audio3).
 double rt_test_clock(const double *t, int n, int len, double srate, double *handed = nullptr);
