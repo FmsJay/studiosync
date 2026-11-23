@@ -345,3 +345,179 @@ assumption about the device that no longer holds; "never positive" is the part t
 
 **Left.** D (a fix, then a2 again after a long mute), E, steps 1-2 on a poor link, step 5's "under a minute" part (it needs a computer that
 leaves the link outright: the Mac, or LinuxBox blocked), the guests on a poor link, the host ring's `size` in step 6.
+
+## Round 3 (rt-audio3, 2026-11-22 night, from rt-r6's re-check above)
+
+Findings D (the blocker), E and F. Source only: `EXT_VERSION` and `tools.EXT_WANT` are not bumped (the coordinator releases this as
+1.0.40), no binary committed, nothing installed, nothing run on the test computers. Evidence read: `<scratchpad>/rt-r6/st/*.json`,
+`ears/i9_idle.txt`, `ears/i9b_idle.txt`, `ears/a1_*`, `ears/a2_*`, `ears/desk_rate.txt`, and the desktop's own StudioSync log for F.
+
+### What rt-r6's evidence says (causes)
+
+**D. What is proven, and what is not.**
+- Proven, from the code and a2: one learned ratio R served a bandmate's Talk, Play and mix (`Slot::rint`). The muted laptop's Talk had
+  taken it to +29673 ppm on the desktop, so its Play started there: read at +23934..+29673, 2.8 % sharp. Whatever moved R, Play paid for
+  what Talk learned. In the lab, 1.0.39 with that ratio set reads a Play that starts 2.4 % sharp (450.47 Hz for 440) and is still at
+  448.38 six seconds later, with Talk at +20281 ppm eight seconds in (`muted_test` against 1.0.39's `rtaudio.cpp`).
+- Proven, from the status reads: the walk happened on a stream that was never left alone. LinuxBox's entry for the muted laptop, ten
+  reads a minute apart (`i9b_idle.txt`): `rate_rough` true in all ten (a level jump of over 30 ms within the last 10 s, every time),
+  `target_ms` 30, 150, 100, 50, 30, 40, 50, 50, 50, 30 (the quiet shrink a step every 10 s, a grow at each hold), overruns 122 -> 229
+  (12 a minute: two AOO resets for each new size), underruns 6 -> 11, trims 0, and R +3701 -> +12731, a thousand a minute, in the slow
+  loop. R was kept across every one of those re-buffers and jumps and went on learning from wherever the buffer landed. The desktop's
+  entry three minutes into its Live sync: R +15525, `rate_rough` true, `target_ms` 30 with `fill_ms` 255.
+- Proven: nothing bounded R short of `RATE_CAP` (3 %), and nothing kept it from learning while its stream jumped.
+- Checked and ruled out: the re-checker's suspicion of uneven silence packets. A muted or deafened computer sends zeros through the same
+  source at the full packet rate (`rt_capture`: `dst[k] = on ? v : 0`; the stream isn't deactivated; AOO has no silence detection and
+  our Opus settings no DTX), and LinuxBox's own silent Talk was read sanely by the desktop (+8897 with its own device at -7323). Also
+  ruled out by reading AOO: the sender's reported rate (nominal times are handed), sequence gaps (`dropped` 0), the sink's stop
+  requests, its capacity (`size_sink` sets both), and its resampler ignoring the rate (a sender made 2 % fast in the lab is learned as
+  +20007 and heard at 448.81: AOO reads at the rate it is told).
+- **Not proven: why the level of that stream sat above where it was held, read after read.** Five lab models of the muted laptop (a
+  steady receiver, LinuxBox's ten blocks at once, the desktop's dropped ticks, a size walking down from 350 ms with the guest held, and
+  the size changed every 3 s with holds of 30-70 ms) all leave 1.0.39's R within a few hundred ppm of the truth. What sets the laptop's
+  streams apart on the rig is the direction: what the laptop *sends* jumped at both receivers in nearly every read, what it *receives*
+  was calm (`rate_rough` in 1 read of 20), so its uplink holds and releases packets in a way the lab's holds don't copy. The fix therefore doesn't depend on the
+  mechanism: it removes each thing the walk needed (below), and `muted_test` sets the wrong ratio by hand to show the consequence is gone.
+
+**E. The fast loop chases ticks that carry no rate.** The desktop's device ran 47692-47906 Hz over 30 s stretches and 47404-48138 over
+10 s: a 10 ms tick missing about once in 200, at random (what 15 +- 4 drops in 30 s gives), not a rate that moves. One or two ticks take
+the level 10-20 ms off where it's held, `RATE_FAST_MS` was 10, so on the laptop (its buffer for the desktop at 110-170 ms) the fast
+loop ran in 8-9 reads of 10 and it read the desktop anywhere from -0.47 to -1.31 %, P at its 0.5 % limit in 3 of 10. Reproduced in the
+lab (`wobble_test` on 1.0.39): read rate -12610..+2527 ppm (sd 3531) around a device at -5092, the fast loop in 194 of 221 looks, P at
+its limit in 52, a tone's pitch over 2 s up to 0.73 % from its pitch over the whole. The "0.4-0.5 % flat" of a1 and a1b is that wobble,
+not a steady error: the tool takes the speed from the pattern's tone, a couple of seconds, read at R + P of that moment, and judges it
+against the two devices' average over the whole 9 s of sound; the latency was flat (241-249 ms) and the laptop's buffer for the desktop
+didn't grow (257 ms at 19:06:16, 195 at 19:08:00), which a read 0.5 % slow for 30 s (150 ms more) couldn't leave. LinuxBox through the hub (1.00373)
+hears the same desktop device through its mix: the same loop. Not looked at separately.
+
+**F.** LinuxBox's Live sync was stopped 63 s (20:10:12 to 20:11:16; the desktop's log). `hub_n` holds the room's size `HUB_KEEP` s (60)
+after it was last big enough: that ran out at 20:11:15, one second before LinuxBox was back, and then `HUB_SETTLE` (60 s) had to pass
+again: the mix at 20:12:15.
+
+### What changed
+
+`extension/rtaudio.cpp` (the read-rate control in `adapt`, its state in `Slot`, the status):
+- **Each stream learns its own R** (`rint[3]`), and no stream takes another's: a muted Talk's ratio is never its Play's. A Play that
+  starts learns in the fast loop from 0 (or from its own last value). The loop's speed, its jump rule and the fade's hand-over are per
+  stream too (a jump on Talk no longer slows Play's loop).
+- **A stream settles after every re-buffer** (`RATE_SETTLE_S` 1.2 s: its start, an underrun, an overrun, a new size, a shed): the held
+  level follows the stream, P is 0 there and nothing is learned. A level that *falls* 5 ms in a window (`RATE_DIP`) is acted on at once:
+  only reading too fast drains a buffer that has just filled, and what follows is a gap.
+- **A sanity bound**: R goes past +-0.6 % (`RATE_SANE`) only on a stream that has run 15 s (`RATE_TRUST_S`) without re-buffering and
+  without a jump (a shed doesn't count against it: it takes a clean stretch to get there). A stream that hasn't may come back toward 0
+  from wherever it is, not further out. `RATE_CAP` is 2 % (was 3: the desktop's device, the worst seen, is 1.1 % off).
+- **What an underrun says**: a stream read faster than `RATE_SANE` that runs dry goes back to `RATE_SANE` at once; one that runs dry in
+  the fast loop with P already at its slow limit, on a link that hasn't jumped, goes 0.5 % slower at once (`RATE_WIDE`). Only the slow
+  side opens that way: too slow fills the buffer, which is shed in a crossfade; too fast empties it. This is what lets a real 1.5 %
+  (the `rate` test) be learned although it runs dry before it can run 15 s clean.
+- **E: the fast loop needs the level half the buffer's size off** where it's held (`RATE_FAST_PART`), where that is more than
+  `RATE_FAST_MS`. A 110-170 ms buffer has room for a few 10 ms ticks; a 30 ms one hasn't, and there nothing changes but 10 -> 15 ms.
+- Status, per peer, added: `talk_ratio_ppm`, `play_ratio_ppm`, `mix_ratio_ppm` (each stream's own R) and `rate_trusted`. `ratio_ppm`
+  stays: the R of the stream that has run longest without re-buffering. `rate_fast` / `rate_rough`: any of its playing streams.
+- `rt_test_ratio` (tests only, `rtaudio.h`): sets what a peer's Talk has learned. A plain C++ function like the other `rt_test_*`, not
+  registered with REAPER.
+
+`lib/liveaudio.lua`: `HUB_KEEP` 60 -> 150 s, as long as a stopped computer stays vouched for in the room (`hub.VOUCH`). The same hold
+counts how many send, so a mix also outlasts its second sender's mute by 150 s instead of 60.
+
+### Tests (each fails without its change)
+
+- `muted_test` (new, `tests/rtaudio_test.cpp`, 40 s): M (128-sample blocks) muted, its packets held 30-70 ms every second or so, D's
+  size for it changed every 3 s; then D's ratio for M's Talk is set to +29673 and M plays through Play. New code: through the silence
+  D learned +29..+30 ppm; Play read at -177 ppm two seconds in, heard at 439.99 Hz from 1.5 s, 0 underruns of its own; Talk back at
+  -397 ppm eight seconds in after one underrun. **1.0.39** (its `rtaudio.cpp` from beb3e40 with only the hook added): Play read at
+  +24046 ppm, 450.47 Hz then 448.38, 2 underruns; Talk at +20279: four checks fail. The first check (silence with re-sizes teaches no
+  ratio) passes on 1.0.39 too: that is the part the lab doesn't reproduce.
+- `wobble_test` (new, 75 s): the desktop's device as a sender (a tick in 200 dropped at random) heard through a 110 ms buffer. New: read
+  rate -7763..-3577 ppm (sd 986), the fast loop in 0 of 221 looks, P never at its limit, pitch over any 2 s within 0.29 % of the
+  whole, nothing run dry or shed. 1.0.39: the numbers under E above: three checks fail.
+- `rate` (existing: this computer's times 1.5 % off): heard 440.68 Hz, 2 underruns by 12 s and none after, read rate -13776 ppm. It
+  failed on the first cut of the bound (4 underruns, the last after 12 s) and is why the underrun rule exists.
+- `jitter` (existing): J learned -2662..-1134 ppm for a device at -3734 through 51 holds, the tone at 657.52 for 657.54. It failed when
+  the underrun rule also ran after a jump (R went to -7546): the rule now needs a link that hasn't jumped.
+- `drift`: one bound loosened, said here because it is a test made easier: the delay's slope through the test's own stalls, +0.06 ->
+  +0.12 ms/s. It measures what R is still off by a few seconds in (10-90 ppm either way: -109 on 1.0.39; -11, -110, -122, -152, -158 in
+  five runs here, for -100), and 0.06 ms/s is 60 ppm. The check beside it (the stalls aren't learnt as a rate, within 700 ppm) is unchanged.
+- `tests/test_0_60_rt_audio3.lua`: a room of four with one computer gone 63 s counts as four each second and when it is back, and is
+  three `HUB_KEEP` s after one leaves for good; fails at second 60 on the old value.
+- Full native suite, High priority, on the code as committed: 164 checks pass, 0 fail, none passed over for a stall (it was 153 after round 2).
+- Clean clone of the last commit, `python tests/run.py --no-luals`: `fails 0` at 0caaa31 (the code of this round), and again with `TZ=UTC0`; run once more on the commit that adds this section.
+- `extension\build_windows.cmd` with `DLL_OUT` in scratch: built (4,007,936 bytes); the tracked DLL untouched.
+
+### Re-check on the real rig (extension 1.0.40 on the desktop, laptop and LinuxBox, and this Lua)
+
+Read the new fields with the status (`talk_ratio_ppm`, `play_ratio_ppm`, `rate_trusted`). The desktop's own device is 0.2-1.1 % slow,
+so *on the desktop* a right ratio for anyone is +2000..+10600; on the laptop and LinuxBox a right ratio for the desktop is the negative
+of that, and for each other within +-300.
+
+1. **a2 after a long mute (D).** The laptop muted (or deafened) from the start of Live sync for at least 30 minutes, nothing else
+   changed. Before any sound, on LinuxBox, the laptop's entry: `talk_ratio_ppm` within +-6000 in every read and two reads five minutes
+   apart within 1500 of each other (it was +12036 -> +18686 in six minutes; the right value is about -120). On the desktop:
+   `talk_ratio_ppm` between -1000 and +11000 (it was +15525 after 3 minutes, +29673 at the hour). Then the laptop plays the pattern
+   (a2, l -> d): `play_ratio_ppm` on the desktop between -1000 and +11000 from its first read, `speed_error` within 0.996-1.004 (target
+   0.998-1.002: see 2), `gap_ms` at most 60, Play re-buffers at most +2 in the 2.5 minutes (it was +15), `aligned` true. A
+   `talk_ratio_ppm` past +-6000 with `rate_trusted` false in the same read is a fault whatever the sound did.
+2. **desktop -> laptop speed (E).** a1 twice. Target `speed_error` 0.998-1.002. From the lab, a tone of a couple of seconds through
+   that device can still read up to 0.3 % off its average (see Left), so 0.997-1.003 with the numbers below in range is the loop doing
+   what it now does, not a new fault. On the laptop, the desktop's entry over the run: `rate_fast` false in at least 8 of 10 reads (it
+   was true in 8-9), `play_rate_ppm` within 2500 of `play_ratio_ppm` in at least 9 of 10 (the slow loop's P is 0.2 % at most; it was
+   5000 off in 2-4), `play_ratio_ppm` spread over the run at most 4000 (it was 7800: -4903..-12707), never positive, `gap_ms` 0. The
+   same for LinuxBox through the hub (a4): `speed_error` within 0.997-1.003 (it was 1.00373).
+3. **Idle, 10 minutes, the desktop's Play up and silent.** On the laptop, the desktop's entry: trims at most +8 (it was +5: a slower
+   loop lets the level ride further, so a few more are expected; over +8, lower `RATE_FAST_PART`), Play re-buffers at most +6 (as
+   before), `rate_fast` false in at least 8 of 10 reads (it was 2 of 10), `play_rate_ppm` within 2500 of `play_ratio_ppm` in at least
+   9 of 10. On LinuxBox and the desktop, the muted laptop's entry: the ratios of 1; its Talk overruns may still climb (they come with
+   each new size of a quiet stream: counted, not failed).
+4. **The room's mix through a restart (F).** With the hub's mix on (the `live_hub` setting as in rt-r6's step 5), one computer stops
+   its Live sync for 60-120 s and starts it again: no "peer to peer" and no "you mix it" line in anyone's log, `hs` "hub" in every read
+   on the listeners. Stopped for over 150 s: one switch to peer to peer, and one back 60 s after its return.
+5. Steps 1 and 2 of round 2's re-check on a poor link (ping over 140 ms) are still owed: rt-r6's evening was calm.
+
+### Left, untested, limits
+
+- **D's mechanism isn't found.** If the laptop's uplink still makes its Talk's level sit high, that stream's R now stops at +0.6 %
+  (it jumps too often to be trusted) and comes back at its first underrun; its Play is untouched. Step 1 says whether that holds.
+- **A stream that is never 15 s calm stays within 0.6 %.** The desktop, hearing a bandmate over a link that jumps all the time while
+  its own device is more than 0.8 % slow (0.6 % plus the slow loop's P), can't follow the rest: that buffer fills and is shed, a
+  crossfaded skip of 25 ms or more every 10-20 s, until the link calms. The price of the bound; the desktop's device is past 0.8 % only
+  at its worst.
+- **A Play that starts no longer takes Talk's ratio**, so against a device like the desktop's its first 3-5 s are learned in the fast
+  loop: up to 0.5 % off pitch and 10-20 ms of buffer for those seconds. Play stays up through a session, so this is once.
+- **The desktop's device still wobbles what hears it**, less: ticks dropped at random walk its own output about +-50 ms in a minute,
+  and what the buffer doesn't take of that the pitch must. With the slow loop: 0.1 % (sd) around the average, up to 0.3 % over a
+  couple of seconds. And the first minute after a stream starts reads 0.15 % off the average (lab: mean -6541 for -5092): ten seconds of
+  such a device don't say its average any better. Recommendation 18.
+- The quiet shrink still re-buffers a muted stream a step every 10 s after each grow (recommendation 17). Harmless now for the ratio.
+- `rt_peer_buffer` called before a link's first callback is lost when the link sets itself up (the `rate` test's 60/60 isn't applied:
+  its size walks 30 -> 50). Lua sets it again each tick, so only tests see it. Not changed.
+- Not run in REAPER; guests (`webui.cpp`, the browser side) untouched and not re-run this round.
+
+### Review later (security)
+
+- The status gains four numbers per peer; nothing a bandmate sends reaches them but through the same measured buffer levels as before.
+- `HUB_KEEP` 150 s: a computer that has left keeps counting toward the mix's threshold 150 s instead of 60. The room list it counts
+  from is unchanged (signed status, vouched as before).
+- A bandmate who sends at a rate far off nominal on purpose is now read at most 2 % off (was 3) and at most 0.6 % until the stream has
+  run clean for 15 s; their buffer on the listener's side overruns or runs dry as before. No new input is trusted.
+
+### Recommendations, added in round 3
+
+17. **Shrink a quiet buffer in one step** (short of recommendation 6). After a grow the size comes down 10 ms every 10 s while the stream is quiet, each a re-buffer
+    (two AOO resets): a muted stream was re-buffered six times a minute for minutes (overruns 12 a minute on LinuxBox). One step down to
+    what the link held lately (`hold_ms` + margin, which adapt already keeps) is one re-buffer. Plan: in the shrink branch, `want =
+    max(ceil((hold_ms + BUF_MARGIN) / 10) * 10, target - floor((room - BUF_MARGIN) / 10) * 10, the held size)`; `spike_tests` and
+    `trim_test` pin the step count and need new numbers. Not done now: it changes sizing on every link two days before a release.
+18. **Give the slow loop the buffer's room.** For a device that drops ticks at random, pitch wobble goes with the square root of the
+    loop's gain and the level's wander with its inverse: at kp 0.1 (now) 16 ms and 0.16 %; at 0.02, 35 ms and 0.07 %. A 150 ms buffer has
+    the room. Plan: `kp_slow = clamp(c / target_ms)`, the device's tick rate estimated from |R|; `wobble_test` is the measure (bound
+    0.4 % -> 0.2 %).
+19. **Recommendation 14 first: keep the control's last minute in a ring the status can hand out** (per stream and window: level, held
+    level, error, R, P, the events). D took five lab models and still isn't explained from reads a minute apart; one dump from the desktop during the walk
+    would have shown which term moved R. ~40 lines in `adapt` and one status field behind a flag.
+20. **Seed R from the two devices' own clocks.** Each end already measures its device against its system clock (`clock_ppm`); sent in
+    the signed status, the ratio of the two is R's starting point and a second opinion on it (a learned R more than 0.2 % from it is
+    suspect). A Play that starts would read right from its first block again, without taking anything from Talk.
+21. **`tools/ears`: judge the speed over the span it is measured on.** `speed` comes from the pattern's tone (a couple of seconds), the
+    devices' rates from the whole sound (9 s). On the desktop's device that alone is +-0.3 % of noise. Take `stamp_rate` over the tone's
+    own span (`tone_scan` knows where it found it), and report the latency's slope over the pattern beside it: a real speed error moves
+    the latency, wobble doesn't.
