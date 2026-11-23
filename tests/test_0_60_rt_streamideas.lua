@@ -63,9 +63,11 @@ assert(streams.flac_bars(1.85) == 3 and streams.flac_bars(0.5) == 10 and streams
 assert(streams.format_hint("flac", "in_time", 1, 1.85):find("Use 3 bars", 1, true), "FLAC, in time, one bar: late, and what to do")
 assert(streams.format_hint("flac", "in_time", 3, 1.85) == nil, "enough bars: nothing to say")
 assert(streams.format_hint("wave", "in_time", 1, 1.85) == nil and streams.format_hint("flac", "as_it_comes", 1, 1.85) == nil, "WAV, or not in time: nothing")
-assert(not streams.record_wav() and streams.record_want() == band.FLAC and streams.format_ok(band.FLAC) and not streams.format_ok(streams.WAV24), "the studio's FLAC by default")
+assert(streams.record_wav() and streams.record_want() == streams.WAV24 and streams.format_ok("ZXZhdxgAAAA=") and not streams.format_ok(band.FLAC), "24-bit WAV by default, on every computer: any WAV config REAPER reads back")
+gext[band.SECTION .. "\0record wav"] = "0"
+assert(not streams.record_wav() and streams.record_want() == band.FLAC and streams.format_ok(band.FLAC) and not streams.format_ok(streams.WAV24), "FLAC only where this computer chose it")
 gext[band.SECTION .. "\0record wav"] = "1"
-assert(streams.record_want() == streams.WAV24 and streams.format_ok("ZXZhdxgAAAA=") and not streams.format_ok(band.FLAC), "WAV where chosen: any WAV config REAPER reads back")
+assert(streams.record_wav(), "an old explicit WAV choice still reads as WAV")
 gext[band.SECTION .. "\0record wav"] = nil
 
 -- ---- the recorder: a punch, a take, and a late joiner ----

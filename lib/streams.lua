@@ -308,8 +308,10 @@ function streams.fourcc(cfg_b64)
   local raw = require("fxfiles").unbase64(tostring(cfg_b64 or ""):sub(1, 8)):sub(1, 4)
   return #raw == 4 and raw:reverse() or ""
 end
--- This computer records 24-bit WAV instead of the studio's FLAC, for in-time listening (its own choice: lib/prep.lua keep_format holds it).
-function streams.record_wav() return reaper.GetExtState(band.SECTION, "record wav") == "1" end
+-- Takes are recorded as 24-bit WAV, on every computer and in every studio, so bandmates listening in time hear them under a second behind.
+-- FLAC only where a computer chose it ("record wav" = "0": smaller files, but takes reach the others in 2-5 s steps). (James, 2026-11-23:
+-- WAV the default for all devices and all studios; was FLAC unless chosen. lib/prep.lua keep_format holds each computer to its choice.)
+function streams.record_wav() return reaper.GetExtState(band.SECTION, "record wav") ~= "0" end
 function streams.record_want() return streams.record_wav() and streams.WAV24 or band.FLAC end
 function streams.format_ok(fmt) if streams.record_wav() then return streams.fourcc(fmt) == "wave" end return fmt == band.FLAC end
 -- Enough bars behind to cover a FLAC step, for a bar this many seconds long. Pure.
@@ -317,7 +319,7 @@ function streams.flac_bars(bar_secs) return math.min(16, math.max(2, math.ceil(s
 -- What to say (nil: nothing): this computer records FLAC, "In time" is chosen and the bars behind don't cover a FLAC step. Pure.
 function streams.format_hint(kind, mode, bars, bar_secs)
   if mode ~= "in_time" or kind ~= "flac" or bars * (bar_secs or 2) >= streams.FLAC_STEP then return nil end
-  return string.format("Takes recorded to FLAC (this computer's, and the studio's way) reach the others in steps of 2-5 s, so %d bar%s behind " ..
+  return string.format("Takes recorded to FLAC (this computer's choice) reach the others in steps of 2-5 s, so %d bar%s behind " ..
     "hears the newest seconds late. Use %d bars behind, or record WAV here (steps under a second; your takes are about twice the size in the " ..
     "shared folder).", bars, bars == 1 and "" or "s", streams.flac_bars(bar_secs))
 end
@@ -328,10 +330,10 @@ local function format_state(proj)
   return proj, streams.fourcc(fmt), bar
 end
 function streams.use_wav(proj, on)
-  reaper.SetExtState(band.SECTION, "record wav", on and "1" or "", true)
+  reaper.SetExtState(band.SECTION, "record wav", on and "1" or "0", true)
   reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", on and streams.WAV24 or band.FLAC, true)
   band.log(on and "this computer records 24-bit WAV now, so bandmates listening in time hear your takes under a second behind" or
-    "this computer records the studio's 24-bit FLAC again")
+    "this computer records 24-bit FLAC now (smaller takes; bandmates listening in time hear them in 2-5 s steps)")
 end
 -- Health's row for it (lib/page_health.lua), nil when there's nothing to say.
 function streams.format_row(proj)
