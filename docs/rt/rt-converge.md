@@ -847,3 +847,23 @@ failures were already there before rt-fix9: 15033, and 15044, a late joiner's MI
 3. **H:** the desktop adds a scratch track with an item, StudioSync Undo, StudioSync Redo, then LinuxBox deletes the track 20 s later.
    Pass: no "(yours, not sent)" track on the desktop. Then the desktop adds an item to a track while LinuxBox, offline, deletes that track;
    back online, the desktop keeps the item on "(yours, not sent)" as before.
+
+## REAPER re-check of rt-fix9 round 3 (rt-r7, 2026-11-23 13:54-14:03 MT, StudioSync 0.59.49.99 from 9c5748a + extension 1.0.40, Deafen 1)
+
+Desktop (d) and laptop (l) only (LinuxBox and LinuxBox2 suspended; the Mac in the room, not touched); room mode "open"; claims released on
+both before each check. rt-r6's probes (`pair.sh`: one shared link-clock moment) on scratch tracks "R7 G" and "R7 H" made for the checks
+and deleted after; Cross Test equal on both afterwards (`cmp3.sh`). One REAPER per computer; every hook call answered.
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| G1 | Colour on the desktop as the laptop sets the fader 0.7, 14 ms apart (13:59:05.654 / .640) | **pass** | The colour was on the laptop within 3 s ("James: changed a track on R7 G"), both logs "changed track R7 G as you did, at the same time: both changes are kept", no "wasn't followed by their change". Both: 0.7 with the colour. |
+| G2 | Mute on the desktop as the laptop sets the fader 0.8, 8 ms apart (14:00:18) | **pass** | Both "1 change(s) went to the others" in the same second, both kept, no "wasn't followed" line. Both: mute 1, 0.8. |
+| H | The desktop adds R7 H with an item (14:01:28), StudioSync Undo (14:01:36), StudioSync Redo (14:01:43, the studio folder's real scripts), the laptop deletes the track at 14:02:15 | **pass** | The desktop logged the laptop's two deletions at 14:02:20 and kept nothing: no "(yours, not sent)" track. |
+
+**Notes.** A first G1 try set an invalid colour (0x20000FF, no 0x1000000 flag): it was never sent, silently, and REAPER kept showing it on
+the desktop only. REAPER's own UI can't make that value; not a finding. **Before this re-check, the desktop deleted Cross Test's three XT
+tracks** (XT Keys C, XT Drums A, XT Rec A, with their items): its log at 10:56:07 MT, at the start of a Live sync after a REAPER restart,
+"13 change(s) went to the others", and at 11:17 "last session (1 min; James, LinuxBox): 0 takes, 3 tracks removed"; the laptop applied the
+deletions at 13:19 MT when its Live sync restarted ("James: deleted a track on XT Keys C / XT Drums A / XT Rec A"). Cross Test now has no
+tracks on either computer (marker and tempo only). Cause not looked into (no time); the 11:17 end-of-session version is in Restore > Saved
+versions. If it wasn't a deliberate reset, it's a Live sync start sending deletions it shouldn't.

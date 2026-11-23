@@ -551,3 +551,27 @@ To do (nothing below is done or tested):
 3. Explain attempts 2 and 3 from a Mac log with V's `underruns` printed for the whole run, not only from 15 s.
 4. The real question behind it stays open for a real VM: after a guest hold, callbacks that resume before the network thread run the
    buffer dry once; the adaptive size then grows 10 ms. Worth a line in the re-check on LinuxBox (underruns after a hold, size).
+
+## REAPER re-check of round 3 (rt-r7, 2026-11-23 13:24-13:53 MT, StudioSync 0.59.49.99 from 9c5748a + extension 1.0.40, Deafen 1)
+
+Desktop (d) and laptop (l) only: LinuxBox and LinuxBox2 suspended, so the LinuxBox reads and a4 weren't run; step 4 (the hub through a
+restart) not run (not asked this time). The Mac (Chilio-Mac, ext 1.0.31) was in the room, `la` "deaf" in its status, not touched.
+Sound tests as the handoff says (rt-r6's `ears` rig, `<scratchpad>/rt-r7/`): the pattern on the sender's own XT Ears track, Play only,
+receiver muted at volume 0, no microphone; afterwards XT Ears removed, Deafen 1 and no other live-audio keys on both (checked).
+Live sync started 13:18:36 on the laptop and 13:19:26 on the desktop. **The link was poor all session** (the regime step 5 asked for):
+ping desktop -> laptop 73-312 ms in the runs, minute averages 87-643 ms, one 1107 ms peak; the laptop's size for the desktop at its
+400 ms ceiling most of the time, `rate_rough` true in most of its reads.
+
+| # | Check | Result | Numbers |
+| --- | --- | --- | --- |
+| 1 | Before sound: the desktop's entry for the muted laptop | **pass** | `talk_ratio_ppm` +895..+1996 in 30 reads 13:20-13:49 (bound -1000..+11000; was +15525 after 3 min on 1.0.39). |
+| 1 | a2, l -> d, 13:50 (laptop muted 31 min: Deafen until 13:24, then Mute me) | **pass (sound, ratios); fail on the re-buffer count, link-caused** | `speed_error` **0.99999**, `gap_ms` 0, `aligned`, steady (jump 3.4 ms), corr_windows 0.979, latency 433 ms, `ok` true. Desktop's entry: `play_ratio_ppm` +662..+1077 from its first read, `talk_ratio_ppm` +922..+1671. Play re-buffers 0 -> 7 at 2.5 min (bound +2; was +15), 0 -> 8 at 3.4 min; Talk in the same reads underruns 29 -> 33, overruns 10 -> 15 (+9): the link's holds hit both streams alike. |
+| 2 | a1, d -> l, 13:25 | **fail (speed)** | `speed_error` **0.99633** (outside 0.997-1.003), `gap_ms` 30, steady false (a 49.5 ms jump: a re-buffer inside the pattern), latency 530 ms. |
+| 2 | a1b, d -> l, 13:30 | **pass (speed)** | `speed_error` **0.99825**, `gap_ms` 10 (bound 0), steady (6.4 ms), latency 552 ms. |
+| 2 | The laptop's entry for the desktop over both runs | **pass** | `rate_fast` false in 8/8 and 9/9 reads; `play_rate_ppm` within 2500 of `play_ratio_ppm` in 8/8 and 9/9 (worst 2000 off); `play_ratio_ppm` -1349..-2630 (spread 1281, never positive). Play re-buffers 3 -> 11 and 21 -> 40 during the runs (the poor link). |
+| 3 | Idle 10 min, 13:34-13:46, the desktop's Play up and silent | **trims pass; re-buffers fail, link-caused** | The laptop's entry: Play trims 4 -> 10 (**+6**, bound 8), Play re-buffers 50 -> 76 (**+26**, bound 6; 50 -> 74 in the first 6 min at ping averages 179-643 ms, 74 -> 76 in the calmer last 4.5), Talk underruns + overruns 59 -> 85 (+26) in the same reads; `rate_fast` false 11/11, `play_rate_ppm` within 2500 of `play_ratio_ppm` 11/11. The desktop's entry for the muted laptop: `talk_ratio_ppm` +989..+1996. |
+
+**Reading.** Finding D is fixed: after 31 minutes muted, the laptop's ratio on the desktop stayed at +0.1..+0.2 % (it walked to +2.97 % on
+1.0.39) and its Play came out right from the first read, a clean a2. E's loop numbers pass on a poor link. The re-buffer bounds were set on
+rt-r6's calm evening; today every Play re-buffer came with the same count on Talk, so they are the link's, as rt-r6 read its own. a1's first
+run read 0.4 % slow with a re-buffer inside the pattern; the second was in target.
