@@ -1050,7 +1050,9 @@ static void vm_test()
     if (due >= next_hold) { // (the guest held: its receive and send threads stop, and its callbacks with them, then all catch up)
       const double ms = rnd(60, 100);
       rt_test_hold(V, ms); rt_test_hold_tx(V, ms);
-      held_until = due + ms / 1000;
+      // (the receive thread's hold ends on its 1 ms sleeps, up to a tick late on coarse timers: GitHub's Mac, 5-13 ms; callbacks resuming
+      // before it lets the held packets in drained the buffer dry, a race in the test, not the code: rt-audio3 "Left", 2026-11-23)
+      held_until = due + ms / 1000 + tick_ms() / 1000;
       next_hold = due + rnd(2.0, 4.0);
     }
     if (due_s <= due_v) {
