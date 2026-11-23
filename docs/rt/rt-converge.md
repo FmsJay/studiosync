@@ -802,3 +802,46 @@ first): desktop = laptop = LinuxBox = the starting state (17 lines).
 
 **Left.** "Nothing to undo" itself (needs a user with no history in a song); G (end the preview when the band's change for it lands, or
 don't hold an own edit of another setting behind it); H; 1a/1d with someone answering the claim ask.
+
+## rt-fix9, round 3: rt-r6's G and H (2026-11-22)
+
+Files: `lib/mirror.lua`, `lib/controllers.lua`; tests: parts 37 and 38 of `tests/test_0_60_rt_converge.lua`, part 7b of
+`tests/test_0_60_rt_controllers.lua`. Nothing run in REAPER. Each test fails with its fix taken out.
+
+**G, two causes, both fixed.**
+- **The preview didn't end when its change landed.** `controllers.keep` ended a shown move when the track's revision moved past its mark
+  (`sh.rev`), and every move message sets that mark, the let-go among them. The bandmate's look sends the change about 0.1 s after the
+  move settles; the let-go goes `LET_GO` (0.5 s) after it. So the change usually landed before the let-go, the let-go set the mark to the
+  revision that had already landed, and the preview waited out `CONFIRM` (60 s). Now a preview also ends, without putting anything back,
+  once the band's version of the track (read through `mirror.known`'s event) holds each shown fader, pan and mute as they are now:
+  `band_shows`. Plug-in knob previews still go by the mark.
+- **An edit of another setting waited for the preview.** A look left a previewing track out of `W.one` whole. Now `mirror.previewing`
+  names the settings a preview shows (`{ vol = true }` and so on, set by `controllers.on_msg`), and `W.past_preview` sends such a track
+  through `W.one` when it differs from the band's version in any other setting. Its shown settings are taken as the band has them, so
+  your colour, mute or rename goes out at once and the bandmate's previewed value isn't sent as yours. 1c's case (a mute against a
+  fader) is two different settings, so each side's edit goes at once. `keep_unsent` likewise treats only the shown settings as the
+  bandmate's.
+- 1a/1d after this: the desktop's rename goes out at once, and since the laptop's fader move auto-claimed the track, it asks the laptop at
+  once (the claims design) rather than a minute later.
+
+**H. A Redo's item kept on "(yours, not sent)" after a bandmate deleted its track.** The desktop's log (20:38:55) shows LinuxBox's deletion
+arrived as two changes: "deleted a track on R6 tmp d4" and "deleted an item on R6 tmp d4". The track's deletion landed first. `mirror.apply`
+kept the item as new work, because every version of it was the desktop's and the newest was under 2 minutes old (`just_made_here`,
+`new_here`): moved to "(yours, not sent)", its id taken off. The item's own deletion then found nothing to delete. Now an item kept that way,
+with no unsent edit in it, is noted with the version it holds (`mirror.kept_new`). When the deleter's deletion of that very version lands
+(its `base_ev` is that version), the kept copy goes too, and the kept track with it if nothing else is on it. An item with an edit of yours
+since, or a version the deleter never had (no deletion of it comes), stays kept, as part 38 also checks. **Not the negative length:** part 38
+reproduces it with an ordinary item, and LinuxBox's own "deleted an item on R6 tmp d4" shows the item had reached it.
+
+**Checks.** Clean-clone runs and the soak: below (filled in after the runs).
+
+**Round 3 REAPER re-checks.**
+1. **G, F1 again** (rt-r6 1a-1d, 5-20 ms apart): colour against the laptop's fader, mute against LinuxBox's fader, and a rename against the
+   laptop's fader. Pass: each own edit goes out within a second or two of the bandmate's change landing ("1 change(s) went"), not 60 s later.
+   No "a bandmate's live move wasn't followed by their change" line in 1c, and all three end with both edits. The rename asks the laptop
+   for its auto-claim at once (claims design); with someone answering Release on the laptop it goes out.
+2. **The preview's end:** LinuxBox moves a fader and lets go; the others' Health "Shared controllers" row stops showing it within a second
+   or two of "LinuxBox: changed a track", not after a minute.
+3. **H:** the desktop adds a scratch track with an item, StudioSync Undo, StudioSync Redo, then LinuxBox deletes the track 20 s later.
+   Pass: no "(yours, not sent)" track on the desktop. Then the desktop adds an item to a track while LinuxBox, offline, deletes that track;
+   back online, the desktop keeps the item on "(yours, not sent)" as before.
