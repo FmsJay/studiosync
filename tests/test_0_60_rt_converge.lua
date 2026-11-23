@@ -40,6 +40,8 @@
 -- 34. A merge with a side that's only the tempo map's move takes the other side's (`retimed`, mirror.event_file), and says nothing of it.
 -- 35. An auto-claim on a name no track has lets go at once (sync.drop_gone_claims).
 -- 36. StudioSync's Undo asks without a modal box (lib/undo.lua, claimask.tick, claimask.bar). And 22: the Undo's words for a marker change.
+-- 37. A change of another setting than a bandmate's live preview shows goes out at once (W.past_preview): rt-r6's G.
+-- 38. An item kept as new work when its track went is taken by its deleter's own deletion of it (mirror.kept_new): rt-r6's H.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -1829,6 +1831,85 @@ do
   end
   undo.confirm = was_confirm
   print("rt-converge 36: StudioSync's Undo asks without a modal box: the key again or the panel's Yes, else nothing")
+end
+
+-- ---- 37. a change of another setting than a bandmate's live preview shows goes out at once (rt-r6's G) ------------------------------------------
+do
+  local S = studio("Conv37", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_track("Drums"); F.add_track("Keys") end)
+  S.recv(B)
+  local function sent(name) return #S.events(function(v) return v.obj == "track" and v.user == "James" and v.name == name end) end
+  local function vol(c, name) S.as(c); return reaper.GetMediaTrackInfo_Value(S.track(c, name), "D_VOL") end
+  -- Bee's fader move on Drums shows on James's (the preview: its volume), and James mutes Drums
+  T = T + 2
+  S.as(A)
+  local key = tostring(A.F.proj) .. mirror.track_oid(S.track(A, "Drums"))
+  reaper.SetMediaTrackInfo_Value(S.track(A, "Drums"), "D_VOL", 0.8)
+  mirror.previewing[key] = { vol = true }
+  local before = sent("Drums")
+  S.edit(A, function(F) reaper.SetMediaTrackInfo_Value(S.track(A, "Drums"), "B_MUTE", 1) end)
+  local mine = S.events(function(v) return v.obj == "track" and v.user == "James" and v.name == "Drums" and v.state.mute == 1 end)
+  assert(sent("Drums") == before + 1 and #mine == 1, "James's mute went out at once (was: it waited for the preview to end, 61-63 s)")
+  assert(math.abs(tonumber(mine[1].state.vol) - 1) < 1e-6, "with the volume as the band has it, not the preview's 0.8: " .. tostring(mine[1].state.vol))
+  -- only the shown setting differing: nothing goes, as before
+  local n = sent("Drums")
+  S.look(A)
+  assert(sent("Drums") == n and vol(A, "Drums") == 0.8, "the preview's own volume isn't sent as James's")
+  -- Bee's change for her move lands; James's mute stays, and once the preview ends nothing more goes out
+  S.edit(B, function(F) reaper.SetMediaTrackInfo_Value(S.track(B, "Drums"), "D_VOL", 0.8) end)
+  S.recv(A, true)
+  mirror.previewing[key] = nil
+  S.settle(A)
+  for _ = 1, 2 do S.recv(B); S.recv(A) end
+  S.as(A); local ma = reaper.GetMediaTrackInfo_Value(S.track(A, "Drums"), "B_MUTE")
+  S.as(B); local mb = reaper.GetMediaTrackInfo_Value(S.track(B, "Drums"), "B_MUTE")
+  assert(ma == 1 and mb == 1 and vol(A, "Drums") == 0.8 and vol(B, "Drums") == 0.8, "both: muted, Bee's 0.8")
+  print("rt-converge 37: a change of another setting than a bandmate's live preview shows goes out at once")
+end
+
+-- ---- 38. an item kept as new work when its track went is taken by its deleter's own deletion of it (rt-r6's H) ----------------------------------
+do
+  local undo = require("undo")
+  local S = studio("Conv38", "everyone")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) F.add_track("Keys") end)
+  S.recv(B)
+  local function names(c) return S.names(c) end
+  -- James adds a track with an item, undoes it, redoes it (StudioSync's Undo and Redo); Bee has it, and deletes the track
+  T = T + 2
+  S.edit(A, function(F) local t = F.add_track("Tmp"); F.add_item(t, midi(4, 2)) end)
+  S.recv(B)
+  T = T + 2
+  S.as(A); A.F.clock = A.F.clock + 1
+  assert(tostring(undo.step(A.F.proj, A.cfg, S.b, false, {})):find("^2 change"), "James's Undo takes the track and its item back")
+  S.settle(A)
+  S.recv(B)
+  T = T + 2
+  S.as(A); A.F.clock = A.F.clock + 1
+  assert(tostring(undo.step(A.F.proj, A.cfg, S.b, true, {})):find("^2 change"), "and his Redo brings them back")
+  S.settle(A)
+  S.recv(B)
+  assert(S.items(B, "Tmp") == 1, "the redone item is on Bee's (" .. names(B) .. ")")
+  T = T + 2
+  S.edit(B, function(F) reaper.DeleteTrack(S.track(B, "Tmp")) end)
+  S.recv(A)
+  assert(not S.track(A, "Tmp") and not S.track(A, "Tmp (yours, not sent)"),
+    "the track and its item are gone on James's too (was: the item on 'Tmp (yours, not sent)', kept as his new work): " .. names(A))
+  -- a version the deleter never had stays kept: James adds an item to a track Bee deletes before it reaches her
+  S.edit(A, function(F) F.add_track("Tmp2") end)
+  S.recv(B)
+  T = T + 2
+  local snap = {}
+  for p, v in pairs(files) do snap[p] = v end
+  S.edit(A, function(F) F.add_item(S.track(A, "Tmp2"), midi(6, 2)) end)
+  local held = {}
+  for p, v in pairs(files) do if snap[p] ~= v then held[p] = v; files[p] = snap[p] end end
+  S.edit(B, function(F) reaper.DeleteTrack(S.track(B, "Tmp2")) end)
+  for p, v in pairs(held) do if files[p] == snap[p] then files[p] = v end end
+  S.recv(A, true)
+  assert(S.track(A, "Tmp2 (yours, not sent)") and S.items(A, "Tmp2 (yours, not sent)") == 1, "an item Bee never had stays James's: " .. names(A))
+  print("rt-converge 38: an item kept as new work when its track went is taken by its deleter's own deletion of it")
 end
 
 print("ok rt-converge")

@@ -96,6 +96,7 @@ local function guids(tr)
   return out
 end
 local PARM = { v = "D_VOL", p = "D_PAN", m = "B_MUTE" }
+local FIELD = { v = "vol", p = "pan", m = "mute" } -- (a track setting's name in mirror's state. rt-fix9)
 
 -- ---- state (one Live sync tab per script) ----------------------------------------------------------------------------------------------
 -- info: track -> { oid, here (one of this computer's own) }; seen: track -> { v, p, m } as last read or written; knobs: key -> { tr, fx, bf, n, v,
@@ -309,15 +310,35 @@ function controllers.on_msg(proj, cfg, b, d)
       S.was[key] = S.was[key] or { tr = tr, k = m.k, fx = fx, n = m.n, v = value_of(tr, m.k, fx, m.n) }
       S.was[key].set = set_value(proj, tr, m.k, m.v, fx, m.n, key)
       local rev = mirror.known(proj, obj)
-      local sh = S.shown[obj] or { keys = {}, rev0 = rev }
+      local sh = S.shown[obj] or { keys = {}, rev0 = rev, cfg = cfg, b = b }
       sh.keys[key], sh.rev, sh.at = true, rev, clock
       S.shown[obj] = sh
-      mirror.previewing[tostring(proj) .. obj] = true
+      -- (which settings it shows: a change of another setting here goes out at once, mirror's W.past_preview. rt-fix9)
+      local pv = mirror.previewing[tostring(proj) .. obj]
+      if type(pv) ~= "table" then pv = {} end
+      pv[FIELD[m.k] or "fx"] = true
+      mirror.previewing[tostring(proj) .. obj] = pv
       S.n_shown = S.n_shown + 1
     end
   end
 end
 
+-- Does the band's version of `obj` here now hold what the preview `sh` shows (each shown fader, pan and mute as it is now)? Its change has
+-- landed then, whatever came after it: the let-go message arrives after the change, moved the preview's mark (sh.rev) past it, and the
+-- preview waited out CONFIRM with the track left alone (rt-r6's G: 61-63 s). Plug-in knobs: by the mark, as before. rt-fix9
+local function band_shows(proj, obj, sh)
+  local mirror = require("mirror")
+  local _, h, kev = mirror.known(proj, obj)
+  local okd, dir = pcall(function() return require("sync").room_dir(sh.cfg, sh.b.song, sh.b.room) end)
+  local ev = okd and mirror.event_file and (kev or "") ~= "" and h ~= "" and mirror.event_file(dir, kev)
+  if not (ev and type(ev.state) == "table") then return false end
+  for key in pairs(sh.keys) do
+    local w = S.was[key]
+    local want = w and FIELD[w.k] and tonumber(ev.state[FIELD[w.k]])
+    if not (want and reaper.ValidatePtr2(proj, w.tr, "MediaTrack*") and math.abs(value_of(w.tr, w.k) - want) < 1e-4) then return false end
+  end
+  return true
+end
 -- Holds and shown moves, each tick: a bandmate's hold ends at their let-go or HELD s; a shown move ends when the band's change for it lands
 -- (its revision moved since the last move shown), or after CONFIRM s with nothing from the band (the value before it back).
 function controllers.keep(proj, clock)
@@ -327,7 +348,7 @@ function controllers.keep(proj, clock)
     local active = false
     for key in pairs(sh.keys) do active = active or S.theirs[key] ~= nil end
     local rev = mirror.known(proj, obj)
-    local done = not active and (rev ~= sh.rev or clock - sh.at > controllers.CONFIRM)
+    local done = not active and (rev ~= sh.rev or clock - sh.at > controllers.CONFIRM or (rev ~= sh.rev0 and band_shows(proj, obj, sh)))
     if done then
       if rev == sh.rev0 then -- (nothing from the band at all: what it was comes back, unless something else changed it since)
         for key in pairs(sh.keys) do

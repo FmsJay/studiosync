@@ -307,6 +307,30 @@ B.ext["live controls"] = band.json_encode({ held = { "James moving Bass volume" 
 row = CB.health_row(cfgB)
 assert(row[2] == false and row[4]:find("James moving Bass volume") and row[4]:find("1 refused"), "Health: who's moving what, and a refusal: " .. row[4])
 
+-- ---- 7b. the preview ends the moment the band's change for it holds the shown value, though the let-go came after the change (rt-r6's G)
+B.off, A.off = false, false
+package.loaded.sync.room_dir = function() return "R/S/rooms/main" end
+local events = {}
+B.mirror.known = function(_, oid) return B.rev[oid] or 1, "h", "ev" .. tostring(B.rev[oid] or 1) end
+B.mirror.event_file = function(_, id) return events[id] end
+for _ = 1, 3 do clock = clock + 2; tick(A); tick(B) end
+local logs0 = #B.logs
+A.tracks[1].vol = 0.7
+clock = clock + 0.06
+tick(A); tick(B)
+assert(B.tracks[1].vol == 0.7 and B.previewing["P" .. BASS] and B.previewing["P" .. BASS].vol, "shown, and the preview says it shows the volume")
+-- James's change lands on Bo's before his let-go message does
+B.rev[BASS] = (B.rev[BASS] or 1) + 1
+events["ev" .. B.rev[BASS]] = { state = { name = "Bass", vol = "0.700000", pan = "0.0000", mute = 0 } }
+clock = clock + 0.06
+tick(B)
+clock = clock + CA.LET_GO + 0.01
+tick(A); tick(B)
+clock = clock + CB.HELD + 0.1
+tick(B)
+assert(not B.previewing["P" .. BASS] and B.tracks[1].vol == 0.7 and #B.logs == logs0,
+  "the preview ended once the band's version held 0.7, with no put-back (was: it waited out CONFIRM, 60 s, the track left alone meanwhile)")
+
 -- ---- 8. mirror.watch leaves a shown track alone --------------------------------------------------------------------------------------------
 package.loaded.mirror = nil
 local mirror = require("mirror")

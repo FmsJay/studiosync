@@ -3930,6 +3930,9 @@ function mirror.apply(proj, ev, media_dir, local_mix)
           and not mirror.new_here(proj, io, room_dir)
         if moot then mirror.unsent[tostring(proj) .. io], mirror.asked_of[tostring(proj) .. io] = nil, nil end
         if io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or (mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir)) then
+          -- (kept as new work only, no edit of yours waiting in it: noted with the version it holds, so the deleter's own deletion of that very
+          -- version, which comes beside the track's, takes it after all: mirror.receive. rt-fix9)
+          if not (mirror.unsent[tostring(proj) .. io] or elsewhere[io]) then mirror.kept_new[tostring(proj) .. io] = { it = it, ev = select(3, mirror.known(proj, io)) } end
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
           -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -4329,10 +4332,11 @@ local function keep_unsent(proj, x, local_mix)
   local base = mirror.track_seen[key]
   local tr = type(base) == "table" and mirror.find(proj, "track", x.oid)
   if not tr then return x, nil end
-  local cur, previewing = mirror.track_state(proj, tr, local_mix), mirror.previewing[key]
+  local cur, pv = mirror.track_state(proj, tr, local_mix), mirror.previewing[key]
+  local shown = type(pv) == "table" and pv or pv and PREVIEWED or {} -- (the settings a live move shows: lib/controllers.lua names them)
   local full
   for k, v in pairs(cur) do
-    if not TRACK_OWN[k] and not (previewing and PREVIEWED[k]) and not same_setting(v, base[k]) and same_setting(x.state[k], base[k]) then
+    if not TRACK_OWN[k] and not shown[k] and not same_setting(v, base[k]) and same_setting(x.state[k], base[k]) then
       if not full then full = {}; for k2, v2 in pairs(x.state) do full[k2] = v2 end end
       full[k] = v
     end
@@ -4398,6 +4402,19 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     -- its flag on, which only a look at an object still recorded here takes off (W.gone), and the item's return then waited behind it for
     -- good, on this computer alone. The soak's seed 5045. rt-converge)
     if ev.gone then remember(proj, ev.oid, ev.rev, "", ev.id, order); mirror.unsent[tostring(proj) .. ev.oid] = nil end
+    -- (an item of yours kept on "(yours, not sent)" when the band deleted its track, as new work they might not have had: this is their
+    -- deletion of the very version you hold, so they had it, saw it, and deleted it with the track. It goes, and so does the kept track if
+    -- nothing else is on it. A Redo's item, deleted with its track 21 s after it reached the deleter, stayed on the redoer's computer alone
+    -- (rt-r6's H). An edit of yours made since, or a version they never had, stays kept. rt-fix9)
+    local kn = ev.gone and ev.obj == "item" and mirror.kept_new[tostring(proj) .. ev.oid]
+    if kn then
+      mirror.kept_new[tostring(proj) .. ev.oid] = nil
+      if kn.ev ~= nil and ev.base_ev == kn.ev and reaper.ValidatePtr2(proj, kn.it, "MediaItem*") and select(2, reaper.GetSetMediaItemInfo_String(kn.it, "P_EXT:band_oid", "", false)) == "" then
+        local ktr = reaper.GetMediaItem_Track(kn.it)
+        reaper.DeleteTrackMediaItem(ktr, kn.it)
+        if reaper.CountTrackMediaItems(ktr) == 0 and mirror.local_track(ktr) then reaper.DeleteTrack(ktr) end
+      end
+    end
     -- (and an item moved onto that track by someone who hadn't the deletion yet, still here on the track it came from: it went with the track
     -- it was moved to, as it did on its mover's computer when the deletion landed there. Left where it was, it stayed on every computer but
     -- the mover's. Recorded gone with its track under this version, so it comes back, on that track, if the track does (mirror.heal). One
@@ -4804,6 +4821,7 @@ mirror.master_seen = {} -- project -> its master track at the last look (W.order
 mirror.fx_quiet = mirror.fx_quiet or {}
 mirror.fx_last = mirror.fx_last or {} -- proj .. chain oid -> its knobs when it last landed here or went out from here (mirror.receive's unseen-edit check)
 mirror.fx_doubt = mirror.fx_doubt or {} -- proj .. chain oid -> true: mirror.receive held the band's chain back for a look to say whether the knobs are an edit
+mirror.kept_new = mirror.kept_new or {} -- proj .. item oid -> { it, ev }: kept on "(yours, not sent)" as new work when the band deleted its track (mirror.receive)
 mirror.track_seen = mirror.track_seen or {} -- proj .. track oid -> its state as the band's version is here: as it landed, went out, or a look found it unchanged (mirror.receive)
 local function fx_open_now(tr)
   if reaper.TrackFX_GetChainVisible(tr) ~= -1 then return true end
@@ -6298,11 +6316,29 @@ end
 -- proj .. oid -> a bandmate's fader or knob shown here live, their change for it not landed yet: neither sent as yours nor put back (lib/controllers.lua)
 mirror.previewing = mirror.previewing or {}
 -- Every object of a look through W.one. (A function of its own, so the hold-back of one that threw is tested. Round 3 review, 0.59.48)
+-- A track a bandmate's live move is showing on (lib/controllers.lua: `pv` names the settings it shows) and changed here in another setting:
+-- it goes through W.one now, with the shown settings as the band has them, so yours goes out at once and theirs isn't sent as yours. Left
+-- out of W.one whole, a colour, a mute or a rename made as a bandmate moved the fader waited for the preview to end, which (its change
+-- having landed before its let-go) was the 60 s timeout: rt-r6's G, 61-63 s late, and a minute-late claim ask put back unanswered. Only
+-- shown settings differing from the band's: left alone, as before. -> true to go through W.one (o's state is then the masked one). rt-fix9
+function W.past_preview(w, o, pv)
+  if o.kind ~= "track" or type(pv) ~= "table" or type(o.state) ~= "table" then return false end
+  local _, h, kev = mirror.known(w.proj, o.oid)
+  local ev = (kev or "") ~= "" and h ~= "" and event_file(w.room_dir, kev)
+  if not (ev and type(ev.state) == "table") then return false end
+  local st = {}
+  for k, v in pairs(o.state) do st[k] = v end
+  for f in pairs(pv) do if ev.state[f] ~= nil then st[f] = ev.state[f] end end
+  if mirror.same_line(st, ev.state, w.opts.local_mix) then return false end
+  o.state, o.hash = st, mirror.track_hash(st, w.opts.local_mix)
+  return true
+end
 function W.each(w)
   local dirty = w.dirty -- (a quick look: only what may have changed, or still has something to do. rt-look)
   for _, o in ipairs(w.objs) do
     w.seen[o.oid] = true
-    if (not dirty or dirty[o.oid]) and not mirror.previewing[tostring(w.proj) .. o.oid] and not (w.gone_now and o.track and w.gone_now[o.track]) then
+    local pv = mirror.previewing[tostring(w.proj) .. o.oid]
+    if (not dirty or dirty[o.oid]) and not (pv and not W.past_preview(w, o, pv)) and not (w.gone_now and o.track and w.gone_now[o.track]) then
       local ok, err = pcall(W.one, w, o)
       if not ok then held_back_set(w.proj, o.oid); w.say_once("err" .. o.oid, "mirror sync skipped " .. o.oid .. ": " .. tostring(err)) end -- (a send that threw: counted. Round 1 review, 0.59.45)
     end
