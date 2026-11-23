@@ -297,3 +297,51 @@ Setup as rt-r5's. Read each status through the dev-eval hooks; the new fields pe
 14. **Put the level's trace in the poll.** *Evidence:* a status read a minute can't say why a buffer ran dry, and the ears poll carries Talk's fields only: A's cause had to be put together from eleven one-minute snapshots and a model. *Plan:* `play_buffer_ms`, `hold_ms`, `ratio_ppm`, `play_rate_ppm` and `rate_rough` in each poll row (five numbers); the event ring of Recommendation 5 later. An hour.
 15. **Say why a computer counts as here.** *Evidence:* the Mac, asleep, was in the room for 43 s and the only trace is one status dump; the laptop still listed it "no answer" hours later. *Plan:* the log says "<name>'s computer is on the link (heard n s ago)" when the room's count changes, and Health lists who counts and why (status file, heard on the link, vouched). Half a day.
 16. **Recommendation 4 is now urgent**: the pace exists in five places (rtaudio.cpp, webui.cpp, three scripts) and they have started to differ (the piece's age in two of them, the jump rule in all, the fast loop in one). One `pace.h`, one `pace.js`.
+
+## REAPER re-check of round 2 (rt-r6, 2026-11-22 19:02-20:45 MT, StudioSync 0.59.49.98 from 33c2a16 + extension 1.0.39, Deafen 1)
+
+Desktop (d), laptop (l), LinuxBox (x). The Mac offline (ping to it 100 % lost); LinuxBox2 suspended throughout (not needed: off the
+tailnet it never counts in the live-audio room). Sound tests as the handoff says: the ears pattern on the sender's own generated test
+track (`track add=true`, Play only), receivers muted at volume 0 (0.01 through the hub), no microphone, no VM audio input; afterwards the
+test track removed, Deafen 1 and the live-audio settings back as found on all three (checked: `deaf=1`, no mute/source/volume keys, as
+before). **The desktop restarted at 19:25** (James clearing the leaked kernel memory) in the middle of the first idle; the coordinator put
+Deafen back; Cross Test was checked equal on all three and the setup redone. Probes and evidence: `<scratchpad>/rt-r6/` (`ears/`, `st/`,
+`guests/`, step 5's log in `ears/step5.txt`).
+
+**The laptop's link was calm all evening**: ping desktop -> laptop 73-97 ms, average 75-83, one 140 ms peak (19:51). So steps 1 and 2 (the
+poor link) ran on the calm regime; read them against rt-r5's b1 and its calm idle. **The desktop's own device moved more than ever**: 47493
+to 47906 Hz over 30 s windows (-10560 to -1950 ppm; `clk.lua`, `ears/desk_rate.txt`), so the -500..-8000 band for `ratio_ppm` is an
+assumption about the device that no longer holds; "never positive" is the part that tests the fix.
+
+| # | Check | Result | Numbers |
+| --- | --- | --- | --- |
+| 1 | d -> l (a1, 19:05, before the restart) | **fail (speed)** | `speed_error` **0.99491** (tap stamps; 0.99677 by the polls' rates), `gap_ms` 0, `steady` (19.2-26.5 ms), corr_windows 0.931, latency 250 ms; the envelope latency flat at 241-249 ms through the pattern. The laptop's entry for the desktop, 11 reads: `ratio_ppm` -4903..-12707 (**never positive: pass**; 6 reads past -8000, with the device itself at -7300..-10500), `play_rate_ppm` within 2500 of it in 6 of 11 (2741-5000 off in 4: **fail**), `rate_fast` true in 9 of 11, `rate_rough` false in all (a calm link), `target_ms` 110 -> 170 at `hold_ms` 153, resyncs 1 -> 2 (+1: pass), trims 0 -> 1. |
+| 1 | d -> l again (a1b, 19:43, after the restart) | **fail** | `speed_error` **0.99611**, `gap_ms` **160** (longest 120), `steady` false (0.4-206 ms: a re-buffer inside the pattern), corr_windows 0.939. The laptop's entry: resyncs 3 -> 4, trims 0 -> 2 in the run; `ratio_ppm` -2391..-6019 (in the band, never positive), `play_rate_ppm` within 2500 of it in 7 of 10 (5000 off in 2: P at its bound), `rate_fast` in 8 of 10. |
+| 2+3 | Idle 9 min, the desktop's Play up and silent (19:46-19:57, calm) | **fail, small** | The laptop's entry for the desktop: resyncs 4 -> 10 (**+6**: within 15, pass), trims 2 -> 7 (**+5**: target +2), `ratio_ppm` -7434..**+85** (one read at about 0 while the device ran near 48 kHz; 8 of 10 in -500..-8000), `play_rate_ppm` within 1500 of it in **6 of 10** (5000 off in 3), `rate_fast` false in **2 of 10** (target 4 of 7), the buffer near `target_ms` (within 3-33 ms in 9 of 10; 131 over once). Every Play underrun came with a Talk underrun in the same read (Talk 4 -> 10, Play 4 -> 10): all six are the link's own holds, counted, not failed. The 6.7 minutes before the restart (19:11-19:18) were cleaner: resyncs **+0**, trims **+0**, `ratio_ppm` -2072..-6744 in every read, `play_rate_ppm` within 2500 in 6 of 7, the buffer within 6 ms of its target. LinuxBox (wired, 0.5 ms) in the same minutes: its resyncs for the desktop 2 -> 9, and 10 -> 53 before the restart (40 overruns at once at 19:15). |
+| 4 | l -> d (a2, 19:59) | **fail, badly** | `speed_error` **1.02766** (2.8 % fast), `gap_ms` **380** (longest 210), `aligned` false (corr_windows 0.66), spectrum fails. On the desktop, the laptop's entry: **`ratio_ppm` +29673 before the sound** (`RATE_CAP` is 3 %), +29110 after; `play_rate_ppm` +23934..+29673; Play re-buffers 12 -> 27 in 2.5 minutes; Talk overruns 193 -> 203, Talk `fill_ms` 150 -> 581 against a 150-300 ms size. Finding D. |
+| 4 | Through the hub (a4, 20:03, the desktop serves, `--gain 0.01`) | **laptop pass, LinuxBox fail (speed)** | Laptop **ok**: `speed_error` 0.99835, `gap_ms` 0, corr_windows 0.947, steady (8.6-18.0 ms), level 0.0 dB. LinuxBox: `speed_error` **1.00373** (bound 0.002), `gap_ms` 0, corr_windows 0.939, steady, level 0.0 dB. Both listeners' `hs` "hub" from 20:03:16 in every read, `fallbacks` 0 -> 0, the desktop's `stall_max_ms` 0.0, serving 2. |
+| 5 | The hub's mix (`live_hub` set to 3 for the test and put back to the default after: with the Mac offline and LinuxBox2 off the tailnet, three computers can count) | **pass, one part not testable** | Three computers, only the desktop sending, 100 s: no switch line anywhere (**pass**). The second sender (the laptop unmuted, Play only) at 20:09:58: "you mix it for the others here" at 20:10:57 (**59 s**); the laptop muted again at 20:12:38: "peer to peer" at 20:13:36 (58 s); the second unmuting at 20:14:21: the switch at 20:15:19 (**58 s**, target 70: **pass**). Back to peer to peer at 20:17:10 once the threshold was back. "A computer on the link for under a minute" couldn't be made: a computer whose Live sync stops stays in the room by vouching ("LinuxBox's status is late here, but James-Laptop's computer reaches it, so you send to it meanwhile") for up to `hub.VOUCH` 150 s. Seen once: LinuxBox's Live sync starting again (20:11:16) took the room to peer to peer at 20:11:15 and back to the mix at 20:12:15: one computer's restart cost two switches. |
+| 6 | Guests (`guests.py --laptop --soak-min 15 --extra 2`, 20:17-20:36, calm link) | **pass but for the tone's spread** | The six hearing checks and `four_live` pass. After the 4th minute: the pages' worklet `under` 3 -> 5 (A) and 3 -> 5 (B) (**+2**, target +8), `drops` 0; the host rows' `under` 3 -> 5 and 2 -> 5 (**+2 / +3**, target +10); `target` 0.31-0.32 s; the listener's `ahead` 0.22-0.32 s at lead 0.3, its `under` +1. `tone_b_hz` as A heard B: 1499.3-1502.6 (one of nine 0.3 Hz over 1502.3); as the listener heard it: **1496.9-1503.5** (target 1497.7-1502.3). The script's own strict "nothing new" checks fail on those +2s. The host ring's `size` wasn't read. CPU on the desktop 13-20 %. |
+
+**Findings.**
+- **D. A bandmate's learned ratio runs away to the 3 % cap while their stream is muted or deafened, and their Play is then read up to 3 %
+  fast** (a2). The desktop's R for the laptop was +15525 three minutes after the desktop's Live sync started (19:03, the laptop deafened)
+  and +29673 (`rate_ppm` 30000 = `RATE_CAP`) before a2 (19:59, the laptop muted since 19:04), the laptop's Talk overrunning all the while
+  (14 -> 193 -> 203) with `fill_ms` 255-581 against its size. LinuxBox's R for the same muted laptop climbed +12036 -> +18686 in six idle
+  minutes (Talk overruns 96 -> 183) and was +11519 after a2; the right value there is about -120 ppm (the laptop -59, LinuxBox +63).
+  Readers of the desktop, and the laptop reading LinuxBox, stayed sane. One R serves a bandmate's Talk, Play and mix, so when the muted
+  laptop's Play started, its sound was read at +23934..+29673 ppm: 2.8 % sharp, 15 re-buffers in 2.5 minutes, 380 ms of gaps. rt-r5's a2
+  on 1.0.38 read the laptop at +793..+1597 and passed (re-judged). Not proven, from the status only: a muted or deafened computer's Talk
+  carries silence whose packets come unevenly (its gate, or the codec's quiet frames), so its level rises with every burst the control
+  can't place (the overruns), R learns "read faster" from it, and nothing keeps a silent stream out of R or caps R short of `RATE_CAP`.
+  Evidence: `st/st_pre0_d.json`, `st/st_pre_a2_d.json`, `st/st_post_a2_d.json`, `ears/i9_idle.txt` (LinuxBox's rows), `ears/a2_*`.
+  **This blocks the release.**
+- **E. P sits at its bound on a calm link** while R follows the desktop's moving device: `play_rate_ppm` 5000 off `ratio_ppm` in 2-4 of
+  every 10 reads in a1, a1b and the idle, `rate_fast` in most reads, and the d -> l pattern heard 0.4-0.5 % flat (`speed_error` 0.995 and
+  0.996), with a shed and a re-buffer inside it in a1b. The desktop's device moved -10560..-1950 ppm within minutes this evening.
+- **F. Hub-mix switching:** the new hold works (59 and 58 s); a computer restarting its Live sync flips the room to peer to peer and back
+  (20:11:15, 20:12:15).
+- The poor-link regime (steps 1-2 as written) wasn't seen tonight: run them when the laptop's ping is over 140 ms.
+
+**Left.** D (a fix, then a2 again after a long mute), E, steps 1-2 on a poor link, step 5's "under a minute" part (it needs a computer that
+leaves the link outright: the Mac, or LinuxBox blocked), the guests on a poor link, the host ring's `size` in step 6.

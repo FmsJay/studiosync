@@ -757,3 +757,48 @@ itself: Chilio's MacBook wakes or runs with REAPER and StudioSync open, while it
    radial Undo: the log line, no box.
 4. **The Mac:** when it's said to be offline, look at the Mac (REAPER, Live sync, Tailscale) and at `Chilio-Mac.json`'s time. Expected: if
    its REAPER isn't running, it leaves every peer list within 45 s of its last status and within 15 s of its last live audio packet.
+
+## REAPER re-check of rt-fix9 round 2 (rt-r6, 2026-11-22 20:17-20:45 MT, StudioSync 0.59.49.98 from 33c2a16 + extension 1.0.39, Deafen 1)
+
+Desktop (d), laptop (l), LinuxBox (x); room mode "open" (claims); claims empty on all three before each check. Edits by script through each
+REAPER's dev eval hook in undo blocks named as REAPER's own actions; paired edits at one moment on the shared link clock (`pair.sh`:
+`direct.shared_now`, 5-20 ms apart where both ran-at times were read). StudioSync's Redo is the studio folder's real `StudioSync -
+Redo.lua`. Put back and compared on all three after the checks and after the burst (`cmp3.sh`, each computer's own "StudioSync live out"
+track left out). **No modal box in any REAPER** (the desktop's windows listed after the Redo and twice during the burst: the tooltip, the
+pill, and the ReaScript console that was already open; the laptop's and LinuxBox's hooks kept answering). Probes: `<scratchpad>/rt-r6/`
+(`chk1.sh`, `chk1r.sh`, `pair.sh`, `c/*.lua`, `burst_*.txt`, `cmp_*.txt`).
+
+| # | Check | Result | Evidence |
+| --- | --- | --- | --- |
+| 1a | The desktop renames XT Drums A -> "XT Drums R6" as the laptop sets its fader 0.5 (20:19:28.913 / .908) | **not lost silently any more, but not kept** | The desktop kept its rename with the laptop's 0.5 on it at once (the fix engages: rt-r5 lost it silently 4 of 4). The laptop auto-claimed the track with its move ("claimed XT Drums A for you as you edit", "1 change(s) went"), its change landed on the desktop at 20:19:29, and the desktop's rename went nowhere until **20:20:31 (62 s later)**: "asked James-Laptop to release XT Drums A: your edit waits here for their answer"; nobody answered, so at 20:21:02 "Not sent: James-Laptop didn't answer about XT Drums A in 30 s. Your edit is put back". All three: "XT Drums A", 0.5. That is the claims design with no one at the laptop; the 62 s is finding G. |
+| 1b | Colour (`I_CUSTOMCOLOR`) on the desktop as the laptop sets the fader 0.6 (20:22:55.425 / .405), the laptop's claim released after its move | **pass, 63 s late** | The desktop kept its colour with 0.6 at once; its own change went at **20:23:58** ("1 change(s) went to the others"), 63 s after the laptop's change landed (20:22:55). All three ended with the colour and 0.6 (LinuxBox's value byte-swapped, as REAPER on Linux stores it). |
+| 1c | Mute on the desktop as LinuxBox sets the fader 0.8 (one shared moment, 20:25:12) | **both kept, but 61 s late on both sides and the put-back line** | Neither change went for 61 s. At 20:26:13 the desktop and LinuxBox logged the same four lines in the same second: "a bandmate's live move wasn't followed by their change: put back as it was", "1 change(s) went to the others", "<the other> changed track XT Drums A as you did, at the same time: both changes are kept", "<the other>: changed a track on XT Drums A". All three ended mute 1, 0.8. Both edits were ones a live preview shows (mute, volume), so each computer held its own edit behind the other's preview until the preview gave up (`controllers.CONFIRM` 60 s). |
+| 1d | Rename on the desktop as LinuxBox sets the fader 0.7 (20:26:46) | **as 1a** | LinuxBox's change landed at once (20:26:47) with its auto-claim; the desktop asked for the claim at 20:27:49 (62 s), no answer, "Not sent ... Your edit is put back" at 20:28:19. All three: "XT Drums A", 0.7. |
+| 2 | LinuxBox moves XT Drums A's fader to 0.9, nothing else going on (20:29:06) | **pass** | The desktop and the laptop showed 0.9 within 3 s and logged "LinuxBox: changed a track on XT Drums A" at 20:29:06, the same second as the move (21:29:06 on the laptop's clock); no "wasn't followed by their change" line, still 0.9 75 s later on all three. |
+| 3 | Nothing to redo, the desktop, the panel minimized (REAPER's top: "StudioSync: changes from the others") | **pass (Redo); Undo not reachable** | The real `StudioSync - Redo.lua`: log "Nothing to redo: you haven't undone anything since your last change.", a `tooltips_class32` window, no box. "Nothing to undo" can't be reached here without undoing all of James's history in Cross Test; both scripts and the panel's radial Undo/Redo (`StudioSync - Panel.lua` line 3092) end in the same `undo.say` (read, not clicked). In the burst the drivers hit "Nothing to redo" 6 times (`undo.step`, no box). |
+| 4 | The Mac | **pass** (what can be seen from here) | Unreachable (ping 100 % lost); `Chilio-Mac.json` last written 2026-11-22T19:35:50Z (12:35 MT, over 7 h before); in no computer's peer list (d: laptop, LinuxBox; l: desktop, LinuxBox; x: laptop, desktop); its last lines in the logs are from 13:13 MT (desktop) and 06:36 MT (LinuxBox). Its REAPER couldn't be looked at. |
+
+**The 3-minute burst with StudioSync Undo and Redo** (rt-r5's driver, seeds 601/602/603, an op every 2-6 s on each computer: move, rename,
+fader, tempo, add/delete a scratch track or item, StudioSync Undo or Redo through `undo.step`, an Undo that asks pressed again half the
+time): 46 ops on the desktop, 37 on the laptop, 47 on LinuxBox (20:37:20-20:40:16), no errors, no box. Undos: the desktop 5 (one native
+"Insert track", one asked and left) and a Redo that brought 2 back, the laptop 4, LinuxBox 2 (plus one native). **At quiet + 90 s and + 180 s the laptop and LinuxBox were
+equal (35 lines: 6 scratch tracks, renamed XT tracks, retimed takes); the desktop had the same plus one track of its own, "R6 tmp d4
+(yours, not sent)"** with the driver's negative-length MIDI item (finding H). Put back from the desktop (claims released on all three
+first): desktop = laptop = LinuxBox = the starting state (17 lines).
+
+**Findings.**
+- **G. A bandmate's live preview holds this computer's own edit of that track for `controllers.CONFIRM` (60 s), even after their change
+  has landed.** Round 2 meant the band's change to end the preview at once ("so the preview ends as it should"); in REAPER the own edit went
+  61-63 s after the change landed in 1a-1d. Where both edits are ones a preview shows (1c: mute against volume) each side holds the other's
+  and both go only when both previews time out, with rt-r5's "a bandmate's live move wasn't followed by their change: put back as it was"
+  line again (finding C's words; the end state was right on all three). Where the bandmate's move auto-claimed the track (1a, 1d), the held
+  edit then asks for the claim a minute late and, unanswered, is put back: told, not silent, unlike rt-r5.
+- **H. A "(yours, not sent)" track the others never get.** The desktop added R6 tmp d4 (20:38:24, sent), undid it with StudioSync Undo
+  (20:38:29), redid it (20:38:34, "2 change(s) brought back and sent to the others"); LinuxBox deleted the track at 20:38:55, 21 s after
+  the redo had landed there; the desktop deleted the track but kept its item on "R6 tmp d4 (yours, not sent)". `mirror.apply`'s rescue of
+  new work (`just_made_here` and `new_here`) treats an item brought back by Redo as new work of ours, though the bandmate deleted it after
+  seeing it. The item was the driver's quirk (end before start: length -0.92 s), which may also matter. Shared state stayed equal; the
+  desktop shows one local extra track until someone deletes it.
+
+**Left.** "Nothing to undo" itself (needs a user with no history in a song); G (end the preview when the band's change for it lands, or
+don't hold an own edit of another setting behind it); H; 1a/1d with someone answering the claim ask.
