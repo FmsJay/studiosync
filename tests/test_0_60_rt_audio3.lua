@@ -257,6 +257,16 @@ do
   local src = assert(io.open("lib/liveaudio.lua", "rb")):read("a")
   assert(src:find("senders = liveaudio.hub_n(S.hub_mem.send, liveaudio.senders(S.las, users, liveaudio.my_la()), 2, reaper.time_precise())", 1, true), "hub_tick counts them")
   assert(la4.CEILING == 400, "the default ceiling: 400 ms (at 150 a link that holds packets longer ran dry at every hold, rt-r5)")
+  -- (round 3, from rt-r6) one computer restarts its Live sync: off the list for 63 s (20:10:12 to 20:11:16). The room's mix stays, and
+  -- is still there when it's back. It was: peer to peer at 60 s, one second before it returned, and the mix again 60 s after that.
+  local rm = {}
+  assert(la4.hub_n(rm, 4, 4, 0) == 3 and la4.hub_n(rm, 4, 4, la4.HUB_SETTLE) == 4, "a room of four, settled")
+  local t = la4.HUB_SETTLE + 600
+  assert(la4.hub_n(rm, 4, 4, t) == 4, "(ten minutes on)")
+  for dt = 1, 63 do assert(la4.hub_n(rm, 3, 4, t + dt) == 4, "one computer gone " .. dt .. " s (restarting its Live sync): the room still counts as four") end
+  assert(la4.hub_n(rm, 4, 4, t + 64) == 4, "and it's back: four, no switch either way")
+  assert(la4.hub_n(rm, 3, 4, t + 64 + la4.HUB_KEEP + 1) == 3, "(gone for good: three, HUB_KEEP s later)")
+  assert(la4.HUB_KEEP >= hub.VOUCH, "held as long as a stopped computer stays vouched for in the room (hub.VOUCH)")
 end
 
 print("ok: rt-audio3 (the firewall rule's one bad look held; no live audio, no live mix and no hub while another can; a hub that sees the whole room keeps its role with Syncthing behind; a hub's mix only for two that send, in a room big enough for a while)")

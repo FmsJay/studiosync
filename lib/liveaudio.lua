@@ -31,8 +31,9 @@ local liveaudio = { KBPS = 128, EVERY = 0.5, RETRY = 10, HELD = 0.6, TAIL = 0.25
   -- that holds packets longer than that ran dry at every hold, rt-r5; past 150 ms nobody plays along, hearing each other whole counts)
   FLOOR = 30, CEILING = 400, WIFI = 30,
   -- (the hub's live mix, below: from 4 people; its share of a core, recording; s paused; s a room stays "big" after it was, and must be
-  -- before it counts: hub_n)
-  HUB_FROM = 4, HUB_BUDGET = 0.25, HUB_REC_BUDGET = 0.10, HUB_COOL = 120, HUB_KEEP = 60, HUB_SETTLE = 60 }
+  -- before it counts: hub_n. HUB_KEEP was 60: rt-r6, one computer restarted its Live sync, 63 s off the list, and the room went peer to
+  -- peer one second before it was back, then to the mix again 60 s later. Now as long as a stopped computer stays in the room: hub.VOUCH)
+  HUB_FROM = 4, HUB_BUDGET = 0.25, HUB_REC_BUDGET = 0.10, HUB_COOL = 120, HUB_KEEP = 150, HUB_SETTLE = 60 }
 local S = { at = -math.huge, json = nil, fail_at = -math.huge } -- (this script's state: the JSON last handed over, the last start that failed)
 liveaudio.S = S
 
