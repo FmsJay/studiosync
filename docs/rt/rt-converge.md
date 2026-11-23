@@ -833,7 +833,9 @@ with no unsent edit in it, is noted with the version it holds (`mirror.kept_new`
 since, or a version the deleter never had (no deletion of it comes), stays kept, as part 38 also checks. **Not the negative length:** part 38
 reproduces it with an ordinary item, and LinuxBox's own "deleted an item on R6 tmp d4" shows the item had reached it.
 
-**Checks.** Clean-clone runs and the soak: below (filled in after the runs).
+**Checks.** In a clean clone of 8b6e2b3, `python tests/run.py --no-luals` ended `fails 0` in local time and with `TZ=UTC0`, its
+`soak.py --quick` step `ok soak` both times. The 10-minute long soak (`--first 15000`, 150 edits) passed 53 of 55 seeds (96.4 %). Both
+failures were already there before rt-fix9: 15033, and 15044, a late joiner's MIDI merge, which fails the same way at 9018131.
 
 **Round 3 REAPER re-checks.**
 1. **G, F1 again** (rt-r6 1a-1d, 5-20 ms apart): colour against the laptop's fader, mute against LinuxBox's fader, and a rename against the
