@@ -8,7 +8,7 @@ import pathlib, shutil, subprocess, sys
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 JS = r"""
 const fs = require('fs');
-const src = fs.readFileSync(process.argv[1], 'utf8'), fx = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+const src = fs.readFileSync(process.argv[1], 'utf8').replace(/\r\n/g, '\n'), fx = JSON.parse(fs.readFileSync(process.argv[2], 'utf8')); // (a CRLF checkout: the same text)
 const consts = src.match(/^const PACE_WIN = [^\n]*\n/m), fn = src.match(/^function ssPace\(st, fill, target, dt, age\) \{[\s\S]*?\n\}\n/m), again = src.match(/^function ssPaceAgain\(st\) \{[^\n]*\n/m);
 if (!consts || !fn || !again) { console.log('FAIL: ssPace, ssPaceAgain or PACE_WIN not found in the worklet'); process.exit(1); }
 const m = new Function(consts[0] + fn[0] + again[0] + 'return { ssPace, ssPaceAgain };')();

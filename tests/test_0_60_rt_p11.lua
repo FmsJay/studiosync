@@ -80,7 +80,9 @@ do -- (and the same text: a worklet can't share a file with a page in every brow
   local function body(f) return read(f):match("function ssPace%(st, fill, target, dt, age%) %b{}") end
   local a, b2, c = body("lib/webui/guestworklet.js"), body("lib/webui/sharemix.js"), body("lib/webui/listen.js")
   assert(a and a == b2 and a == c, "ssPace is the same in the guest worklet, the share mix and the listening page")
-  assert(read("extension/webui.cpp"):find("struct GPace", 1, true), "and the host's ring for a guest reads by the same control (gpace)")
+  -- (rt-audio4: gpace is extension/pace.h's light law, pace::Lite, and the golden trace pins it and ssPace together: tests/pace_lite_check.py)
+  assert(read("extension/webui.cpp"):find("using GPace = pace::Lite", 1, true) and read("extension/pace.h"):find("struct Lite", 1, true),
+    "and the host's ring for a guest reads by the same control (gpace)")
 end
 local nh = io.popen and io.popen("node --version 2>&1")
 local nv = nh and nh:read("a") or ""

@@ -68,7 +68,8 @@ about 230 bytes, 200 times a second, **~365 kbit/s per stream** (10 ms frames: ~
 | peer to peer | 10 x 365 = 3.65 Mbit/s | 3.65 | (none) |
 | mixing hub (today, from 4 people) | 0.73 | 0.37 | 5 x 365 = 1.8 |
 | forwarding relay, everything | 0.73 | 3.65 | 50 x 365 = 18 |
-| forwarding relay as built: only what each listener wants, 4 streams actually sounding | 0.73 | ~1.1 | ~16 x 365 = 5.8 |
+| forwarding relay as built, 6 Talk + 2 Play (Play exists only with armed tracks; the relay's own go directly) | 0.37-0.73 | ~2.2 | ~30 x 365 = 11 |
+| the same with a muted Talk paused (recommendation 3, not built) and 3 talking | 0.37-0.73 | ~1.1 | ~16 x 365 = 5.8 |
 
 A pure forwarder concentrates the fan-out on one uplink; that is the price of taking the hub's clock and codec out of everyone's path.
 It stays sane because:
@@ -231,7 +232,10 @@ Per sender X (not the holder, not me), with the relay on and a valid lease held 
 
 Whole native suite at the end: **191 checks, fails 0**, about 12 s, 15 runs out of 15 with no crash; `SS_RT_REAL=1 rtaudio_test stalls`,
 `outage`, `nothere`, `startorder`: all ok in real time. `extension\build_windows.cmd` with `DLL_OUT` in scratch: built (4,075,520
-bytes), the tracked DLL untouched. `python tests/run.py --no-luals` in a clean clone: in the report.
+bytes), the tracked DLL untouched. `python tests/run.py --no-luals` in a clean clone of b5134a7 (local and `TZ=UTC0`): fails 2, both
+phase 3's: the clone's CRLF checkout broke `pace_lite_check.py`'s patterns, and `test_0_60_rt_p11.lua` looked for `struct GPace` in
+`webui.cpp` (now `pace.h`'s `pace::Lite`; a two-line edit to that rt-p11 test). Fixed in the next commit; the clean-clone result of
+that commit is in the report.
 
 ## 9. Left, untested, limits
 
