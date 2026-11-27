@@ -140,6 +140,8 @@ history on it without changing the project. Opening the point as its own tab is 
 
 - `lib/webui.lua`, `lib/webui/index.html`: **not changed** (see "How it fits together").
 - `tests/rt_ui1_browser.mjs` (rt-ui1's test): the History lines changed, as described under Tests.
+- `tests/test_0_60_rt_history.lua`: its "the page only says it's looking" check now reads only the time lapse's part of `history.js`. The
+  new part does send changes, but only after the ask and the confirm.
 - `lib/histhear.lua`: `start` now shares its copy-building with Open this point (`copy_at`), with no change in behaviour. `histhear.action`
   takes `here`. `histhear.track_names` is exposed.
 
