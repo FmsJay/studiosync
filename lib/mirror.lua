@@ -5359,6 +5359,21 @@ function W.gone(w)
       mirror.gone_why[k] = mirror.gone_why[k] or (evidence and (was_here[g.oid] or put_here[g.oid]) and "user") or (not hold_empty and "not") or nil
     end
   end
+  -- (a look that would delete half the song's tracks or more asks this person first: James's decision 2, 2026-11-27, through opts.big_delete
+  -- (Live sync's claimask.big_delete, the panel's Yes / No). Held meanwhile, with what's on them, as an ask holds; No, or no answer, puts them
+  -- back with what's on them. rt-sync2 section 6 (4), rt-sync2c)
+  local big_held, big_kept = {}, {}
+  if opts.big_delete then
+    local del, here = {}, 0
+    for _, g in ipairs(gone) do if g.oid:sub(1, 1) == "T" and mirror.gone_why[pk .. g.oid] == "user" then del[#del + 1] = g.oid end end
+    if #del > 0 then
+      for t = 0, reaper.CountTracks(proj) - 1 do if not local_track(reaper.GetTrack(proj, t)) then here = here + 1 end end
+      if 2 * #del >= here + #del then
+        local yes = opts.big_delete(#del, here + #del, table.concat(del, ","))
+        for _, oid in ipairs(del) do if yes == nil then big_held[oid] = true elseif yes == false then big_kept[oid] = true end end
+      end
+    end
+  end
   for _, g in ipairs(gone) do
     local gk = pk .. g.oid
     if hold_empty and mirror.gone_why[gk] == nil then goto next_gone end -- (an emptied project, waiting: nothing judged or changed)
@@ -5387,6 +5402,16 @@ function W.gone(w)
       local function ask_once()
         if not asked_memo then asked_memo = { nil, nil }; if opts.ask then asked_memo = { opts.ask(name, last.pos) } end end
         return asked_memo[1], asked_memo[2]
+      end
+      local bt = o.kind == "track" and g.oid or o.track or ""
+      if big_held[bt] then -- (the big deletion's ask waits: so does everything on its tracks)
+        mirror.unsent[tostring(proj) .. g.oid] = true
+        if o.kind == "track" then w.held_tracks[g.oid] = true end
+        return
+      elseif big_kept[bt] then -- (No, or no answer: back, with what was on them)
+        if o.kind == "track" then w.back_tracks[g.oid] = true end
+        mirror.gone_why[gk] = nil
+        return put_back(o, g.rev, g.evid, { name = name })
       end
       if kept_back[o.track or ""] then -- (on a folder or bus that was refused above: it comes back with it)
         put_back(o, g.rev, g.evid, { name = name })

@@ -201,6 +201,12 @@ function N.look()
   local ok2, sent = pcall(mirror.watch, F.proj, cfg, SONG, ROOM, { can = can, owner_can = can, mode = w.mode, is_claimed = w.is_claimed, owner_of = w.owner_of,
     quick = true, edited_at = changed_at,
     ask = function(name, pos) return claimask.hold(cfg, B, w, name, pos) end, sent = claimask.on_sent,
+    -- (half the song's tracks or more: asked, and the person's Yes is seen by the next look, as Live sync's bar would carry it. rt-sync2c)
+    big_delete = function(n, total, key)
+      local yes, q = claimask.big_delete(F.proj, n, total, key), claimask.big_pending(F.proj)
+      if yes == nil and q then claimask.big_answer(F.proj, q.id, true) end
+      return yes
+    end,
     soft = function(name, pos) return claimask.soft(w, name, pos, USER) end })
   if not ok2 then ERRORS[#ERRORS + 1] = string.format("%.1f mirror.watch: %s", now, tostring(sent)) end
   band.try("claimask.flush", claimask.flush, cfg, B, w, false)
@@ -755,11 +761,17 @@ EDITS.lua = function(code)
   local said = assert(load(code, "edit", "t", eval_env()))()
   return said ~= nil and tostring(said) or nil
 end
+-- (and no deletion goes out without an edit of this person's behind it: one made inside an edit (Undo, Redo, Restore send their own), or by a
+-- look within DELETE_SECS of their last edit (rt-guard's 30 s, a claim's or a big deletion's ask held 30 s more, passes between). A reopen or
+-- an emptied project isn't an edit of theirs. rt-sync2 section 9's phase 3 gate, rt-sync2c)
+local in_edit, user_at, DELETE_SECS = false, -math.huge, 90
 do
   local post = sync.post
   sync.post = function(c, song, room, ev)
     if reopened and type(ev) == "table" and ev.gone then
       ERRORS[#ERRORS + 1] = string.format("%.1f a deletion of %s went out after a reopen, with no edit since (rt-guard)", now, tostring(ev.oid))
+    elseif type(ev) == "table" and ev.gone and not in_edit and now - user_at > DELETE_SECS then
+      ERRORS[#ERRORS + 1] = string.format("%.1f a deletion of %s went out with no edit of this person's in the last %d s (rt-sync2c)", now, tostring(ev.oid), DELETE_SECS)
     end
     return post(c, song, room, ev)
   end
@@ -769,9 +781,12 @@ function N.edit(kind, rtext)
   local r = band.json_decode(rtext)
   local fn = EDITS[kind]
   reopened = false
+  in_edit = true
   local ok, what = pcall(fn, r)
+  in_edit = false
   if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f edit %s: %s", now, kind, tostring(what)); return "edit raised" end
   if what then changed_at = F.clock end
+  if what and not reopened then user_at = now end
   return what or ""
 end
 return true

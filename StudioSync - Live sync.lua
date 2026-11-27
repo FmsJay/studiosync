@@ -502,6 +502,7 @@ function P.look(t)
         held = held, here = here, printers = who.printers, quick = true, -- (quick: builds on the last look, lib/mirror.lua rt-look)
         edited_at = changed_at, -- (when you last edited: what a look finds with no edit since the last one is the same act, one Undo step. rt-edits)
         ask = function(name, pos) return require("claimask").hold(cfg, b, who, name, pos) end, sent = require("claimask").on_sent, -- (Claims mode: lib/claimask.lua, rt-claims)
+        big_delete = function(n, total, key) return require("claimask").big_delete(proj, n, total, key) end, -- (half the song's tracks or more: asked first. rt-sync2c)
         soft = function(name, pos) return require("claimask").soft(who, name, pos, cfg.user) end }) -- (an auto-claim asks only for a clash: rt-merge)
       if not ok then sent = wrote end
       if not ok or wrote or sent > 0 or (back or 0) > 0 then t.redraw = true end

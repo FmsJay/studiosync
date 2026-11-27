@@ -199,4 +199,59 @@ do
   print("rt-reopen 3: a deletion needs the object to have been here: a record this session never saw the object of is put back, not sent")
 end
 
+-- ---- 4. deleting half the song's tracks or more asks first (James's decision 2): Yes sends, No or no answer puts them back; less doesn't ask --
+do
+  local function two_gone(S, B)
+    S.as(B)
+    B.F.clock = B.F.clock + 1
+    reaper.DeleteTrack(S.track(B, "Keys")); reaper.DeleteTrack(S.track(B, "Gtr"))
+    B.edited = B.F.clock
+  end
+  local function bee_gone(S) return #S.events(function(v) return v.gone and v.user == "Bee" end) end
+  -- Yes
+  local S, A, B = song("Reopen4")
+  S.big_delete = function(n, total, key) return claimask.big_delete(B.F.proj, n, total, key) end
+  T = T + 5
+  logged = {}
+  two_gone(S, B)
+  S.look(B)
+  assert(bee_gone(S) == 0, "nothing goes out while it asks (was: 2 of 3 tracks deleted for everyone at once)")
+  local q = claimask.big_pending(B.F.proj)
+  assert(q and q.text == "Delete 2 of the song's 3 tracks for everyone?" and told("Delete 2 of the song's 3 tracks"), "it asks: " .. tostring(q and q.text))
+  S.look(B)
+  assert(bee_gone(S) == 0 and S.names(B) == "Drums", "still waiting: held, not put back (" .. S.names(B) .. ")")
+  assert(claimask.big_answer(B.F.proj, q.id, true), "the bar's Yes")
+  S.settle(B)
+  assert(bee_gone(S) == 2 and not claimask.big_pending(B.F.proj), "Yes: both deletions go out (" .. bee_gone(S) .. ")")
+  S.recv(A)
+  assert(S.names(A) == "Drums", "and reach James: " .. S.names(A))
+  -- No
+  S, A, B = song("Reopen4b")
+  S.big_delete = function(n, total, key) return claimask.big_delete(B.F.proj, n, total, key) end
+  T = T + 5
+  two_gone(S, B)
+  S.look(B)
+  q = claimask.big_pending(B.F.proj)
+  assert(q and bee_gone(S) == 0, "asked")
+  claimask.big_answer(B.F.proj, q.id, false)
+  S.settle(B)
+  assert(bee_gone(S) == 0 and S.names(B):find("Keys") and S.names(B):find("Gtr") and S.knob(B) == "100", "No: back on Bee's with their plug-ins, nothing sent (" .. S.names(B) .. ")")
+  -- no answer
+  S, A, B = song("Reopen4c")
+  S.big_delete = function(n, total, key) return claimask.big_delete(B.F.proj, n, total, key) end
+  T = T + 5
+  two_gone(S, B)
+  S.look(B)
+  assert(claimask.big_pending(B.F.proj) and bee_gone(S) == 0, "asked")
+  B.F.clock = B.F.clock + claimask.BIG_WAIT + 1
+  S.settle(B)
+  assert(bee_gone(S) == 0 and S.names(B):find("Keys") and S.names(B):find("Gtr"), "no answer: back, nothing sent (" .. S.names(B) .. ")")
+  -- one of three: under half, no ask
+  T = T + 5
+  B.F.clock = B.F.clock + 40
+  S.edit(B, function() reaper.DeleteTrack(S.track(B, "Gtr")) end)
+  assert(bee_gone(S) == 1 and not claimask.big_pending(B.F.proj), "a third of the tracks goes without asking")
+  print("rt-reopen 4: deleting half the song's tracks or more asks first; Yes sends, No or no answer puts them back")
+end
+
 print("ok rt-reopen")

@@ -372,6 +372,41 @@ function claimask.web_action(cfg, b, a)
   return said and ("the web page: " .. said) or ("the web page's answer: " .. tostring(why))
 end
 
+-- ---- a big deletion (James's decision 2, 2026-11-27; rt-sync2c) ---------------------------------------------------------------------------
+-- A look that would delete half the song's tracks or more asks this person first: "Delete 3 of the song's 4 tracks for everyone? Yes / No" in the
+-- panel's bar (never a modal box: lib/undo.lua's reason), the deletion held meanwhile as a claim ask holds an edit. No, or no answer in
+-- BIG_WAIT s, puts the tracks back with what was on them. mirror.watch's W.gone asks through opts.big_delete; Live sync passes this.
+claimask.BIG_WAIT = 30
+local big = {} -- tostring(proj) -> { key, id, text, at, answer }
+-- n tracks of the song's total about to go; key names which (another set is another ask). -> true: Yes; false: No or no answer; nil: waiting.
+function claimask.big_delete(proj, n, total, key)
+  local pk, now = tostring(proj), reaper.time_precise()
+  local q = big[pk]
+  if not q or q.key ~= key then
+    seq = seq + 1
+    q = { key = key, id = "big-" .. seq, text = string.format("Delete %d of the song's %d tracks for everyone?", n, total), at = now }
+    big[pk] = q
+    band.set_ext_json(band.SECTION, "delete ask " .. pk, { id = q.id, text = q.text, till = os.time() + claimask.BIG_WAIT }, false)
+    band.log(q.text .. " Yes or No in StudioSync's bar within " .. claimask.BIG_WAIT .. " s: until then nothing goes to the others, and no answer keeps them")
+  end
+  local yes = q.answer
+  if yes == nil and now - q.at > claimask.BIG_WAIT then yes = false end
+  if yes == nil then require("mirror").unsettled = true; return nil end -- (Live sync looks again soon)
+  big[pk] = nil
+  reaper.DeleteExtState(band.SECTION, "delete ask " .. pk, false)
+  band.log(yes and string.format("deleting %d tracks for everyone", n) or string.format("kept the %d tracks: they're back, and nothing went to the others", n))
+  return yes
+end
+function claimask.big_pending(proj) -- -> the ask waiting in this tab ({ id, text, till }), or nil (the panel's bar)
+  local a = band.ext_json(band.SECTION, "delete ask " .. tostring(proj))
+  if type(a) == "table" and type(a.id) == "string" and type(a.text) == "string" and (tonumber(a.till) or 0) >= os.time() then return a end
+end
+function claimask.big_answer(proj, id, yes) -- (the bar's Yes / No, read by claimask.tick in Live sync)
+  local q = big[tostring(proj)]
+  if q and q.id == id then q.answer = yes == true; require("mirror").unsettled = true; return true end
+  return false
+end
+
 -- ---- auto-claims -------------------------------------------------------------------------------------------------------------------------
 -- mirror.watch's W.send, for each change that went (opts.sent).
 function claimask.on_sent(o, name, ev)
@@ -466,6 +501,11 @@ function claimask.tick(proj, cfg, b)
     end
     undo.clear(proj)
   end
+  local da = band.ext_json(band.SECTION, "delete answer " .. tostring(proj)) -- (the bar's Yes / No to a big deletion: claimask.big_delete)
+  if da ~= nil then
+    reaper.DeleteExtState(band.SECTION, "delete answer " .. tostring(proj), false)
+    if type(da) == "table" and type(da.id) == "string" then claimask.big_answer(proj, da.id, da.yes == true) end
+  end
   for id, q in pairs(inq) do if now - q.at > claimask.ASK_WAIT then inq[id] = nil end end -- (they've put it back by now)
   for k, a in pairs(out) do
     if a.state == "asked" and now - a.at > claimask.ASK_WAIT then a.state, a.done_at = "timeout", now; require("mirror").unsettled = true end
@@ -499,6 +539,18 @@ function claimask.bar(ctx, ImGui, proj)
       end
     end
   end
+  local d = claimask.big_pending(proj) -- (a look about to delete half the song's tracks or more: claimask.big_delete)
+  if d then
+    ImGui.AlignTextToFramePadding(ctx)
+    ImGui.TextColored(ctx, 0xFFD040FF, string.format("%s (%d s)", d.text, math.max(0, (tonumber(d.till) or 0) - os.time())))
+    for _, yes in ipairs({ true, false }) do
+      ImGui.SameLine(ctx)
+      if ImGui.SmallButton(ctx, yes and "Yes##bigdel" or "No##bigdel") then
+        reaper.SetExtState(band.SECTION, "delete answer " .. tostring(proj), band.json_encode({ id = d.id, yes = yes }), false)
+      end
+      ImGui.SetItemTooltip(ctx, yes and "Delete them for everyone." or "Keep them: they come back here, and nothing goes to the others.")
+    end
+  end
   local raw = reaper.GetExtState(band.SECTION, "claim asks " .. tostring(proj))
   local m = raw ~= "" and band.json_decode(raw)
   if type(m) ~= "table" then return end
@@ -525,7 +577,7 @@ function claimask.bar(ctx, ImGui, proj)
 end
 
 -- (tests)
-function claimask._reset() out, inq, sent_now, published = {}, {}, {}, {} end
+function claimask._reset() out, inq, sent_now, published, big = {}, {}, {}, {}, {} end
 claimask._out, claimask._inq = function() return out end, function() return inq end
 
 return claimask
