@@ -1743,6 +1743,12 @@ mirror.remember = remember
 local function trk_oid(tr) return select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "", false)):upper() end
 -- A track's rank here (P_EXT:band_rank), or nil: none yet, or not one (lib/rank.lua). rt-sync2c
 function mirror.rank_of(tr) local r = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", "", false)); return rank.valid(r) and r or nil end
+-- A track version's rank, when it's meant: only one sent by a StudioSync with ranks (`rk`) has one. An older StudioSync's Undo or Restore
+-- copies an old version's state whole, rank and all, so a rank in it is a stale place, not a move (the mixed soak, rt-sync2c). -> rank or nil
+function mirror.rank_in(ev)
+  return type(ev) == "table" and ev.rk ~= nil and type(ev.state) == "table" and rank.valid(ev.state.rank) and ev.state.rank or nil
+end
+function mirror.sans_rank(st) local c = {}; for k, v in pairs(st) do c[k] = v end; c.rank = nil; return c end
 local function itm_oid(it) return select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", false)):upper() end
 mirror.track_oid, mirror.item_oid = trk_oid, itm_oid
 -- StudioSync's own helper tracks (the SonoBus return, stems) never mirror
@@ -1789,8 +1795,8 @@ end
 
 function mirror.set_track_state(proj, tr, t, local_mix)
   reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", t.name or "", true)
-  -- (its rank, from a StudioSync that sends one: a version without one leaves the rank here as it is. A bandmate's text, checked. rt-sync2c)
-  if rank.valid(t.rank) and t.rank ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", t.rank, true) end
+  -- (not its rank: mirror.apply works out which rank a version gives the track and writes it, as a rank in a state isn't always meant:
+  -- mirror.rank_in. rt-sync2c)
   -- never fewer lanes than its items sit on: REAPER then says those items are on lane 255, and it went out as an edit, and every
   -- machine grew to 256 lanes (a Back to before the lanes, with items not yet gone: laptop and PC, 0.42.7)
   local in_use = 0
@@ -3229,14 +3235,14 @@ function mirror.apply(proj, ev, media_dir, local_mix)
   if kind == "track" then
     local tr = mirror.find(proj, "track", oid)
     local made = not tr
-    -- (where it goes: by its rank among the tracks here (lib/rank.lua), else under the track its version names. A move from a StudioSync
-    -- before ranks, in a room that has them, gets a rank for that place here, the same on every computer, so the order kept by rank keeps it
-    -- there; any other version without one keeps the rank this track has here. rt-sync2c)
+    -- (where it goes: by the rank its version gives it among the tracks here (lib/rank.lua, mirror.rank_from), else under the track its
+    -- version names. A move from a StudioSync before ranks goes where its version says, as on the old computers, and leaves the track with no
+    -- rank here until one is sent for it (its maker's mirror.rank_room): a rank made up on each computer from what it held then wasn't the
+    -- same on two of them (the mixed soak). rt-sync2c)
     local room_dir = media_dir and media_dir:gsub("/media$", "")
-    local r, old_move = rank.valid(ev.state.rank) and ev.state.rank or nil, false
+    local r, old_move = mirror.rank_in(ev), false
     if not r and room_dir then r, old_move = mirror.rank_from(room_dir, ev) end
-    local derived = not r and old_move and mirror.ranked(proj) and mirror.rank_at(proj, room_dir, oid, ev.state.after or "") or nil
-    r = r or derived or (tr and mirror.rank_of(tr))
+    if not r and not old_move then r = tr and mirror.rank_of(tr) end
     local place = r and room_dir and mirror.rank_above(proj, room_dir, oid, r) or ev.state.after or ""
     if not tr then
       local idx = 0 -- under the track it sat under there (or first)
@@ -3249,7 +3255,8 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", oid, true)
     end
     mirror.set_track_state(proj, tr, ev.state, local_mix)
-    if r and r ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r, true) end
+    if r and r ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r, true)
+    elseif not r and old_move and mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", "", true) end
     -- moved in the band's project: here too (REAPER reorders only in the tab in front; a tab behind keeps its order)
     -- (mirror.STAY: mirror.heal's mark on a version whose place is the one already held here. A key no event file can carry)
     if not ev[mirror.STAY] and mirror.track_state(proj, tr, local_mix).after ~= place and reaper.EnumProjects(-1) == proj then
@@ -3887,6 +3894,14 @@ local function event_file(room_dir, evid, depth)
   local only_w = w.retimed and not l.retimed and w.base_ev == base_id
   local only_l = l.retimed and not w.retimed and l.base_ev == base_id
   if only_w then ws = bs elseif only_l then ls = bs end
+  if w.obj == "track" and type(bs) == "table" then -- (a rank an older StudioSync copied isn't one: mirror.rank_in. rt-sync2c)
+    if bs.rank and not mirror.rank_in(b) then bs = mirror.sans_rank(bs) end
+    if ws.rank and not mirror.rank_in(w) then ws = mirror.sans_rank(ws) end
+    if ls.rank and not mirror.rank_in(l) then ls = mirror.sans_rank(ls) end
+    -- (an older StudioSync's move on either side: the merge's place is the `after` it merges, as old computers place it. mirror.rank_from)
+    local old_move = (w.moved ~= nil and not mirror.rank_in(w)) or (l.moved ~= nil and not mirror.rank_in(l))
+    v.rk = not old_move and (w.rk or l.rk or b.rk) and 1 or nil
+  end
   v.state, v.clashed = mirror.merge_state(w.obj, bs, ws, ls, l.user)
   if v.state == nil then return nil end
   -- (which track an item sits on is one more attribute, merged three-way: copied from the winner, a loser's move to another track was lost
@@ -4713,6 +4728,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   mirror.map_tag(proj, ev) -- (the tempo map its seconds are on: whoever lands it elsewhere puts it on the same beat there. rt-converge)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and w.moved_from then ev.moved = w.moved_from[o.oid] end -- (the track it sat under before you moved it: mirror.moved_since)
+  if o.kind == "track" then ev.rk = 1 end -- (its rank is meant: mirror.rank_in. rt-sync2c)
   if w.unasked[o.oid] then ev.unasked = true end -- (sent past an auto-claim whose claimer couldn't be asked: W.refuse, sync.receive's soft_ok)
   if ev.moved ~= nil then w.order_out = true end -- (a move of yours goes out: the studio's order list follows, after this look's sends)
   if o.kind == "item" and type(state) == "string" and state:find("BANDLANE", 1, true) then -- (a comp piece's source lane: mirror.comp_from)
@@ -6247,10 +6263,14 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if here then
         local from = mirror.moved_since(room_dir, last, p.t.id)
         if from and from ~= here then p.moved = here end
-        if (from or here) ~= p.t.state.after then
+        -- (and its rank the same way, in a room with ranks: the rank it has here, or one for the place the move taken back left. A version
+        -- from before ranks, put back with none, was taken for an older StudioSync's move on every other computer: three orders. rt-sync2c)
+        local r = p.t.state.rank
+        if tr and mirror.ranked(proj) then r = from and from ~= here and mirror.rank_at(proj, room_dir, p.oid, from) or mirror.rank_of(tr) or r end
+        if (from or here) ~= p.t.state.after or r ~= p.t.state.rank then
           local st = {}
           for k, v in pairs(p.t.state) do st[k] = v end
-          st.after = from or here
+          st.after, st.rank = from or here, r
           p.t = setmetatable({ state = st }, { __index = p.t })
         end
       end
@@ -6314,7 +6334,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act, tl = mirror.map_stamp(proj) }
         mirror.map_tag(proj, ev)
         local id = sync.post(cfg, song, room, ev)
@@ -6333,7 +6353,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act, tl = mirror.map_stamp(proj) } -- (act: a History page restore is one act, rt-history)
         mirror.map_tag(proj, ev)
         local id = sync.post(cfg, song, room, ev)
@@ -6477,7 +6497,14 @@ function mirror.keep_order(proj, cfg, song, room)
   if sync.pending_events(proj, cfg, song, room) > 0 then return 0 end
   local room_dir = sync.room_dir(cfg, song, room)
   local here, want = mirrored_order(proj), nil
-  if mirror.ranked(proj) then want = mirror.rank_order(proj, room_dir) -- (the studio's order from the tracks' own ranks: lib/rank.lua. rt-sync2c)
+  local ranked = mirror.ranked(proj)
+  -- (and the order list says the same, for computers on a StudioSync before ranks: theirs follows the newest list. Left on a list this one's
+  -- ranks had moved past, an old computer in the room kept another order for good: the mixed soak. rt-sync2c)
+  local function list_too()
+    local l = ranked and list_order(proj, room_dir, mirrored_order(proj))
+    if ranked and table.concat(l or {}, ",") ~= table.concat(mirrored_order(proj), ",") then mirror.publish_order(proj, room_dir, cfg.user) end
+  end
+  if ranked then want = mirror.rank_order(proj, room_dir) -- (the studio's order from the tracks' own ranks: lib/rank.lua. rt-sync2c)
   else
     want = list_order(proj, room_dir, here)
     if not want then -- (nobody's said yet: whoever's here first, and what they have then, is where everyone starts)
@@ -6487,6 +6514,7 @@ function mirror.keep_order(proj, cfg, song, room)
   end
   if table.concat(want, ",") == table.concat(here, ",") then
     mirror.rank_room(proj, cfg, song, room, here) -- (on the studio's order: what has no rank yet gets one. rt-sync2c)
+    list_too()
     return 0
   end
   local moved, n = mirror.moved_tracks(here, want, {}), 0
@@ -6512,6 +6540,7 @@ function mirror.keep_order(proj, cfg, song, room)
   reaper.Undo_EndBlock2(proj, "StudioSync: the studio's track order", -1)
   mirror.order_seen[tostring(proj)] = table.concat(mirrored_order(proj), ",") -- (not a move of this person's: the next look mustn't send it)
   reaper.TrackList_AdjustWindows(false)
+  list_too()
   return n
 end
 
@@ -6564,7 +6593,7 @@ end
 function mirror.rank_from(room_dir, ev)
   local x, steps = ev, 0
   while type(x) == "table" and steps < 200 do
-    if type(x.state) == "table" and rank.valid(x.state.rank) then return x.state.rank, false end
+    if mirror.rank_in(x) then return mirror.rank_in(x), false end
     if x.moved ~= nil or type(x.loser) == "table" and x.loser.moved ~= nil then return nil, true end
     steps = steps + 1
     local next_id = mirror.split_merge(x.id) or x.base_ev
@@ -6572,8 +6601,8 @@ function mirror.rank_from(room_dir, ev)
   end
   return nil, false
 end
--- A rank for a track landing under `above` with no rank of its own (moved by a StudioSync before ranks): between the tracks around that
--- place here, so it stays there when the order is kept by rank. The same on every computer holding the same ranks. -> a rank or nil.
+-- A rank for a track going under `above` (StudioSync's Undo or Restore taking a move back: worked out by the computer that sends it, which
+-- sends it): between the ranked tracks around that place here. -> a rank or nil.
 function mirror.rank_at(proj, room_dir, oid, above)
   local order = mirror.rank_order(proj, room_dir, oid)
   local a, b, at = nil, nil, above == "" and 0 or nil
@@ -6620,7 +6649,7 @@ function mirror.rank_room(proj, cfg, song, room, here)
         act = act or new_act(cfg.user, reaper.time_precise())
         mirror.hlc_seen(ev.hlc)
         local post = { type = "obj", obj = "track", oid = oid, rev = mirror.next_rev(rev, false), base = rev, base_ev = evid, state = st, name = st.name,
-          hash = mirror.track_hash(st), hv = mirror.HV, act = act, auto = true }
+          hash = mirror.track_hash(st), hv = mirror.HV, act = act, auto = true, rk = 1 }
         local id = sync.post(cfg, song, room, post)
         remember(proj, oid, post.rev, post.hash, id, mirror.order_of(post))
         n = n + 1

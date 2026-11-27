@@ -5,9 +5,14 @@
 --  2. A room's tracks get ranks once, on the studio's order (mirror.keep_order -> mirror.rank_room), as StudioSync's own act (no Undo step).
 --  3. A move: the moved track gets a rank between its new neighbours'; the bandmate's computer sorts it there.
 --  4. Two moves made at once, on two computers: both end on the same order. A late joiner sorts and lands on it too.
---  5. A move from a StudioSync before ranks (a version with no rank, `moved` set): every new computer gives it the same rank for that place,
---     and keeping the order by rank keeps it there. A new track made here gets a rank between the tracks around it.
+--  5. A move from a StudioSync before ranks (a version with no rank, `moved` set): every new computer puts it where its version says, unranked,
+--     until its maker's computer sends a rank for that place. A new track made here gets a rank between the tracks around it.
 --  6. (merge) a version without a rank, merged with one that moved the track, keeps the move's rank (a missing rank is no change).
+--  7. An Undo or Restore of a version from before ranks keeps the track's place, on a track made anew as on one already there.
+--  8. StudioSync's Undo of a move made before ranks sends the rank of the place it goes back to.
+--  9. A rank an older StudioSync copied into a version (its Undo puts an old state back whole) isn't taken for the track's place.
+-- 10. With old computers in the room: the order list follows the ranks (old computers go to the newest list), and an older StudioSync's move
+--     merged with a new edit keeps its place.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -203,10 +208,13 @@ do
     base_ev = h.id, state = st, moved = S.track(A, "Bass") and h.state.after or "", time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (h.hlc or 0) + 1000 }
   S.recv(A); S.recv(B)
   assert(S.names(A) == "Gtr, Drums, Bass, Keys" and S.names(B) == S.names(A), "the old computer's move lands at the top on both: " .. S.names(A) .. " / " .. S.names(B))
-  assert(S.rank(A, "Gtr") and S.rank(A, "Gtr") == S.rank(B, "Gtr") and rank.less(S.rank(A, "Gtr"), S.rank(A, "Drums")), "with the same rank for that place on both")
-  S.keep(A); S.keep(B)
-  assert(S.names(A) == "Gtr, Drums, Bass, Keys" and S.names(B) == S.names(A), "and keeping the order by rank keeps it there")
-  assert(#S.events(function(v) return v.obj == "track" and v.name == "Gtr" and v.user ~= "Old" and v.rev > h.rev end) == 0, "nobody sends it again")
+  assert(not S.rank(A, "Gtr") and not S.rank(B, "Gtr"), "with no rank on either: it sits under what its version names, as on the old computers")
+  S.keep(B)
+  assert(S.names(B) == "Gtr, Drums, Bass, Keys", "keeping the order by rank keeps it there: " .. S.names(B))
+  S.keep(A) -- (James made Gtr: his computer ranks it for that place, and sends it)
+  S.recv(B); S.keep(B)
+  assert(S.rank(A, "Gtr") and S.rank(A, "Gtr") == S.rank(B, "Gtr") and rank.less(S.rank(A, "Gtr"), S.rank(A, "Drums")), "then one rank for that place on both, sent by its maker")
+  assert(S.names(A) == "Gtr, Drums, Bass, Keys" and S.names(B) == S.names(A), "and there it stays: " .. S.names(A) .. " / " .. S.names(B))
   -- a new track on James's between Drums and Bass
   T = T + 5
   S.edit(A, function(F) F.add_track("Pad", 3) end)
@@ -214,7 +222,7 @@ do
   assert(rank.less(S.rank(A, "Drums"), S.rank(A, "Pad")) and rank.less(S.rank(A, "Pad"), S.rank(A, "Bass")), "with a rank between Drums's and Bass's")
   S.recv(B)
   assert(S.names(B) == "Gtr, Drums, Pad, Bass, Keys", "Bee's puts it there: " .. S.names(B))
-  print("rt-rank 5: an older computer's move gets the same rank on every new computer and stays; a new track gets one between its neighbours")
+  print("rt-rank 5: an older computer's move lands where it says, unranked until its maker ranks it; a new track gets a rank between its neighbours")
 end
 
 -- ---- 6. merge: a missing rank is no change ----------------------------------------------------------------------------------------------------
@@ -253,6 +261,85 @@ do
   S.keep(B); S.keep(C)
   assert(S.names(B) == S.names(C), "the same order: " .. S.names(B) .. " / " .. S.names(C))
   print("rt-rank 7: an Undo of a version from before ranks keeps the track's place everywhere")
+end
+
+-- ---- 8. StudioSync's Undo of a move made before the room had ranks sends the track's rank for the place it goes back to ---------------------
+do
+  local S = studio("Rank8")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) for _, n in ipairs({ "Drums", "Bass", "Gtr", "Keys" }) do F.add_track(n) end end)
+  S.keep(A) -- (the studio's order list; no ranks yet)
+  S.recv(B)
+  T = T + 5
+  S.move(A, "Gtr", 0) -- (a move made before ranks: its version has none)
+  S.recv(B)
+  S.keep(A) -- (now on the list's order: ranked)
+  S.recv(B)
+  assert(S.rank(A, "Gtr") and S.names(B) == "Gtr, Drums, Bass, Keys", "ranked after the move: " .. S.names(B))
+  T = T + 5
+  S.as(A)
+  local undo = require("undo")
+  local said = undo.step(A.F.proj, A.cfg, S.b, false, {})
+  S.settle(A)
+  assert(S.names(A) == "Drums, Bass, Gtr, Keys", "James's Undo takes the move back: " .. S.names(A) .. " (" .. tostring(said) .. ")")
+  local ev = S.events(function(v) return v.obj == "track" and v.name == "Gtr" and v.undoes end)[1]
+  assert(ev and ev.state.rank and ev.state.rank == S.rank(A, "Gtr"), "the Undo's version has the rank it has on James's (was: none, and every other computer made up its own)")
+  S.recv(B); S.keep(A); S.keep(B)
+  assert(S.names(B) == "Drums, Bass, Gtr, Keys" and S.rank(B, "Gtr") == S.rank(A, "Gtr"), "Bee's goes back there with the same rank: " .. S.names(B))
+  print("rt-rank 8: an Undo of a move made before ranks sends the rank of the place it goes back to")
+end
+
+-- ---- 9. a rank an older StudioSync copied into a version isn't a place --------------------------------------------------------------------
+do
+  local S, A, B = song("Rank9")
+  S.recv(B)
+  T = T + 5
+  S.move(B, "Keys", 0) -- (Bee: Keys to the top, with a new rank)
+  S.recv(A)
+  local mv = S.events(function(v) return v.obj == "track" and v.name == "Keys" and v.moved ~= nil end)[1]
+  local first = S.events(function(v) return v.obj == "track" and v.name == "Keys" and v.auto end)[1] -- (the version that ranked it)
+  assert(mv and first and S.names(A) == "Keys, Drums, Bass, Gtr", "Bee's move on both: " .. S.names(A))
+  -- an older computer's Undo of something on Keys: the ranked version's state put back whole (its old rank in it), no `rk`, built on Bee's move
+  local st = band.json_decode(band.json_encode(first.state))
+  st.mute = 1
+  local id = "Old-20270101-000002Z-00001-0003"
+  files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "track", oid = mv.oid, id = id, user = "Old", name = "Keys", rev = mv.rev + 1, base = mv.rev,
+    base_ev = mv.id, state = st, restored = first.id, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (mv.hlc or 0) + 1000 }
+  S.recv(A); S.recv(B); S.keep(A); S.keep(B)
+  assert(S.names(A) == "Keys, Drums, Bass, Gtr" and S.names(B) == S.names(A), "Keys stays at the top on both (was: back at the copied rank's place): " .. S.names(A) .. " / " .. S.names(B))
+  assert(S.rank(A, "Keys") == mv.state.rank and S.rank(B, "Keys") == mv.state.rank, "with Bee's rank")
+  print("rt-rank 9: a rank an older StudioSync copied back isn't taken for the track's place")
+end
+
+-- ---- 10. old computers in the room: the order list follows the ranks, and an older StudioSync's move merged with a new edit keeps its place --
+do
+  local S, A, B = song("Rank10")
+  S.recv(B)
+  -- an older computer's list, the newest so far, in an order the ranks have moved past
+  files[S.dir .. "/order/Old.json"] = { list = { S.track(A, "Keys").ext.band_oid, S.track(A, "Drums").ext.band_oid, S.track(A, "Bass").ext.band_oid, S.track(A, "Gtr").ext.band_oid },
+    time = os.date("!%Y-%m-%dT%H:%M:%SZ"), by = "Old" }
+  T = T + 5
+  S.keep(A)
+  local best = mirror.read_order(S.dir)
+  local names = {}
+  for _, oid in ipairs(best.list) do for _, t in ipairs(A.F.tracks) do if t.ext.band_oid == oid then names[#names + 1] = t.name end end end
+  assert(S.names(A) == "Drums, Bass, Gtr, Keys" and table.concat(names, ", ") == "Drums, Bass, Gtr, Keys" and best.by == "James",
+    "James's computer keeps its ranks' order and says it in the list old computers follow (was: the old list stood): " .. table.concat(names, ", ") .. " by " .. tostring(best.by))
+  -- an older computer's move of Bass to the top, made apart from Bee's rename of it: merged, the move keeps its place
+  T = T + 5
+  local held = S.events(function(v) return v.obj == "track" and v.name == "Bass" end)
+  table.sort(held, function(x, y) return x.rev < y.rev end)
+  local h = held[#held]
+  S.edit(B, function() reaper.GetSetMediaTrackInfo_String(S.track(B, "Bass"), "P_NAME", "Bass 2", true) end)
+  local st = band.json_decode(band.json_encode(h.state))
+  st.after = ""
+  local id = "Old-20270101-000003Z-00001-0004"
+  files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "track", oid = h.oid, id = id, user = "Old", name = "Bass", rev = h.rev + 1, base = h.rev,
+    base_ev = h.id, state = st, moved = h.state.after, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (h.hlc or 0) + 5000 }
+  S.recv(A); S.recv(B); S.keep(A); S.keep(B)
+  assert(S.names(A) == "Bass 2, Drums, Gtr, Keys" and S.names(B) == S.names(A), "both: the rename and the old computer's move (was: the move lost to the rank both had before): " ..
+    S.names(A) .. " / " .. S.names(B))
+  print("rt-rank 10: the order list follows the ranks for old computers, and an old computer's move merged with a new edit keeps its place")
 end
 
 print("ok rt-rank")
