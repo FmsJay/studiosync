@@ -1863,7 +1863,7 @@ end
 sync.version_looked = {} -- proj -> true: its skipped changes were looked at for this version
 -- A bandmate's deletion `ev`, held back here only by this computer's own auto-claim on its track: made before that claim? Then its maker couldn't
 -- ask (the claim didn't exist), and the claim came from an edit made without seeing the deletion (the track is still here): the deletion lands
--- now, as a deletion beats an edit made without seeing it (mirror.gone_race). Refused, it waited the minute a refused change waits: LinuxBox
+-- now, as a deletion beats an edit made without seeing it (the judge's deletion rule, lib/judge.lua). Refused, it waited the minute a refused change waits: LinuxBox
 -- moved an item on XT R1 take with Live sync off, auto-claimed the track as the move went out at the start, and James's deletion, in the link's
 -- inbox since before, applied 61 s later (rt-linkmove round 5 C, rt-r1). A deletion made after the claim waits its minute, as before. rt-fix6a
 function sync.gone_before_claim(cfg, song, room, ev)

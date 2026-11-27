@@ -3111,7 +3111,7 @@ function mirror.only_retimed(proj, io, room_dir)
   return b and type(e.state) == "string" and type(b.state) == "string" and mirror.sans_tempo(e.state) == mirror.sans_tempo(b.state) or false
 end
 -- Is this computer's record of an item its own new work: every version back to the first this person's (a take just recorded, trimmed since)?
--- An edit of an item the band had isn't: a track's deletion made without seeing it beats it, as for any edit (mirror.gone_race). A version that
+-- An edit of an item the band had isn't: a track's deletion made without seeing it beats it, as for any edit (the judge's deletion rule, lib/judge.lua). A version that
 -- can't be read here counts as new (kept, as before). LinuxBox's move of the desktop's take, made with Live sync off, kept the deleted track as
 -- "XT R1 take (yours, not sent)" (rt-linkmove round 5 C, rt-r1). rt-fix6a
 function mirror.new_here(proj, io, room_dir)
@@ -3823,7 +3823,7 @@ local function event_file(room_dir, evid, depth)
   -- (a version one of them builds on isn't here yet, so where the two meet can't be told: no merge for now, and none remembered. With "the
   -- older of their two bases" in its place a computer that had a change before the change it was built on (the link ahead of Syncthing) put
   -- the two together from the wrong version, kept that for good, and held a merge of the same name as everyone else's with other notes in
-  -- it: nothing ever compared them again. The soak's seed 43. mirror.merge_for waits for it as it waits for a change in between. rt-converge)
+  -- it: nothing ever compared them again. The soak's seed 43. The judge waits for it, as for a change in between: incomplete. rt-converge, rt-sync2b)
   if not base_id and missing then mirror.base_missing = true; return nil, true end
   if not base_id then -- (no shared past here: the older of their two bases, as before 0.58.47)
     local older = w
