@@ -257,6 +257,7 @@ extern "C" REAPER_PLUGIN_DLL_EXPORT int REAPER_PLUGIN_ENTRYPOINT(REAPER_PLUGIN_H
   { void sign_register(reaper_plugin_info_t *); sign_register(rec); } // (reaper.StudioSync_Verify*, KeyCreate, Sign, FileHash: signed updates, extension/sign.cpp)
   { void hop_register(reaper_plugin_info_t *); hop_register(rec); } // (reaper.StudioSync_HopLoopback, HopStatus: the Hop plug-in's end, extension/hop.cpp; idle until asked)
   { void nat_register(reaper_plugin_info_t *); nat_register(rec); } // (reaper.StudioSync_Nat*: the connection without Tailscale, extension/nat.cpp, after live audio's: it hands live audio the bandmates it reaches; idle until lib/nat.lua sets it up)
+  { void remotectl_register(reaper_plugin_info_t *); remotectl_register(rec); } // (reaper.StudioSync_RemoteControl*, POST /api/input: the screen share's pointer and remote control, extension/remotectl.cpp; idle until a page shares. rt-share)
 #endif
   SetExtState(SECTION, "menu extension", EXT_VERSION, false);
   SetExtState(SECTION, "menu extension toolbar", toolbar_api ? "1" : "0", false); // (REAPER before 7.11 has no way: the panel says so)

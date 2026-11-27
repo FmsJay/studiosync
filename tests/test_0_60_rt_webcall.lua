@@ -133,6 +133,10 @@ assert(js:find("iceServers: model && Array.isArray(model.ice) ? model.ice : []",
 assert(js:find("getDisplayMedia", 1, true) and js:find("audio: sys ?", 1, true), "the screen's own audio only when System audio is picked (rt-share)")
 assert(not js:find("innerHTML", 1, true) and not js:find("insertAdjacentHTML", 1, true), "bandmates' names go in as text")
 assert(js:find("You’re sharing your screen", 1, true) and js:find("'Stop', stopSharing", 1, true), "the sharing bar says so, with Stop")
-assert(not js:find("addEventListener('keydown'", 1, true), "no keys taken (app.js passes them to REAPER in the docked view)")
+-- (rt-share: keys are taken only by a watched share's tile, with the focus, while you control the sharer's window; otherwise app.js passes
+-- them to REAPER in the docked view)
+local _, nkeys = js:gsub("addEventListener%('keydown'", "")
+assert(nkeys == 1 and js:find("f.addEventListener('keydown', key(true))", 1, true) and js:find("if (!youCtl(s) || ev.isComposing) return;", 1, true),
+  "no keys taken but while in control")
 assert(css:find("#sharebar", 1, true) and css:find(".board", 1, true), "the bar and the pointer's layer styled")
 print("ok")

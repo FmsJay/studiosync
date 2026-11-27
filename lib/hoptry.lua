@@ -430,6 +430,7 @@ end
 function hoptry.asks_clear() bar_s = ""; reaper.SetExtState(band.SECTION, "try asks", "", false) end
 -- The panel's bar (StudioSync - Panel.lua, beside the claim asks): each ask with Allow and Deny.
 function hoptry.bar(ctx, ImGui)
+  require("webcall").bar(ctx, ImGui) -- (beside these: a watcher asks to control your shared window, and who controls it now. rt-share)
   local raw = reaper.GetExtState(band.SECTION, "try asks")
   local list = raw ~= "" and band.json_decode(raw)
   if type(list) ~= "table" then return end
@@ -448,6 +449,24 @@ function hoptry.bar(ctx, ImGui)
       end
     end
   end
+end
+
+-- ---- "Show its window" (rt-share, findings item 4: "screen share + control of that VST's window") -------------------------------------------
+-- The borrower asks to see the plug-in's own window (the Try tab's Show its window -> lib/webcall.lua "ask"); the owner says yes in their
+-- page each time, the window opens here and their page shares just that window, whose control can then be asked for as any share's.
+-- -> { track (its hidden track's GUID), fxi, fx } of a try or a borrowed plug-in this computer hosts (for `user`, when given), or nil.
+function hoptry.window_of(token, user)
+  local sv = S().serving[token]
+  if not (sv and (sv.try or sv.borrowed)) or (user and sv.user ~= user) then return nil end
+  return { track = sv.track, fxi = 1, fx = hoptry.clip(sv.name or sv.fx, 200) } -- (FX 1: after Hop X, as hops.serve puts it)
+end
+-- The owner's yes: its floating window opens (only ever here, by them). -> window_of's answer, or nil.
+function hoptry.show_window(token)
+  local w = hoptry.window_of(token)
+  local tr = w and track_of(0, w.track)
+  if not tr then return nil end
+  reaper.TrackFX_Show(tr, w.fxi, 3)
+  return w
 end
 
 -- ---- the web UI's Try tab --------------------------------------------------------------------------------------------------------------
@@ -479,7 +498,7 @@ function hoptry.model(proj, cfg, b)
       local page = math.min(kv.page or 0, (pages or 1) - 1)
       local params, matched = nil, nil
       if pm then params, matched = hoptry.knob_view(pm.list, page, q) end
-      tries[#tries + 1] = { id = rec.id, fx = rec.key or rec.fx, user = rec.user, track = rec.track, ok = ok, text = text, params = params,
+      tries[#tries + 1] = { id = rec.id, token = rec.token, fx = rec.key or rec.fx, user = rec.user, track = rec.track, ok = ok, text = text, params = params,
         borrowed = rec.borrowed or nil, keeping = (st.keep[rec.token] or st.kept[rec.token]) and true or nil,
         total = pm and pm.total or nil, name = pm and pm.fx or nil, instrument = pm and pm.instrument or nil, page = pm and page or nil, pages = pages,
         kq = q ~= "" and q or nil, matched = q ~= "" and matched or nil, printing = st.printing ~= nil and st.printing.id == rec.id or nil }

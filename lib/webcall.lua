@@ -17,7 +17,9 @@ webcall.HERE_EVERY = 5   -- seconds between "here"s this computer passes on (sev
 webcall.NAME_MAX = 64
 
 local KINDS = { call = true, screen = true }       -- an offer's: a video call, or a screen share (the caller shares, the other watches)
-local TO_ONE = { offer = true, answer = true, bye = true, busy = true } -- to one computer; "here" goes to everyone in the room
+local TO_ONE = { offer = true, answer = true, bye = true, busy = true, ask = true } -- to one computer; "here" goes to everyone in the room
+-- (rt-share: "ask" = a borrower asks to see a plug-in's own window, what = "window", token = the try's, fx = its name; the owner's yes is
+-- their screen share of that window, its offer carrying re = the ask's call id; a no is "busy")
 
 local function dev_ok(s) return require("services").is_device_id(s) end
 local function call_ok(s) return type(s) == "string" and #s >= 8 and #s <= 64 and s:match("^[%w%-]+$") ~= nil end
@@ -35,6 +37,12 @@ function webcall.from_page(a, me)
   if a.t == "offer" then
     if not KINDS[a.kind] then return nil, "neither a call nor a screen share" end
     m.kind, m.audio = a.kind, a.audio == true or nil
+    if a.re ~= nil then if not call_ok(a.re) then return nil, "not an ask's call id" end m.re = a.re end
+  end
+  if a.t == "ask" then
+    local token = math.tointeger(tonumber(a.token))
+    if a.what ~= "window" or not token or token < 1 or type(a.fx) ~= "string" then return nil, "not an ask to see a plug-in's window" end
+    m.what, m.token, m.fx = "window", token, require("hoptry").clip(a.fx, 200)
   end
   if a.t == "offer" or a.t == "answer" then
     if type(a.sdp) ~= "string" or #a.sdp > webcall.SDP_MAX or a.sdp:sub(1, 4) ~= "v=0\r" and a.sdp:sub(1, 4) ~= "v=0\n" then return nil, "no session description, or too big" end
@@ -63,6 +71,7 @@ local function host_of(peer) return type(peer) == "string" and peer:match("^([^%
 -- (one queue for this computer: the studio in front's, as the rest of the web UI. boot: the pages start counting again when it changes)
 local q, seq, open, dirty = {}, 0, {}, true
 local view_until, view_at = -math.huge, -math.huge -- (rt-share: this computer sharing until; its arrange view last published at)
+local asks, answers, fxwins = {}, {}, {} -- (rt-share: watchers' asks for control the panel's bar shows; its answers; plug-in windows opened to share)
 webcall.boot = tostring(os.time())
 local function push(m, now)
   seq = seq + 1
@@ -82,7 +91,12 @@ function webcall.model(me, now, live)
   for i = #q, 1, -1 do if now - q[i].time >= webcall.KEEP_FOR then table.remove(q, i) end end
   for _, m in ipairs(q) do msgs[#msgs + 1] = m end
   dirty = false
-  return { boot = webcall.boot, me = me, open = list, msgs = msgs, live = live and true or nil, ice = webcall.ice() }
+  for i = #answers, 1, -1 do if now - answers[i].time >= webcall.KEEP_FOR then table.remove(answers, i) end end
+  local fw = {}
+  for token, w in pairs(fxwins) do fw[#fw + 1] = { token = token, track = w.track, fxi = w.fxi, fx = w.fx } end
+  table.sort(fw, function(a, z) return a.token < z.token end)
+  return { boot = webcall.boot, me = me, open = list, msgs = msgs, live = live and true or nil, ice = webcall.ice(),
+    answers = #answers > 0 and answers or nil, fxwin = #fw > 0 and fw or nil }
 end
 -- (P13, backlog 3.2 A) The pages' ICE servers: with the studio's connection without Tailscale on, its STUN servers and the studio's relay as
 -- TURN (lib/nat.lua ice), so two browsers that aren't on each other's Tailscale or network still meet; nil otherwise (host candidates only,
@@ -93,7 +107,7 @@ function webcall.ice()
   return ok and list or nil
 end
 function webcall.dirty() return dirty end
-function webcall.reset() q, seq, open, dirty, view_until, view_at = {}, 0, {}, true, -math.huge, -math.huge end -- (tests)
+function webcall.reset() q, seq, open, dirty, view_until, view_at, asks, answers, fxwins = {}, 0, {}, true, -math.huge, -math.huge, {}, {}, {} end -- (tests)
 
 -- ---- Live sync's side (lib/webui.lua's tick) ---------------------------------------------------------------------------------------------
 function webcall.me(cfg) ice_root = cfg.root; return { user = cfg.user, dev = require("services").my_device_id() } end
@@ -108,6 +122,14 @@ webcall.TRACKS_MAX = 256
 -- -> true when done. clock: reaper.time_precise().
 function webcall.local_msg(a, clock)
   if a.t == "view" then view_until = clock + webcall.VIEW_FOR; return true end
+  if a.t == "ctlask" then return webcall.ctl_ask(a, clock) end
+  if a.t == "fxwin" then -- (the owner said yes to "Show its window": it opens here, and the page shares it. rt-share)
+    local token = math.tointeger(tonumber(a.token))
+    local w = token and require("hoptry").show_window(token)
+    if not w then return false end
+    fxwins[token], dirty = w, true
+    return true
+  end
   if a.t ~= "duck" or not dev_ok(a.to) then return false end
   local o = open[a.to] -- (a bandmate whose page is open: their name is what live audio's cue mix goes by)
   if not o then return false end
@@ -119,6 +141,72 @@ function webcall.local_msg(a, clock)
   return true
 end
 function webcall.viewing(clock) return clock < view_until end
+
+-- ---- asks for control on the panel's bar (rt-share; the page has its own Allow / Deny, lib/webui/call.js) -----------------------------------
+-- The sharer's page says each ask it shows ({t = "ctlask", call, user, on}: on = false when it's answered or gone; renewed every few s, so
+-- one from a closed page goes by itself); Live sync puts them in ExtState "share asks" for the panel's bar (webcall.bar) and takes the bar's
+-- answer from "share answer" ({call, yes}) into the model's answers, which the page acts on. Control itself is the extension's
+-- (extension/remotectl.cpp): the bar also says who controls now, with Stop (StudioSync_RemoteControlStop).
+webcall.ASK_FOR = 8
+local bar_s = nil
+function webcall.ctl_ask(a, clock)
+  if not call_ok(a.call) then return false end
+  if a.on == true and name_ok(a.user) then asks[a.call] = { call = a.call, user = a.user, at = clock } else asks[a.call] = nil end
+  return true
+end
+-- -> the asks still being shown, oldest first. clock: reaper.time_precise().
+function webcall.ctl_asks(clock)
+  local out = {}
+  for c, x in pairs(asks) do if clock - x.at > webcall.ASK_FOR then asks[c] = nil else out[#out + 1] = { call = x.call, user = x.user, at = x.at } end end
+  table.sort(out, function(a, z) return a.at < z.at end)
+  for _, x in ipairs(out) do x.at = nil end
+  return out
+end
+-- Live sync's tick (from view_tick): the bar's answer in, the asks out (only when they changed).
+function webcall.asks_tick(clock, now)
+  local raw = reaper.GetExtState(band.SECTION, "share answer")
+  if raw ~= "" then
+    reaper.DeleteExtState(band.SECTION, "share answer", false)
+    local a = band.json_decode(raw)
+    if type(a) == "table" and call_ok(a.call) and asks[a.call] then
+      asks[a.call] = nil
+      seq = seq + 1
+      answers[#answers + 1] = { call = a.call, yes = a.yes == true, seq = seq, time = now }
+      dirty = true
+    end
+  end
+  local list = webcall.ctl_asks(clock)
+  local s = #list > 0 and band.json_encode(list) or ""
+  if s ~= bar_s then bar_s = s; reaper.SetExtState(band.SECTION, "share asks", s, false) end
+end
+-- The panel's bar (StudioSync - Panel.lua, through hoptry.bar): each ask with Allow / Deny, and who controls your shared window now, with Stop.
+function webcall.bar(ctx, ImGui)
+  local raw = reaper.GetExtState(band.SECTION, "share asks")
+  local list = raw ~= "" and band.json_decode(raw)
+  for _, a in ipairs(type(list) == "table" and list or {}) do
+    if type(a) == "table" and call_ok(a.call) and name_ok(a.user) then
+      ImGui.AlignTextToFramePadding(ctx)
+      ImGui.TextColored(ctx, 0xFFD040FF, a.user .. " asks to control the window you're sharing")
+      for _, yes in ipairs({ true, false }) do
+        ImGui.SameLine(ctx)
+        if ImGui.SmallButton(ctx, (yes and "Allow##ctlask" or "Deny##ctlask") .. a.call) then
+          reaper.SetExtState(band.SECTION, "share answer", band.json_encode({ call = a.call, yes = yes }), false)
+        end
+        ImGui.SetItemTooltip(ctx, yes and "Their mouse and keys work inside that window only, until you move your own mouse, press Ctrl+Alt+Esc or Stop."
+          or "They keep watching; nothing of theirs reaches your computer.")
+      end
+    end
+  end
+  if not reaper.StudioSync_RemoteControlStatus then return end
+  local ok, st = pcall(function() return band.json_decode(reaper.StudioSync_RemoteControlStatus()) end)
+  if ok and type(st) == "table" and st.on == true and type(st.who) == "string" then
+    ImGui.AlignTextToFramePadding(ctx)
+    ImGui.TextColored(ctx, 0xFF6040FF, require("hoptry").clip(st.who, 64) .. " is controlling the window you're sharing")
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Stop##ctlstop") then reaper.StudioSync_RemoteControlStop() end
+    ImGui.SetItemTooltip(ctx, "Takes control back at once (so does moving your own mouse, or Ctrl+Alt+Esc).")
+  end
+end
 
 -- A window's rect, y downward on every system (macOS counts up from the bottom: flipped, as only differences are used). JS_ReaScriptAPI, else
 -- SWS. -> { x, y, w, h } or nil.
@@ -163,6 +251,7 @@ function webcall.view_model(proj)
 end
 -- Live sync's tick (lib/webui.lua): while this computer shares, its arrange view every VIEW_EVERY s (published only when it changed).
 function webcall.view_tick(proj, publish, clock)
+  webcall.asks_tick(clock, os.time()) -- (the panel's answers to asks for control: rt-share)
   if clock >= view_until then
     if view_at > -math.huge then view_at = -math.huge; publish("rtview", { on = false }) end
     return
@@ -176,9 +265,14 @@ end
 -- comes back to the pages as { t = "error", call, why }; what went out is shown to the other pages here (no SDP) as { out = true, ... }, so
 -- a ring on a second window stops when one answers.
 local here_at = -math.huge
+local LOCAL = { duck = true, view = true, ctlask = true, fxwin = true } -- (a page's messages that stay on this computer)
 function webcall.page(cfg, b, a, now)
   now = now or os.time()
-  if type(a) == "table" and (a.t == "duck" or a.t == "view") then return webcall.local_msg(a, reaper.time_precise()) and false end -- (this computer only)
+  if type(a) == "table" and LOCAL[a.t] then
+    -- (opening a plug-in's window and asks for control: only from a page on this computer, the one that shares. rt-share)
+    if (a.t == "fxwin" or a.t == "ctlask") and not (reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1) then return false end
+    return webcall.local_msg(a, reaper.time_precise()) and false -- (this computer only)
+  end
   local m = webcall.from_page(a, webcall.me(cfg))
   if not m then return false end
   local direct = require("direct")
@@ -200,6 +294,7 @@ function webcall.link(cfg, b, d, now)
   local known = webcall.known(direct.peers(cfg, b.song, b.room))
   local m = webcall.from_link(d, webcall.me(cfg), known)
   if not m then return false end
+  if m.t == "ask" and not require("hoptry").window_of(m.token, m.user) then return false end -- (only for a plug-in this computer hosts for them)
   local o = open[m.dev]
   if not o or o.user ~= m.user then dirty = true end
   open[m.dev] = { user = m.user, host = host_of(known[m.dev]), peer = known[m.dev], at = now } -- (any message from them says their page is open)

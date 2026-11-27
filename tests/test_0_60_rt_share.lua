@@ -127,4 +127,113 @@ assert(not cj:find("innerHTML", 1, true) and not cj:find("insertAdjacentHTML", 1
 assert(cj:find("by: s.user, dev: s.dev", 1, true), "the sharer names a note's author from the connection, not the note")
 assert(wl:find("webcall.view_tick(proj, publish, now)", 1, true), "Live sync's web UI tick publishes the view")
 assert(la:find("liveaudio.ducks[name]", 1, true), "live audio honours a duck")
+
+-- ---- the pointer, control and "Show its window" (rt-share, findings items 2 and 4) ----------------------------------------------------------
+-- The window ask: its own message kind, to one computer, with the try's token and the plug-in's name; a share's offer may name the ask it answers.
+local me = { user = "James", dev = ME }
+local m = webcall.from_page({ t = "ask", to = CHI, call = "abcdef0123456789", what = "window", token = 77, fx = ("F"):rep(300) }, me)
+assert(m and m.t == "ask" and m.what == "window" and m.token == 77 and #m.fx == 200 and m.to == CHI, "an ask to see a plug-in's window, its name clipped")
+assert(not webcall.from_page({ t = "ask", to = CHI, call = "abcdef0123456789", what = "screen", token = 77, fx = "x" }, me), "only 'window'")
+assert(not webcall.from_page({ t = "ask", to = CHI, call = "abcdef0123456789", what = "window", token = 7.5, fx = "x" }, me), "a whole token")
+assert(not webcall.from_page({ t = "ask", to = CHI, call = "abcdef0123456789", what = "window", token = 0, fx = "x" }, me), "a token of 1 or more")
+assert(not webcall.from_page({ t = "ask", to = CHI, call = "abcdef0123456789", what = "window", token = 7 }, me), "a name")
+local sdp = "v=0\r\no=- 1 1 IN IP4 0.0.0.0\r\n"
+m = webcall.from_page({ t = "offer", to = CHI, call = "abcdef0123456789", kind = "screen", sdp = sdp, re = "fedcba9876543210" }, me)
+assert(m and m.re == "fedcba9876543210", "an offer answering a window ask says which")
+assert(not webcall.from_page({ t = "offer", to = CHI, call = "abcdef0123456789", kind = "screen", sdp = sdp, re = "<b>" }, me), "and only a call id")
+-- From the link, a window ask reaches the pages only when this computer hosts that plug-in for whoever asks.
+package.loaded.hops = package.loaded.hops or { S = {} }
+local HS = package.loaded.hops.S
+HS.serving = HS.serving or {}
+HS.serving[77] = { try = true, user = "chilio", name = "VST3: Serum (Xfer)", fx = "Serum", track = "{0A1B2C3D-0000-0000-0000-000000000000}" }
+HS.serving[78] = { user = "chilio", fx = "ReaComp", track = "{11111111-0000-0000-0000-000000000000}" } -- (a hop of the song's own plug-in: not a try)
+webcall.reset()
+local ask = { t = "ask", to = ME, call = "abcdef0123456789", what = "window", token = 77, fx = "Serum", user = "chilio", dev = CHI }
+assert(webcall.link(cfg, b, ask, 100), "chilio asks about the plug-in this computer hosts for them")
+local mm = webcall.model(me, 100)
+assert(#mm.msgs == 1 and mm.msgs[1].t == "ask" and mm.msgs[1].token == 77, "the pages see it")
+local function with(t, k, x) local o = {}; for kk, xx in pairs(t) do o[kk] = xx end; o[k] = x; return o end
+webcall.reset()
+assert(not webcall.link(cfg, b, with(ask, "token", 78), 100) and #webcall.model(me, 100).msgs == 0, "not for a hop that isn't a try or borrowed")
+assert(not webcall.link(cfg, b, with(ask, "token", 99), 100), "not for a plug-in it doesn't host")
+HS.serving[77].user = "Ren"
+assert(not webcall.link(cfg, b, ask, 100), "not when someone else is trying it")
+HS.serving[77].user = "chilio"
+-- The owner's yes opens the plug-in's floating window here (FX 1 of its hidden track), only from a page on this computer.
+local shown = {}
+R.CountTracks = function() return 2 end
+R.GetTrack = function(_, i) return i end
+R.GetTrackGUID = function(tr) return ({ [0] = "{11111111-0000-0000-0000-000000000000}", "{0A1B2C3D-0000-0000-0000-000000000000}" })[tr] end
+R.TrackFX_Show = function(tr, fx, flag) shown[#shown + 1] = { tr, fx, flag } end
+webcall.reset()
+assert(webcall.page(cfg, b, { t = "fxwin", token = 77 }, 100) == false and #shown == 0 and webcall.model(me, 100).fxwin == nil, "not from a phone or another device's page")
+local here = 1
+R.StudioSync_WebUIPollHere = function() return here end
+webcall.page(cfg, b, { t = "fxwin", token = 77 }, 100)
+assert(#shown == 1 and shown[1][1] == 1 and shown[1][2] == 1 and shown[1][3] == 3, "its floating window opens (TrackFX_Show 3 on FX 1 of the hidden track)")
+local fw = webcall.model(me, 100).fxwin
+assert(fw and #fw == 1 and fw[1].token == 77 and fw[1].track == "{0A1B2C3D-0000-0000-0000-000000000000}" and fw[1].fxi == 1 and fw[1].fx == "VST3: Serum (Xfer)",
+  "the page learns which window it is (for the extension's share and control)")
+webcall.page(cfg, b, { t = "fxwin", token = 99 }, 100)
+assert(#shown == 1, "a token it doesn't host: nothing")
+-- Asks for control on the panel's bar: the page says them, Live sync shows them, the bar's answer comes back to the page.
+webcall.reset()
+ext[band.SECTION .. "/share asks"], ext[band.SECTION .. "/share answer"] = nil, nil
+R.DeleteExtState = function(s, k) ext[s .. "/" .. k] = nil end
+here = 0
+webcall.page(cfg, b, { t = "ctlask", call = "1234567890abcdef", user = "chilio", on = true }, 100)
+assert(#webcall.ctl_asks(clock) == 0, "not from another device's page")
+here = 1
+webcall.page(cfg, b, { t = "ctlask", call = "1234567890abcdef", user = "chilio", on = true }, 100)
+webcall.page(cfg, b, { t = "ctlask", call = "bad id!", user = "x", on = true }, 100)
+webcall.view_tick(0, publish, clock)
+local barl = band.json_decode(ext[band.SECTION .. "/share asks"])
+assert(#barl == 1 and barl[1].call == "1234567890abcdef" and barl[1].user == "chilio", "the bar's list: the one good ask")
+-- the bar, with a stand-in ImGui: Allow writes the answer
+local clicks, texts = {}, {}
+local ImGui = { AlignTextToFramePadding = function() end, SameLine = function() end, SetItemTooltip = function() end,
+  TextColored = function(_, _, t) texts[#texts + 1] = t end, SmallButton = function(_, label) return clicks[label] == true end }
+clicks["Allow##ctlask1234567890abcdef"] = true
+webcall.bar({}, ImGui)
+assert(texts[1] == "chilio asks to control the window you're sharing", "the bar says who asks")
+assert(band.json_decode(ext[band.SECTION .. "/share answer"]).yes == true, "Allow: the answer for Live sync")
+webcall.view_tick(0, publish, clock + 0.1)
+local ans = webcall.model(me, 100).answers
+assert(ans and #ans == 1 and ans[1].call == "1234567890abcdef" and ans[1].yes == true, "the page reads the answer in the model")
+assert(ext[band.SECTION .. "/share asks"] == "" and ext[band.SECTION .. "/share answer"] == nil, "the ask is off the bar, the answer taken")
+assert(webcall.model(me, os.time() + webcall.KEEP_FOR).answers == nil, "and it goes after KEEP_FOR s")
+webcall.page(cfg, b, { t = "ctlask", call = "1234567890abcdef", user = "chilio", on = true }, 100)
+webcall.page(cfg, b, { t = "ctlask", call = "1234567890abcdef", user = "chilio", on = false }, 100)
+assert(#webcall.ctl_asks(clock) == 0, "the page's 'answered' takes it off")
+webcall.page(cfg, b, { t = "ctlask", call = "1234567890abcdef", user = "chilio", on = true }, 100)
+assert(#webcall.ctl_asks(clock + webcall.ASK_FOR + 0.1) == 0, "an ask the page stops renewing goes by itself")
+-- who controls now, with Stop
+local stopped = 0
+R.StudioSync_RemoteControlStatus = function() return '{"sys":true,"area":true,"can":true,"on":true,"who":"chilio","why":"","cur":null}' end
+R.StudioSync_RemoteControlStop = function() stopped = stopped + 1 end
+texts, clicks = {}, { ["Stop##ctlstop"] = true }
+ext[band.SECTION .. "/share asks"] = ""
+webcall.bar({}, ImGui)
+assert(texts[1] == "chilio is controlling the window you're sharing" and stopped == 1, "the bar always says who controls, and Stop takes it back")
+R.StudioSync_RemoteControlStatus = function() return '{"on":false,"who":""}' end
+texts = {}; webcall.bar({}, ImGui)
+assert(#texts == 0, "nobody controls: nothing on the bar")
+R.StudioSync_WebUIPollHere, R.StudioSync_RemoteControlStatus, R.StudioSync_RemoteControlStop = nil, nil, nil
+
+-- The pieces, linked: the extension's door is this computer's own page only, and the rest is wired up
+local hc, rmc, rmh, bw, yml, tj, hl, rm = read("extension/webui.cpp"), read("extension/remotectl.cpp"), read("extension/remotectl.h"), read("extension/build_windows.cmd"),
+  read(".github/workflows/extension.yml"), read("lib/webui/tryfx.js"), read("lib/hoptry.lua"), read("extension/reaper_menu.cpp")
+assert(hc:find('r.path == "/api/input" && gid.empty() && webui_input_http', 1, true) and hc:find('if (input && (!local || proxied_req(r))) return answer(s, 403', 1, true),
+  "POST /api/input: never a guest, the link's port or a proxy")
+assert(rm:find("remotectl_register(rec);", 1, true) and bw:find("remotectl.cpp", 1, true) and yml:find("extension/remotectl.cpp libssdeps.a", 1, true)
+  and yml:find("tests/remotectl_test.cpp -o remotectl_test", 1, true), "built and registered everywhere, its test in CI")
+assert(rmc:find("belongs(WindowFromPoint(p), win)", 1, true) and rmc:find("belongs(GetForegroundWindow(), win)", 1, true), "input only at the shared window, keys only while it's in front")
+assert(rmc:find("if (!is_up && !g_pol.may_input(now_s())) return;", 1, true), "nothing goes in unless control is on")
+assert(rmc:find("dwExtraInfo != RC_MAGIC", 1, true) and rmh:find('stop("you moved your mouse")', 1, true), "the sharer's own mouse takes it back")
+assert(not rmh:find('"MetaLeft"', 1, true) and not rmh:find('"OSLeft"', 1, true), "the Windows keys are never sent")
+assert(cj:find("fetch('api/input'", 1, true) and cj:find("'Ask for control'", 1, true) and cj:find("'Take back'", 1, true) and cj:find("'Pop out'", 1, true)
+  and cj:find("?pop=share&call=", 1, true) and cj:find("window.ssShare = {", 1, true), "call.js: the extension, Ask for control, Take back, Pop out")
+assert(cj:find("if (ctlBy !== s || !ctl.on", 1, true), "the sharer's page passes on only the allowed watcher's input")
+assert(tj:find("'Show its window'", 1, true) and tj:find("window.ssShare.askWindow", 1, true), "the Try tab's Show its window")
+assert(hl:find('require("webcall").bar(ctx, ImGui)', 1, true) and hl:find("token = rec.token", 1, true), "the panel's bar and the try's token")
 print("ok")

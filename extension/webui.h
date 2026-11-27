@@ -89,6 +89,9 @@ extern bool (*webui_listen_http)(unsigned long long sock, const WebReq &r, bool 
 extern void (*webui_listen_feed)(const double *L, const double *R, int len, double srate);
 extern int (*webui_listen_count)();
 extern void (*webui_listen_stop)();
+// Remote control of a shared window (extension/remotectl.cpp sets it when linked in): POST /api/input's JSON body -> the JSON answer. Only a
+// page on this computer (loopback, not the link's port, not proxied, not a guest) reaches it. rt-share
+extern std::string (*webui_input_http)(const std::string &body);
 
 #ifndef WEBUI_STANDALONE
 struct reaper_plugin_info_t;

@@ -40,6 +40,19 @@ button:disabled { opacity: .5; cursor: default; }
 .tile:fullscreen video { max-height: none; height: 100%; }
 .tile.cropped { overflow: hidden; display: block; }
 .tile:fullscreen figcaption { display: none; }
+/* the pointer and control (rt-share): a share's own window (?pop=share), control's outline and the bar while someone controls */
+html.ss-pop-share body > *:not(.pop-share) { display: none !important; }
+html.ss-pop-share body { margin: 0; background: #000; }
+.pop-share { display: flex; flex-direction: column; height: 100vh; }
+.pop-share .tile { flex: 1 1 auto; max-width: none; border-radius: 0; display: flex; align-items: center; justify-content: center; }
+.pop-share .tile video { max-height: calc(100vh - 44px); height: 100%; }
+.pop-share .board-bar { flex: 0 0 auto; padding: 6px 8px; background: var(--panel); }
+.tile.in-control { outline: 3px solid var(--rec); outline-offset: -3px; }
+.tile.in-control .board { cursor: default; }
+.ctl-note { font-weight: 600; }
+.ctl-note:empty, .board-bar button[hidden] { display: none; }
+#sharebar.in-control { background: #b3261e; }
+#sharebar .ctl-who { font-weight: 700; }
 @media (max-width: 320px) {
   #sharebar { padding: 6px 8px; font-size: 12px; }
   #call { padding: 8px; }

@@ -290,6 +290,7 @@ bool (*webui_listen_http)(unsigned long long, const WebReq &, bool) = nullptr;
 void (*webui_listen_feed)(const double *, const double *, int, double) = nullptr;
 int (*webui_listen_count)() = nullptr;
 void (*webui_listen_stop)() = nullptr;
+std::string (*webui_input_http)(const std::string &) = nullptr; // (remote control of a shared window: extension/remotectl.cpp. rt-share)
 
 // ---- state -----------------------------------------------------------------------------------------------------------------------------
 namespace {
@@ -1050,7 +1051,9 @@ void handle(sock_t s, std::string buf, bool local)
     return answer(s, 303, "text/plain", "", "Location: " + r.path + "\r\nSet-Cookie: ss_webui=" + token + "; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax\r\n");
   if (r.method == "POST" && r.path == "/api/upload") return upload(s, r, buf.substr(end + 4));
   if (r.method == "POST") {
-    if (r.path != (gid.empty() ? "/api/action" : "/api/guest/action")) return answer(s, 404, "text/plain", "not found\n");
+    const bool input = r.path == "/api/input" && gid.empty() && webui_input_http; // (remote control of a shared window: extension/remotectl.cpp. rt-share)
+    if (input && (!local || proxied_req(r))) return answer(s, 403, "text/plain", "this computer only\n");
+    if (!input && r.path != (gid.empty() ? "/api/action" : "/api/guest/action")) return answer(s, 404, "text/plain", "not found\n");
     const std::string cl = header(r, "content-length");
     const long long n = cl.empty() ? -1 : atoll(cl.c_str());
     if (n <= 0 || (size_t)n > MAX_BODY || cl.find_first_not_of("0123456789") != std::string::npos) return answer(s, 413, "text/plain", "too big\n");
@@ -1062,6 +1065,7 @@ void handle(sock_t s, std::string buf, bool local)
     }
     body.resize((size_t)n);
     if (body[0] != '{') return answer(s, 400, "text/plain", "an action is a JSON object\n"); // (Lua parses and checks the rest)
+    if (input) return answer(s, 200, "application/json", webui_input_http(body)); // (remotectl.cpp checks the rest)
     {
       std::lock_guard<std::mutex> l(g_mx);
       if (g_actions.size() >= MAX_ACTIONS) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
