@@ -174,3 +174,7 @@ End; turn the switch off mid-session and see the guest page end; try the same co
    maintain.
 7. **Plan B if Funnel is refused?** Proposed: none built now; Cloudflare Tunnel (account + domain, Cloudflare sees the audio) only if
    Funnel doesn't work for you.
+
+## James's decisions (2026-11-27)
+All seven accepted as proposed: public guest links through Tailscale Funnel on the existing public port; one "Public links" switch (one warning, off after 6 h); owner only; public sessions 2 h (tailnet guests 4 h); Opus on public guest sockets with PCM as fallback; WebRTC/TURN only if a real Funnel session measures badly (then Cloudflare hosted TURN); no plan B built now.
+Build order: Phase 1 starts once rt-share has landed (both touch `extension/webui.cpp`). Phase 0 steps 2 and 3 are James's.
