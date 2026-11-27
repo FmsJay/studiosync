@@ -73,7 +73,8 @@ for _, bad in ipairs({ "", "nope", '{"topic":"exec","cmd":"x"}', '{"text":"x"}',
 -- Live sync's tick, with a stand-in extension
 reaper.StudioSync_WebUIStart = function(folder, secret, port) started = started + 1; assert(folder:find("lib/webui$") and secret == "sek" and port == 47281); return 1 end
 local envs = {} -- (the shell's env topic, lib/webenv.lua: rt-ui1, tested in tests/test_0_60_rt_ui1.lua; counted apart so the counts here stay the pages' own)
-reaper.StudioSync_WebUIPublish = function(topic, json) if topic == "env" then envs[#envs + 1] = json else pub[#pub + 1] = { topic, json } end end
+local healths = {} -- (Health, built at its idle pace while a page looks, for env's dot: rt-ui4, tests/test_0_60_rt_ui4.lua; counted apart too)
+reaper.StudioSync_WebUIPublish = function(topic, json) if topic == "env" then envs[#envs + 1] = json elseif topic == "health" then healths[#healths + 1] = json else pub[#pub + 1] = { topic, json } end end
 reaper.StudioSync_WebUIPoll = function() return table.remove(actions, 1) or "" end
 reaper.StudioSync_WebUIStatus = function() return '{"listening":true,"port":47281,"token":"abc123"}' end
 package.loaded.groups = { sonobus_secret = function() return "sek" end }
@@ -106,6 +107,7 @@ assert(#posted == 1 and posted[1][1] == "S" and posted[1][2] == " from my phone 
 assert(table.concat(chat_reads, ",") == "song", "only This project's chat built while no page shows another scope")
 assert(#pub == 3 and pub[1][1] == "presence" and pub[2][1] == "chat" and pub[3][1] == "rtc", "presence, chat and the calls' topic published")
 assert(#envs == 1 and band.json_decode(envs[1]).front.project == "S", "and the env topic (rt-ui1)")
+assert(#healths == 1, "and Health at its idle pace (rt-ui4)")
 assert(#rtc_pages == 1 and rtc_pages[1].t == "here" and type(handlers.rtc) == "function", "a call message goes to lib/webcall.lua, and the link's to it too")
 local pj = band.json_decode(pub[1][2])
 assert(pj.driver == "James" and pj.people[1].user == "James" and pj.people[1].recording and pj.people[1].armed[1] == "Vox" and pj.people[2].user == "chilio", "presence: " .. pub[1][2])

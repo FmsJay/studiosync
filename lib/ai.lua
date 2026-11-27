@@ -37,13 +37,23 @@ ai.TIMEOUT = { stems = 1800, lyrics = 1800, midi = 900, feedback = 330, recap = 
 ai.FEATURES = {
   { id = "stems", label = "Split into stems", kind = "tool", tool = "demucs", input = "audio" },
   { id = "lyrics", label = "Lyrics from a vocal take", kind = "tool", tool = "whisper", input = "take" },
-  { id = "midi", label = "A part to MIDI", kind = "tool", tool = "basic_pitch", input = "take" },
+  { id = "midi", label = "Audio to MIDI", kind = "tool", tool = "basic_pitch", input = "take" },
   { id = "feedback", label = "Mix feedback", kind = "chat", input = "mix" },
   { id = "recap", label = "Session recap", kind = "chat", input = "recap" },
   { id = "names", label = "Take name ideas", kind = "chat", input = "takes" },
 }
 ai.BY_ID = {}
 for _, f in ipairs(ai.FEATURES) do ai.BY_ID[f.id] = f end
+-- What the AI tab offers (findings item 6; docs/rt/ui-web-plan.md 2.7, James 2026-11-27: the others hidden, not deleted): the topic carries
+-- only these and an ask for another is refused. The panel's AI card shows only their settings. (rt-ui4)
+ai.SHOWN = { stems = true, midi = true }
+-- Whether a setting (ai.KEYS) belongs to a tool the tab offers: the chat model's address and name only while a chat feature shows.
+function ai.key_shown(k)
+  for _, f in ipairs(ai.FEATURES) do
+    if ai.SHOWN[f.id] and ((f.kind == "chat" and (k == "url" or k == "model")) or f.tool == k or (f.tool == "whisper" and k == "whisper_model")) then return true end
+  end
+  return false
+end
 ai.TOOLS = { demucs = "demucs", whisper = "whisper.cpp", basic_pitch = "Basic Pitch" }
 
 -- ---- this computer's settings (ExtState, kept): only the panel changes them, never a page ---------------------------------------------
@@ -296,6 +306,7 @@ local function say(t) S.note, S.dirty = t, true; return t end
 function ai.ask(proj, cfg, b, req, now)
   local f = type(req) == "table" and ai.BY_ID[req.feature]
   if not f then return nil, "AI: not a feature" end
+  if not ai.SHOWN[f.id] then return nil, "AI: " .. f.label .. " isn't offered for now" end
   if not ai.studio_on(cfg.root) then return nil, "AI is off for this studio: the owner or an admin turns it on (panel: Settings > Studio > AI)" end
   local c = ai.conf()
   local kind, why = ai.provider(f, c)
@@ -564,8 +575,8 @@ function ai.model(cfg, b, now)
   local feats = {}
   for _, f in ipairs(ai.FEATURES) do
     local kind, why = ai.provider(f, c)
-    feats[#feats + 1] = { id = f.id, label = f.label, input = f.input, provider = kind, why = why,
-      where = kind == "tool" and "here" or kind == "chat" and (ai.is_local(c.url) and "here" or "away") or nil }
+    if ai.SHOWN[f.id] then feats[#feats + 1] = { id = f.id, label = f.label, input = f.input, provider = kind, why = why,
+      where = kind == "tool" and "here" or kind == "chat" and (ai.is_local(c.url) and "here" or "away") or nil } end
   end
   local asks = {}
   for _, a in pairs(S.asks) do
@@ -647,7 +658,7 @@ function ai.studio_ui(ctx, ImGui, cfg, may)
   ImGui.SeparatorText(ctx, "AI (optional)")
   local on = ai.studio_on(cfg.root)
   ImGui.TextDisabled(ctx, on and "On: people in the studio can ask for AI tools from the web UI's AI page. Every run asks first and says what goes where."
-    or "Off: no AI tools. On, people can ask for stems, lyrics, MIDI, mix feedback and recaps; every run still asks first.")
+    or "Off: no AI tools. On, people can ask for stems and MIDI from audio; every run still asks first.")
   if may then
     local ch, v = ImGui.Checkbox(ctx, "AI tools for this studio##studioai", on)
     if ch then
@@ -662,12 +673,12 @@ function ai.studio_ui(ctx, ImGui, cfg, may)
   local fields = { { "url", "Chat model's address, e.g. http://127.0.0.1:4000" }, { "model", "Chat model's name" },
     { "demucs", "demucs program (stems)" }, { "whisper", "whisper-cli program (words)" }, { "whisper_model", "whisper model file (ggml-...bin)" },
     { "basic_pitch", "basic-pitch program (MIDI)" } }
-  for _, fd in ipairs(fields) do
+  for _, fd in ipairs(fields) do if ai.key_shown(fd[1]) then -- (only the tools the AI tab offers: ai.SHOWN)
     ImGui.SetNextItemWidth(ctx, -1)
     local ch, v = ImGui.InputTextWithHint(ctx, "##ai" .. fd[1], fd[2], c[fd[1]])
     if ch then ai.set_conf(fd[1], (v:gsub("^%s+", ""):gsub("%s+$", ""))) end
-  end
-  if c.url ~= "" then
+  end end
+  if c.url ~= "" and ai.key_shown("url") then
     ImGui.TextDisabled(ctx, not ai.url_ok(c.url) and "That address isn't a plain http(s) address." or ai.is_local(c.url) and "Local: the text stays on this computer."
       or "Sent away: that address is another computer, so what's asked leaves this one.")
   end

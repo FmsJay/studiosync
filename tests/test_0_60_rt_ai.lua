@@ -83,6 +83,9 @@ local last_recap = nil
 package.loaded.recap = { last = function() return last_recap end, lines = function(r) return r.lines end,
   section_at = function(_, pos) return pos >= 30 and "Chorus" or "Verse" end }
 local ai = require("ai")
+-- (the tab offers only stems and audio to MIDI (ai.SHOWN, rt-ui4); the hidden tools' code is kept, so it's tested with all shown, then section 6)
+local SHOWN = ai.SHOWN
+ai.SHOWN = { stems = true, lyrics = true, midi = true, feedback = true, recap = true, names = true }
 local cfg, b = { root = T .. "/studio", user = "James" }, { song = "Song", room = "main" }
 
 -- ---- 1. pure rules ----------------------------------------------------------------------------------------------------------------------
@@ -424,6 +427,32 @@ assert(#pubs <= 1, "nothing to do: the tick goes quiet")
 pubs = {}
 ai.tick(proj, cfg, b, publish, clock)
 assert(#pubs == 0, "and stays quiet")
+
+-- ---- 6. only stems and audio to MIDI (findings item 6; docs/rt/ui-web-plan.md 2.7; rt-ui4) ------------------------------------------------
+ai.SHOWN = SHOWN
+assert(ai.SHOWN.stems and ai.SHOWN.midi and not ai.SHOWN.lyrics and not ai.SHOWN.feedback and not ai.SHOWN.recap and not ai.SHOWN.names, "only stems and midi")
+assert(#ai.FEATURES == 6 and ai.BY_ID.lyrics and ai.BY_ID.recap, "the others are hidden, not deleted")
+ai.reset()
+pubs = {}
+ai.action(proj, cfg, b, { want = true }, true)
+ai.tick(proj, cfg, b, publish, clock)
+m = pubs[#pubs].v
+local ids = {}
+for _, f in ipairs(m.features) do ids[#ids + 1] = f.id end
+assert(table.concat(ids, ",") == "stems,midi", "the topic carries only stems and midi: " .. table.concat(ids, ","))
+assert(not band.json_encode(m):find("lyrics", 1, true) and not band.json_encode(m):find("Mix feedback", 1, true), "nothing of the others in the topic")
+for _, id in ipairs({ "lyrics", "feedback", "recap", "names" }) do
+  local said = ai.action(proj, cfg, b, { ask = { feature = id, take = "{V1}" } }, true)
+  assert(said and said:find("isn't offered", 1, true), id .. ": an ask is refused: " .. tostring(said))
+end
+assert(not next(ai._state().asks), "no ask was made for a hidden tool")
+assert(ai.ask(proj, cfg, b, { feature = "stems", take = "{V1}" }, clock), "stems still asks")
+assert(ai.BY_ID.midi.label == "Audio to MIDI", "the plan's name")
+assert(ai.key_shown("demucs") and ai.key_shown("basic_pitch") and not ai.key_shown("url") and not ai.key_shown("model")
+  and not ai.key_shown("whisper") and not ai.key_shown("whisper_model"), "the panel's card: only the shown tools' settings")
+ai.SHOWN = { stems = true, recap = true }
+assert(ai.key_shown("url") and ai.key_shown("model") and not ai.key_shown("basic_pitch"), "a chat feature shown: its address and model fields")
+ai.SHOWN = SHOWN
 
 clean()
 print("ok")

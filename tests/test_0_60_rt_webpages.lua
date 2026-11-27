@@ -39,7 +39,10 @@ local rows = {
 local h = webpages.health_model(rows, { relay = true, folder = true }, "0.59.49", "1.0.15")
 local ids = {}
 for _, r in ipairs(h.rows) do ids[#ids + 1] = r.id end
-assert(table.concat(ids, ",") == "folder,keys,tailscale stays,connected,audio", "what needs you first, a dismissed yellow left out (never a red): " .. table.concat(ids, ","))
+-- (rt-ui4: a dismissed yellow comes along marked hidden, for the page's Show hidden; never a red)
+assert(table.concat(ids, ",") == "folder,relay,keys,tailscale stays,connected,audio", "what needs you first, a dismissed yellow marked hidden: " .. table.concat(ids, ","))
+assert(h.rows[2].hidden and not h.rows[1].hidden, "the dismissed yellow is hidden, the dismissed red isn't")
+table.remove(h.rows, 2)
 assert(h.hidden == 1 and h.worst == "red" and h.ver == "0.59.49" and h.ext == "1.0.15", "hidden count, the worst, the versions")
 assert(h.rows[1].level == "red" and h.rows[1].text == "Syncthing isn't running" and not h.rows[1].ok, "a red row: its not-ok words")
 assert(h.rows[5].ok and h.rows[5].level == nil and h.rows[5].text == "Audio device is running", "an ok row: its ok words")
@@ -121,7 +124,11 @@ package.loaded.page_health = {
 local pubs = {}
 local function publish(topic, t) pubs[#pubs + 1] = { topic, t } end
 webpages.tick(P, cfg, b, publish, nil, clock)
-assert(#pubs == 0 and builds == 0, "nobody shows Health or Play together: nothing built")
+-- (rt-ui4: Health is built every HEALTH_IDLE s while a page looks, for the env topic's dot; Play together only while shown)
+assert(#pubs == 1 and builds == 1 and pubs[1][1] == "health", "nobody shows Health or Play together: Health at the idle pace only")
+webpages.tick(P, cfg, b, publish, nil, clock + 1)
+assert(#pubs == 1 and builds == 1, "not again before HEALTH_IDLE")
+pubs = {}
 webpages.action(P, cfg, b, { topic = "health", want = true })
 webpages.tick(P, cfg, b, publish, nil, clock)
 assert(#pubs == 1 and pubs[1][1] == "health" and pubs[1][2].rows[1].ok and pubs[1][2].rows[1].text == "it sees the song", "Health: page_health's rows, with the song in front")
@@ -131,7 +138,7 @@ webpages.tick(P, cfg, b, publish, nil, clock)
 assert(#pubs == 1, "built again only every HEALTH_EVERY s")
 clock = clock + webpages.HEALTH_EVERY
 webpages.tick(P, cfg, b, publish, nil, clock)
-assert(#pubs == 2 and #inits == 1 and gathered == 2, "and then again (set up once)")
+assert(#pubs == 2 and #inits == 1 and gathered == 3, "and then again (set up once)")
 package.loaded.page_health.maint_rows = function() error("boom") end
 clock = clock + webpages.HEALTH_EVERY
 webpages.tick(P, cfg, b, publish, nil, clock)
@@ -139,7 +146,9 @@ assert(pubs[#pubs][2].error:find("boom"), "a build that failed says why")
 clock = clock + webpages.WANT_FOR + 1
 n = #pubs
 webpages.tick(P, cfg, b, publish, nil, clock)
-assert(#pubs == n, "not asked again for WANT_FOR s: no more")
+assert(#pubs == n + 1 and pubs[#pubs][1] == "health", "not asked again for WANT_FOR s: back to the idle pace")
+webpages.tick(P, cfg, b, publish, nil, clock + 1)
+assert(#pubs == n + 1, "and no more until HEALTH_IDLE")
 webpages.action(P, cfg, b, { topic = "play", want = true })
 projext["P1/side"], ext[band.SECTION .. "/together P1"] = "1", "James: start from bar 3"
 webpages.tick(P, cfg, b, publish, { mode = "driver", driver = "James" }, clock)

@@ -464,4 +464,47 @@ end
 
 -- Home: playing together, who's here and what they're doing, and the session's switches.
 
+-- ---- the web page's buttons (lib/webpages.lua, lib/webui/health.js; rt-ui4) --------------------------------------------------------------
+-- The same functions maint_health and maint_upkeep run, by a row's id or one of the page's own ("@setup", "@update", "@update reaper": no row
+-- id starts with "@"). A page on another device (a phone) may press only WEB_REMOTE's: they change StudioSync's own state here, never this
+-- computer's programs, network, keys or files. Everything else is this computer's page only.
+H.WEB_REMOTE = { skipped = true, colours = true, compat = true }
+-- -> the label of a row's button on the page, as maint_health draws it, or nil.
+function H.web_button(r)
+  if not r[2] and r.action then return r.action[1] end
+  if r[2] and r.ok_action then return r.ok_action[1] end
+  if not r[2] and r[1] == "keys" then return "Set " .. require("undo").key_name() end
+end
+-- id: a row's or "@..."; here: the page is on this computer (StudioSync_WebUIPollHere). -> words for the log, or nil and why it was refused.
+function H.web_act(id, here)
+  if type(id) ~= "string" or id == "" or #id > 200 then return nil, "not a button" end
+  if not here and not H.WEB_REMOTE[id] then return nil, "only from this computer's own page" end
+  local b, cfg, proj = E.b(), E.cfg(), E.proj()
+  if id == "@setup" then
+    H.maint_rows()
+    local notes = setup.all(cfg, b, proj, maint_st, function() band.start_live(dir) end, ui.play_shown())
+    H.maint_at = -math.huge
+    if E.reset_live_server then E.reset_live_server() end
+    return "Set up: " .. (#notes > 0 and table.concat(notes, "; ") or "nothing more to do here")
+  end
+  if id == "@update" then -- (the panel's action("Update"): the script as a REAPER action, so it has its own action context)
+    local cmd = reaper.AddRemoveReaScript(true, 0, dir .. "/StudioSync - Update.lua", true)
+    if cmd <= 0 then return nil, "couldn't register 'StudioSync - Update' as an action (is the Scripts folder read-only?)" end
+    reaper.Main_OnCommand(cmd, 0)
+    return "Update StudioSync"
+  end
+  if id == "@update reaper" then return require("tools").update_reaper() end
+  for _, r in ipairs(H.maint_rows()) do
+    if r[1] == id then
+      if not r[2] and id == "keys" then require("undo").bind_keys(dir); H.maint_at = 0; return "Set " .. require("undo").key_name() end
+      local act = (not r[2] and r.action) or (r[2] and r.ok_action)
+      if not act then return nil, "that row has no button now" end
+      act[2]()
+      H.maint_at = 0
+      return act[1]
+    end
+  end
+  return nil, "no such row"
+end
+
 return H

@@ -597,6 +597,7 @@ function compat.rows_from(chk, tab, grid, t, acts)
     rows[#rows + 1] = { "compat loop", false, "yellow", "", string.format("Something holds REAPER: Live sync waits about %d ms between its looks. A script with a long loop, a busy plug-in window or a slow screen " ..
       "redraw does that; changes then go out and come in late.", math.floor(tab.med + 0.5)) }
   end
+  for _, r in ipairs(rows) do r.other = true end -- (the web page's "Show messages about other scripts" switch: findings item 16, rt-ui4)
   return rows
 end
 -- Rewrites Scripts/__startup.lua with StudioSync's block first. -> true, or nil and why.
