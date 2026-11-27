@@ -108,9 +108,6 @@ async function open(url, o = {}) {
   // (until the shell has shown its first page and had the first state: a loaded machine takes longer than an idle one)
   for (let t = 0; t < 8000; t += 100) { await sleep(100); try { if (await ev('location.href === ' + JSON.stringify(url) + ' && !!(window.ssTabs && (ssTabs.route() || (ssEnv.pop && document.body.classList.contains("sspop")))) && document.readyState === "complete"')) break; } catch (e) {} }
   await sleep(400);
-  // (a page's own scripts only see the topics the stream sends after they have run, and on a loaded machine the first snapshot can come before that: this page gets them all again)
-  for (const c of clients) c.write('data: ' + JSON.stringify({ engine: state.engine, topics: state.topics }) + '\n\n');
-  await sleep(300);
 }
 const tabsShown = () => ev('[...document.querySelectorAll("#sstabs .tab:not(.ssmore)")].filter((b) => !b.hidden).map((b) => b.textContent).join(",")');
 const list = () => ev('ssTabs.list()');

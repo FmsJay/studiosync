@@ -112,9 +112,6 @@ async function page(url, o = {}) {
   await cdp('Page.navigate', { url });
   for (let i = 0; i < 80; i++) { await sleep(100); try { if (await ev('document.readyState === "complete" && !!window.ssTabs && !!window.ssCallTest && !!window.ssCallTest.state().pid')) break; } catch (e) {} }
   await sleep(500);
-  // (call.js only sees the topics the stream sends after its own script has run, and on a loaded machine the first snapshot can come before that: this page gets them all again)
-  for (const c of clients) if (c.page === url.replace(/#.*$/, '')) c.write('data: ' + JSON.stringify({ engine: state.engine, topics: state.topics }) + '\n\n');
-  await sleep(200);
   const p = { id: t.id, cdp, ev, ws };
   // a button by its words inside a part of the page, clicked as a real mouse click
   p.press = async (label, scope = 'body') => {
