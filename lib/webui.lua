@@ -158,6 +158,7 @@ webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have,
 webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks for: lib/claimask.lua, rt-claims)
 webui.ACTIONS.grants = true -- (Admins only: let someone edit in this room, or take it back; owner and admins only. lib/grants.lua, rt-claims)
 webui.ACTIONS.draw = true -- (the drawing layer over the Project and Mixer pages and the phone's Project view: add, remove, clear. lib/webdraw.lua, rt-draw)
+webui.ACTIONS.nav = true -- (Open in REAPER / Open in the browser, from a page on this computer only: lib/webenv.lua, rt-ui1)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -266,6 +267,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("webhome").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "nav" then -- (lib/webenv.lua, rt-ui1)
+      local said = require("webenv").nav_action(a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1, webui.local_url(webui.status().port))
+      if said then band.log(said) end
+    end
   end
   local now = reaper.time_precise()
   do -- a phone that started the band and went quiet mid-take: its start stopped, looking or not (lib/phonerec.lua)
@@ -281,6 +286,10 @@ function webui.tick(proj, cfg, b, handlers)
   chat.web_tick(cfg, b, publish, now, look) -- (DMs, channels, unread counts and files on their way: lib/page_chat.lua, lib/chatfiles.lua)
   require("ai").tick(proj, cfg, b, publish, now) -- (AI runs: the panel's yes, asks running out, jobs finishing, looking or not: lib/ai.lua)
   if not look then return end
+  -- what this computer's REAPER has open and is doing, and a REAPER action's "show this tab" (lib/webenv.lua, rt-ui1)
+  require("webenv").tick(proj, cfg, b, publish, now, nil, published.health and published.health:match('"worst":"(%a+)"'))
+  local nav = require("webenv").nav_topic()
+  if nav then publish("nav", nav) end
   if now - pres_at >= webui.PRESENCE_EVERY then
     pres_at = now
     local ps = reaper.GetPlayStateEx(proj)
@@ -335,6 +344,12 @@ function webui.tick(proj, cfg, b, handlers)
   require("invite").web_tick(proj, cfg, b, publish, now) -- (join requests for you, the studio's people, the last ask's answer: lib/invite.lua)
   require("guestweb").tick(proj, cfg, b, publish, now) -- (browser guests: run out, their topics, play readings for their takes: lib/guestweb.lua)
   require("audience").tick(proj, cfg, b, publish, now) -- (listeners: links, what they're told, the public switch: lib/audience.lua, rt-audience)
+end
+-- While Live sync's loadguard holds its tab (lib/loadguard.lua: REAPER loading or saving, the first look not yet taken), webui.tick doesn't
+-- run: only the env topic goes, saying so, and the pages grey their actions meanwhile (findings item 14). (rt-ui1)
+function webui.env_loading(proj, cfg, b)
+  if not webui.available() or not (b and b.song) or reaper.EnumProjects(-1) ~= proj or not webui.start(cfg) then return end
+  require("webenv").tick(proj, cfg, b, publish, reaper.time_precise(), { loading = true })
 end
 
 return webui

@@ -1569,7 +1569,10 @@ local function loading()
     band.try("sync.audio_follow_tempo", sync.audio_follow_tempo, proj) -- band audio follows tempo changes piece by piece (REAPER auto-stretch), never drifting
     if n > 1 then band.log("'" .. b.song .. "' was loaded again in its tab: Live sync carries on now it has loaded") end
   end)
-  if wait then reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false) end
+  if wait then
+    reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false)
+    band.try("webui.env_loading", require("webui").env_loading, proj, cfg, b) -- (the web pages grey their actions meanwhile: lib/webenv.lua, rt-ui1)
+  end
   return wait
 end
 tick = function()

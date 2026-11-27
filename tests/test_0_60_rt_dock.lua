@@ -49,6 +49,7 @@ assert(logged[#logged]:find("can't listen", 1, true), "and the log says why")
 -- The pages: a link check
 local function read(p) local f = assert(io.open(p, "rb"), p); local s = f:read("a"); f:close(); return s end
 local html, js, css = read("lib/webui/index.html"), read("lib/webui/app.js"), read("lib/webui/style.css")
+js = js .. read("lib/webui/shell.js") -- (the header's Dock / Undock and the window's messages moved to shell.js: rt-ui1)
 local refs = 0
 for attr, ref in html:gmatch('%s(%a+)="([^"]+)"') do
   if (attr == "href" or attr == "src") and not ref:find("^%a+:") then
@@ -61,7 +62,7 @@ end
 assert(refs >= 2, "the page's style.css and app.js found: " .. refs)
 local ids = {}
 for id in html:gmatch('id="([^"]+)"') do assert(not ids[id], "one element per id: " .. id); ids[id] = true end
-for id in js:gmatch("%$%('([^']+)'%)") do assert(ids[id], "app.js looks up an element the page has: " .. id) end
+for id in js:gmatch("%$%('([^']+)'%)") do assert(ids[id], "app.js and shell.js look up elements the page has: " .. id) end
 assert(ids.dock and html:find('<button id="dock" type="button" hidden>', 1, true), "the Dock / Undock button, hidden in a browser")
 assert(js:find("window.chrome.webview", 1, true) and js:find("messageHandlers.studiosync", 1, true), "both views' channels (WebView2, WKWebView)")
 assert(js:find("'key:' + e.keyCode + ':'", 1, true) and js:find("send('dock')", 1, true), "the messages extension/webui_dock.cpp takes")

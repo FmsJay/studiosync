@@ -27,6 +27,7 @@ function project(extra) {
       markers: [{ p: 10, e: 30, n: 'Verse', i: 1 }, { p: 2, n: 'A', i: 1 }] },
     dawc0: { key: KEY, k: 0, from: 0, tr: [[{ p: 0, l: 8, k: '8888888888888888' }], [{ p: 4, l: 6, k: '4444444444' }, { p: 12, l: 4, k: '4444' }], [{ p: 2, l: 6, x: 1, nt: [0, 500, 60, 1000, 500, 64] }]] },
     dawcur: { me: { user: 'James', cur: 1 }, people: [] },
+    env: { v: 1, front: { project: 'S', room: 'main' } }, // (a project open: the shell shows the Project tab, rt-ui1)
   };
   return Object.assign(top, extra || {});
 }
@@ -37,8 +38,8 @@ const server = http.createServer((req, res) => {
   const u = new URL(req.url, 'http://x');
   if (u.pathname === '/') {
     res.setHeader('Content-Type', 'text/html');
-    return res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="daw.css">' +
-      '<header><div class="title">StudioSync</div></header><main>home</main><script src="daw.js"></script><script src="pianoroll.js"></script><script src="autolanes.js"></script>');
+    return res.end('<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="style.css"><link rel="stylesheet" href="daw.css"><link rel="stylesheet" href="shell.css">' +
+      '<header><div class="title">StudioSync</div></header><main>home</main><script src="shell.js"></script><script src="tabs.js"></script><script src="daw.js"></script><script src="pianoroll.js"></script><script src="autolanes.js"></script>');
   }
   if (u.pathname === '/api/state') { res.setHeader('Content-Type', 'application/json'); return res.end(JSON.stringify(state)); }
   if (u.pathname === '/api/action') {

@@ -1,0 +1,94 @@
+/* StudioSync's shell (shell.js, tabs.js; docs/rt/ui-web-plan.md 2.1, 4.2; rt-ui1): the top bar, the tab row (a side rail on wide screens, a
+   "More" menu in a narrow docker, a bottom bar on a phone), sub-tabs, pop-outs, the strip and the button. Loaded last: it lays out the other
+   files' pages. The look follows docs/rt/ui-web-mockup.html. GPL-3.0-or-later. */
+:root { --warn: #b7860b; --blue: #1e9bff; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --warn: #f0c25a; } }
+:root[data-theme="dark"] { --warn: #f0c25a; }
+
+/* the top bar */
+header { gap: 8px; padding-top: max(8px, env(safe-area-inset-top)); padding-bottom: 8px; }
+.sslogo { display: inline-flex; flex: none; padding: 0; background: transparent; border: 0; }
+.sslogo img { width: 26px; height: 26px; display: block; }
+.title { display: flex; align-items: center; gap: 4px; }
+.crumbs { display: inline-flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
+.sscrumb { background: transparent; border-color: transparent; padding: 2px 6px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16em; }
+.sscrumb:hover { border-color: var(--line); }
+.sssep { color: var(--dim); }
+.sspill.rec { background: color-mix(in srgb, var(--rec) 18%, transparent); color: var(--rec); }
+.sspill.follow { background: color-mix(in srgb, var(--blue) 18%, transparent); color: var(--blue); }
+.sspill.wait { background: color-mix(in srgb, var(--warn) 20%, transparent); color: var(--warn); }
+header button { padding: 4px 9px; }
+.ssico { min-width: 30px; }
+.ssloadnote { padding: 6px 16px; background: color-mix(in srgb, var(--warn) 16%, var(--panel)); border-bottom: 1px solid var(--line); font-size: 13px; }
+/* while REAPER loads the project nothing on the pages can be pressed (findings item 14) */
+body.ssloading #sspages { pointer-events: none; opacity: .55; }
+
+/* the row and the pages */
+.ssbody { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+#sspages { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.sstabs { display: flex; flex-wrap: nowrap; gap: 2px; padding: 2px 8px 0; background: var(--panel); border-bottom: 1px solid var(--line); overflow: hidden; flex: none; }
+.sstabs .tab { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 6px 10px; font-size: 14px; white-space: nowrap; color: var(--text); position: relative; flex: none; }
+.sstabs .tab[aria-pressed="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; background: transparent; }
+.sstabs .tab[hidden], .ssbar [hidden] { display: none; }
+.sstabs .tab.ssred::after, .sstabs .tab.ssyellow::after { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-left: 5px; vertical-align: 2px; background: var(--warn); }
+.sstabs .tab.ssred::after { background: var(--rec); }
+.sstab { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.sstab[hidden], .sssub[hidden] { display: none !important; }
+.sssubs { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 16px 0; flex: none; }
+.sssubs[hidden] { display: none; }
+.sssubs button { padding: 3px 10px; font-size: 13px; }
+.sssubs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sscoming p { max-width: 60ch; }
+/* today's pages in their new places: the studio overview alone in Studio, Who's here in Session, the chat alone in Chat */
+#studiomain, #studiomain.has-home, #chatmain { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); }
+#studiomain .hcol { border-right: 0; border-bottom: 0; }
+.sshere { flex: 1; min-height: 0; overflow-y: auto; }
+.sshere #here { border: 0; max-height: none; max-width: 760px; }
+
+/* the menus (⋯ and More) */
+.ssmenulist { position: fixed; z-index: 40; min-width: 200px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px; box-shadow: 0 6px 24px #0004; }
+.ssmenulist[hidden] { display: none; }
+.ssmenulist button { display: block; width: 100%; text-align: left; background: transparent; border-color: transparent; }
+.ssmenulist button:hover, .ssmenulist button[aria-current="page"] { background: var(--theirs); }
+.ssmenulist p { margin: 4px 8px; font-size: 13px; }
+
+/* a wide window (wider than tall, over 900 px): the tabs as a rail on the left */
+body.ssrail .ssbody { flex-direction: row; }
+body.ssrail .sstabs { flex-direction: column; padding: 8px 0; border-bottom: 0; border-right: 1px solid var(--line); min-width: 130px; overflow-y: auto; }
+body.ssrail .sstabs .tab { text-align: left; border-bottom: 0; border-left: 3px solid transparent; padding: 7px 14px; }
+body.ssrail .sstabs .tab[aria-pressed="true"] { border-left-color: var(--accent); }
+
+/* a phone (another device under 700 px): the bottom bar instead of the row */
+.ssbar { display: flex; border-top: 1px solid var(--line); background: var(--panel); padding-bottom: env(safe-area-inset-bottom); flex: none; }
+.ssbar[hidden], body.ssphone .sstabs { display: none; }
+.ssbarb { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 10px 2px; font-size: 13px; text-align: center; color: var(--text); text-decoration: none; }
+.ssbarb[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
+body.ssphone #reclink { display: none; }
+
+/* a popped-out page (?pop=chat): that page alone, a way back */
+body.sspop .sstabs, body.sspop .sssubs, body.sspop #reclink, body.sspop #ssmenu { display: none; }
+.ssback { margin-left: auto; font-size: 13px; }
+
+/* the strip and the button (the REAPER window's small shapes, 4.2): nothing else shows */
+body[data-win] > :not(.ssstrip) { display: none !important; }
+body[data-win] { background: #26292e; }
+.ssstrip { display: flex; align-items: center; gap: 8px; height: 100vh; padding: 0 8px; color: #e6e8eb; font-size: 13px; white-space: nowrap; overflow: hidden; position: relative; }
+.ssstrip[hidden] { display: none; }
+.ssstrip .sswords { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ssstrip button { background: #3a3d44; color: #e6e8eb; border-color: #4a4d54; padding: 1px 8px; font-size: 12px; }
+.ssdot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: #59cc73; }
+.ssdot.bad { background: #e0605a; }
+.ssbadge { position: absolute; top: 1px; right: 1px; background: #e0605a; color: #fff; font-size: 10px; border-radius: 8px; padding: 0 5px; }
+.ssbadge[hidden] { display: none; }
+body[data-win="strip"] .ssbadge { display: none; }
+body[data-win="button"] .ssstrip { justify-content: center; padding: 0; box-shadow: inset 0 0 0 2px #59cc73; border-radius: 8px; cursor: pointer; }
+body[data-win="button"] .ssstrip.off { box-shadow: inset 0 0 0 2px #e0605a; }
+body[data-win="button"] .ssstrip > :not(.sslogoimg):not(.ssbadge) { display: none; }
+body[data-win="button"] .ssstrip.off .sslogoimg { opacity: .5; }
+
+/* a narrow docker */
+@media (max-width: 480px) {
+  .title strong { display: none; }
+  .sscrumb { max-width: 9em; }
+  .sstabs .tab { padding: 5px 7px; font-size: 13px; }
+}

@@ -1,14 +1,18 @@
 <!doctype html>
-<!-- StudioSync's web UI (lib/webui.lua, extension/webui.cpp): who's here and the project's chat, in a browser or on a phone. GPL-3.0-or-later. -->
+<!-- StudioSync's web UI (lib/webui.lua, extension/webui.cpp): the studio, the session, the project and its chat, in REAPER, a browser or on a phone. GPL-3.0-or-later. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>StudioSync</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 <link rel="stylesheet" href="call.css">
 <link rel="stylesheet" href="daw.css">
+<!-- the shell first: where the page runs, the names, the top bar (shell.js), then the tabs every page registers with (tabs.js): rt-ui1 -->
+<script src="shell.js" defer></script>
+<script src="tabs.js" defer></script>
 <script src="app.js" defer></script>
 <!-- anchors on the song for marks drawn over it (screen share's notes, the drawing layer): before call.js and draw.js -->
 <script src="anchor.js" defer></script>
@@ -19,9 +23,8 @@
 <!-- the piano roll and automation lanes (lib/dawmidi.lua): after daw.js, whose hooks (window.ssDaw) they fill -->
 <script src="pianoroll.js" defer></script>
 <script src="autolanes.js" defer></script>
-<!-- Health, Play together and the chat's scopes, to-dos and links (lib/webpages.lua, lib/page_chat.lua): after daw.js, whose tab bar tabs.js adds to -->
+<!-- Health, Play together and the chat's scopes, to-dos and links (lib/webpages.lua, lib/page_chat.lua) -->
 <link rel="stylesheet" href="pages.css">
-<script src="tabs.js" defer></script>
 <script src="health.js" defer></script>
 <script src="play.js" defer></script>
 <!-- Ask to join and join requests (lib/invite.lua): before chat.js, which puts its Join / Decline on a request -->
@@ -57,21 +60,29 @@
 <!-- the Try tab: a bandmate's plug-in you don't have, live (lib/hoptry.lua) -->
 <link rel="stylesheet" href="tryfx.css">
 <script src="tryfx.js" defer></script>
+<!-- the shell's look, last: it lays out the others' pages (rt-ui1) -->
+<link rel="stylesheet" href="shell.css">
 </head>
 <body>
 <header>
+  <button id="sslogo" class="sslogo" type="button" title="Studio: your studios and projects"><img src="icon.svg" alt="StudioSync" width="26" height="26"></button>
   <div class="title">
     <strong>StudioSync</strong>
-    <span id="where" class="dim"></span>
+    <span id="where" class="crumbs"></span>
   </div>
   <span id="conn" class="conn" role="status">connecting</span>
+  <span id="sspill" class="conn" hidden></span>
   <a id="reclink" href="record.html" class="conn" title="Record a take from this phone into the project">Record</a>
   <button id="dock" type="button" hidden>Undock</button>
   <button id="theme" type="button" aria-label="Switch light or dark">&#9680;</button>
+  <button id="ssmenu" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="More" title="More">&#8943;</button>
 </header>
 <div id="sharebar" role="status" hidden></div>
 <section id="call" aria-labelledby="call-h" hidden></section>
-<main>
+<div class="ssbody">
+<nav id="sstabs" class="tabs sstabs" aria-label="Pages"></nav>
+<div id="sspages">
+<main id="studiomain">
   <section id="here" aria-labelledby="here-h">
     <h2 id="here-h">Who’s here</h2>
     <ul id="asks" aria-live="polite"></ul>
@@ -79,6 +90,8 @@
     <h3>Claims</h3>
     <ul id="claims"><li class="dim">None</li></ul>
   </section>
+</main>
+<main id="chatmain" hidden>
   <section id="chat" aria-labelledby="chat-h">
     <h2 id="chat-h">Chat <span class="dim">(this project)</span></h2>
     <ol id="msgs" aria-live="polite"></ol>
@@ -88,5 +101,8 @@
     </form>
   </section>
 </main>
+</div>
+</div>
+<nav id="ssbar" class="ssbar" aria-label="Pages" hidden></nav>
 </body>
 </html>
