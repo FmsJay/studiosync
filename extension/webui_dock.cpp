@@ -1163,7 +1163,14 @@ static INT_PTR CALLBACK dlgproc(HWND h, UINT m, WPARAM w, LPARAM l)
   case WM_SHOWWINDOW: if (win) dock_view_show(h, w != 0); break; // (a docker tab behind another, or its docker hidden)
   case WM_COMMAND: if (LOWORD(w) == IDCANCEL && win) { close_window(*win); return 1; } break; // (the docker's own Close, and Esc on the frame)
   case WM_CLOSE: if (win) close_window(*win); return 1;
-  case WM_DESTROY: if (win) { dock_view_destroy(h); *win = Win(); } break; // (a docker REAPER closed itself, at its exit)
+  case WM_DESTROY: // (a docker REAPER closed itself, at its exit: the pop-outs go with the main window)
+    if (win) {
+      const bool main = is_main(*win);
+      dock_view_destroy(h);
+      *win = Win();
+      for (int i = 1; main && i <= POPS; i++) close_window(g_w[i]);
+    }
+    break;
   case WM_ACTIVATE: if (win && !win->docked) PostMessage(h, WM_DOCK_FOCUS, LOWORD(w) != WA_INACTIVE, 0); break;
   case WM_TIMER:
     if (win && w == TIMER_DRAG) drag_tick(*win);
