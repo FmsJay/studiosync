@@ -641,3 +641,9 @@ without it (rt-converge's practice). New `lib` files are listed in `lib/files.tx
   - `TimeMap2` giving the same results on every platform.
 - The item track-merge loss (Recommendation 2) comes from reading `event_file`; it isn't reproduced.
 - The estimates assume rt-converge's pace and don't include REAPER-check time.
+
+## James's decisions (2026-11-27)
+1. Option A (no refusing on receive): accepted, on the understanding that the editor's computer still enforces claims before sending (a hand claim puts the edit back at once on the editor's computer; an auto-claim asks the claimer first); the only edits that reach others past a claim are from computers too old to ask, or an auto-claim whose claimer can't be reached (rt-fix6a's rule), and those show a "didn't ask" note. Binding signed claims (option C) go on the security review's list.
+2. A look asks before sending deletions of half the song's tracks or more.
+3. Old-history differences: a "Bring in line" button in Health, not automatic.
+4. The rest as proposed: folders as parent + rank; build order judge, then ranks, then beats; format 2 only at the final phase, after a reader release (old computers show "waiting for update").
