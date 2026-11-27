@@ -141,7 +141,24 @@ local room = {
 local used = drive.media_in_use({ main = room }, "main")
 assert(used["kept.wav"] and used["moved.wav"] and used["notrack.wav"], "items on tracks still here are played")
 assert(not used["lost.wav"], "the item that went with its deleted track isn't played, though its newest change came after the delete")
-room[#room + 1] = ev("T2", "5", { obj = "track" }) -- (the track restored)
+room[#room + 1] = ev("T2", "5", { obj = "track", base_ev = "T23" }) -- (the track restored: built on its deletion, as a restore is)
 assert(drive.media_in_use({ main = room }, "main")["lost.wav"], "the track back: its item plays again")
+
+-- (rt-sync2b) by the judge: two takes recorded on one item apart (each built on the same version) are merged, the loser's kept as another take,
+-- so both files play; by the newest change alone the older take's file wasn't "played" and a delete of it was kept. And a deletion beats a
+-- newer edit made without seeing it: its file isn't played.
+local apart = {
+  ev("T5", "1", { obj = "track" }),
+  ev("I5", "1", { obj = "item", track = "T5", media = { { "main", "first.wav" } } }),
+  ev("I5", "2", { obj = "item", track = "T5", base_ev = "I51", media = { { "main", "annes.wav" } } }),
+  ev("I5", "3", { obj = "item", track = "T5", base_ev = "I51", media = { { "main", "bees.wav" } } }),
+  ev("I6", "1", { obj = "item", track = "T5", media = { { "main", "six.wav" } } }),
+  ev("I6", "2", { obj = "item", track = "T5", base_ev = "I61", gone = true }),
+  ev("I6", "3", { obj = "item", track = "T5", base_ev = "I61", media = { { "main", "six-edit.wav" } } }),
+}
+local u2 = drive.media_in_use({ main = apart }, "main")
+assert(u2["annes.wav"] and u2["bees.wav"], "both takes made apart are played (the merge keeps both)")
+assert(not u2["first.wav"], "the version both built on isn't")
+assert(not u2["six-edit.wav"] and not u2["six.wav"], "an item a deletion beat isn't played, though an edit of it came later")
 
 print("ok rt-catchup link presence and in-use")

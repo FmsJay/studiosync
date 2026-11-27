@@ -259,7 +259,7 @@ drive.READ_MIN = 0.004 -- s of reading each call gets after the folder's listing
 local reading = {} -- (a folder read over several passes keeps the listing it started from, then is listed again for what came meanwhile. rt-drive2)
 local function summary(ev)
   local e = ev and { type = ev.type, take = ev.take, time = ev.time, id = ev.id, user = ev.user, oid = ev.oid, gone = ev.gone == true or nil,
-    obj = ev.obj, track = ev.track } or false
+    obj = ev.obj, track = ev.track, rev = tonumber(ev.rev), hlc = tonumber(ev.hlc), base_ev = type(ev.base_ev) == "string" and ev.base_ev or nil } or false
   if e and type(ev.state) == "string" then -- (an item's chunk: the recordings it plays)
     e.media = {}
     for room, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { room, rel } end
@@ -378,23 +378,39 @@ end
 -- Still played (the song uses it, in this room or another, whoever deleted it): not a delete to keep, so it comes back from the cloud copy as
 -- before, and that's said. A tombstone stops counting while the song plays that file again (the same audio added back has the same name).
 
--- The files of room `room` the song plays as it stands: the newest change to each object (by time, then id) in each room, unless that change
--- removed it, and the {media:<room>} files it names. `rooms`: { [room] = its events }. Pure.
--- Nor an item whose track's newest change removed the track: it went with it, though its own newest change (an edit made before the track's
--- delete reached that computer) doesn't say so, and every computer drops such an edit (lib/mirror.lua on_gone_track). rt-catchup
+-- The files of room `room` the song plays as it stands: each object as the judge has it in each room (lib/judge.lua, from the summaries'
+-- ids, revs, clocks and bases), unless that's a deletion, and the {media:<room>} files its leaves name (a merge plays what both sides do, and
+-- a file kept that nothing plays only costs room). `rooms`: { [room] = its events }. Pure.
+-- Nor an item whose track the judge has as deleted: it went with it, though its own newest change (an edit made before the track's delete
+-- reached that computer) doesn't say so (containment: rt-sync2 section 1). rt-catchup, rt-sync2b
 function drive.media_in_use(rooms, room)
-  local out = {}
+  local judge, out = require("judge"), {}
   for _, events in pairs(rooms) do
-    local last = {}
+    local by_oid, by_id = {}, {}
     for _, ev in ipairs(events) do
-      if ev.oid then
-        local key = (ev.time or "") .. (ev.id or "")
-        if not last[ev.oid] or key > last[ev.oid].key then last[ev.oid] = { key = key, ev = ev } end
+      if ev.oid and ev.id then
+        by_oid[ev.oid] = by_oid[ev.oid] or {}
+        table.insert(by_oid[ev.oid], ev)
+        by_id[ev.id] = ev
       end
     end
-    for _, l in pairs(last) do
-      local t = l.ev.track and last[l.ev.track]
-      if not l.ev.gone and not (t and t.ev.gone) then for _, m in ipairs(l.ev.media or {}) do if m[1] == room then out[m[2]] = true end end end
+    local answers = {}
+    local function answer(oid)
+      if answers[oid] == nil then answers[oid] = by_oid[oid] and judge.settled(by_oid[oid], function(id) return by_id[id] end, { give_up = true }) or false end
+      return answers[oid]
+    end
+    for oid in pairs(by_oid) do
+      local s = answer(oid)
+      local v = s and s.v
+      local t = v and v.track and answer(v.track)
+      if v and not s.gone and not (t and t.gone) then
+        local beaten = {}
+        for _, id in ipairs(s.beaten) do beaten[id] = true end
+        for _, id in ipairs(s.leaves) do
+          local leaf = by_id[id]
+          if leaf and not leaf.gone and not beaten[id] then for _, m in ipairs(leaf.media or {}) do if m[1] == room then out[m[2]] = true end end end
+        end
+      end
     end
   end
   return out

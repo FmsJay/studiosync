@@ -139,7 +139,8 @@ local function in_use(root, song, budget)
         if reaper.time_precise() > deadline then return nil end
         local ev = band.read_json(p)
         if type(ev) == "table" then -- (as lib/drive.lua reads them; one not readable yet may still be arriving: read again next time)
-          local e = { oid = ev.oid, time = ev.time, id = ev.id, gone = ev.gone == true or nil, obj = ev.obj, track = ev.track }
+          local e = { oid = ev.oid, time = ev.time, id = ev.id, gone = ev.gone == true or nil, obj = ev.obj, track = ev.track, -- (and what the judge reads: drive.media_in_use)
+            rev = tonumber(ev.rev), hlc = tonumber(ev.hlc), user = ev.user, base_ev = type(ev.base_ev) == "string" and ev.base_ev or nil }
           if type(ev.state) == "string" then
             e.media = {}
             for rm, rel in ev.state:gmatch('FILE "{media:([^}]+)}/([^"]+)"') do e.media[#e.media + 1] = { rm, rel } end
