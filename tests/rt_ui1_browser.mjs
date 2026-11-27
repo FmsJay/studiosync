@@ -100,6 +100,9 @@ async function open(url, o = {}) {
   }
   await cdp('Page.navigate', { url: 'about:blank' }); // (a fresh document, not a hash change in the last one)
   for (let t = 0; t < 3000 && await ev('location.href') !== 'about:blank'; t += 50) await sleep(50);
+  // (the last page's event streams ended here: Chrome kept old ones open at times, and at its six connections a host the next page's files waited, rt-ui10a)
+  for (const c of clients) c.end();
+  clients.clear();
   await cdp('Storage.clearDataForOrigin', { origin: new URL(url).origin, storageTypes: 'local_storage' });
   await cdp('Page.navigate', { url });
   // (until the shell has shown its first page and had the first state: a loaded machine takes longer than an idle one)

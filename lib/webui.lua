@@ -155,6 +155,7 @@ webui.ACTIONS.invite = true -- (Ask to join, Join / Decline, a studiosync:// lin
 webui.ACTIONS.guestweb = true -- (browser guests: the host's make/kick/level, and a guest's own, wrapped by the extension: lib/guestweb.lua)
 webui.ACTIONS.audience = true -- (listening links, the cap and the public switch: lib/audience.lua, rt-audience)
 webui.ACTIONS.tryfx = true -- (the Try tab: a bandmate's plug-in you don't have, its knobs, asks for yours: lib/hoptry.lua, rt-hopvst)
+webui.ACTIONS.plugins = true -- (Plug-ins > This project, Find a plug-in, Plug-in pack; changes only from a page on this computer. lib/webplugins.lua, rt-ui10a)
 webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks for: lib/claimask.lua, rt-claims)
 webui.ACTIONS.grants = true -- (Admins only: let someone edit in this room, or take it back; owner and admins only. lib/grants.lua, rt-claims)
 webui.ACTIONS.draw = true -- (the drawing layer over the Project and Mixer pages and the phone's Project view: add, remove, clear. lib/webdraw.lua, rt-draw)
@@ -249,8 +250,12 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("invite").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
-    if topic == "tryfx" then
-      local said = require("hoptry").web_action(proj, cfg, b, a)
+    if topic == "tryfx" then -- (trying, Add to track, Print and Stop from this computer's page only: lib/webplugins.lua, rt-ui10a)
+      local said = require("webplugins").try_refused(a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1) or require("hoptry").web_action(proj, cfg, b, a)
+      if said then band.log(said) end
+    end
+    if topic == "plugins" then -- (Plug-ins > This project, Find a plug-in, Plug-in pack: lib/webplugins.lua, rt-ui10a)
+      local said = require("webplugins").action(proj, cfg, b, a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1)
       if said then band.log(said) end
     end
     if topic == "grants" then
@@ -353,6 +358,7 @@ function webui.tick(proj, cfg, b, handlers)
   -- Home (while a page shows it) and everyone's profile (while any page looks): lib/webhome.lua
   require("webhome").tick(proj, cfg, b, publish, now)
   require("hoptry").web_tick(proj, cfg, b, publish, now) -- (the Try tab, while a page shows it: lib/hoptry.lua, rt-hopvst)
+  require("webplugins").tick(proj, cfg, b, publish, now) -- (the Plug-ins tab's other subs, while a page shows one: lib/webplugins.lua, rt-ui10a)
   require("invite").web_tick(proj, cfg, b, publish, now) -- (join requests for you, the studio's people, the last ask's answer: lib/invite.lua)
   require("guestweb").tick(proj, cfg, b, publish, now) -- (browser guests: run out, their topics, play readings for their takes: lib/guestweb.lua)
   require("audience").tick(proj, cfg, b, publish, now) -- (listeners: links, what they're told, the public switch: lib/audience.lua, rt-audience)
