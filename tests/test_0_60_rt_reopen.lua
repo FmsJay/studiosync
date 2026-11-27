@@ -148,4 +148,33 @@ do
   print("rt-reopen 1: a knob turned as track 1 is deleted goes out (the project's instance is told by its master track)")
 end
 
+-- ---- 2. the file opened again in its tab inside the minute after a chain landed, with a knob turned since (the soak's 5010) -----------------
+do
+  local S, A, B = song("Reopen2")
+  T = T + 5
+  S.as(B)
+  S.track(B, "Keys").body = chain(150) -- (turned before any look saw it, then the project saved and opened again in the same tab)
+  local snap = B.F.save()
+  B.F.clock = B.F.clock + 1
+  B.F.load(snap)
+  mirror.opened[tostring(B.F.proj)] = nil -- (REAPER gives the file a new master track)
+  B.edited = B.F.clock
+  S.settle(B)
+  local sent = S.events(function(v) return v.obj == "fx" and v.user == "Bee" end)
+  assert(#sent == 1 and sent[1].state:find("QUFB150AAAA", 1, true), "the knob in the file goes out (was: noted afresh at the opening as the plug-in loading, never sent): " .. #sent)
+  S.recv(A)
+  assert(S.knob(A) == "150", "and lands on James's: " .. tostring(S.knob(A)))
+  -- and a chain that only reloads at the opening (its knobs as they landed) isn't sent
+  T = T + 5
+  S.as(A)
+  local snap2 = A.F.save()
+  A.F.clock = A.F.clock + 1
+  A.F.load(snap2)
+  mirror.opened[tostring(A.F.proj)] = nil
+  A.edited = A.F.clock
+  S.settle(A)
+  assert(#S.events(function(v) return v.obj == "fx" and v.user == "James" end) == 1, "James's reopened chain, as it landed: nothing more sent")
+  print("rt-reopen 2: a knob turned and the file opened again inside the minute after its chain landed still goes out")
+end
+
 print("ok rt-reopen")

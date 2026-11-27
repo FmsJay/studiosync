@@ -4433,7 +4433,11 @@ function W.order(w)
     local prints = require("prints")
     for _, o in ipairs(objs) do
       if o.kind == "item" and o.ptr then pcall(prints.choose, o.ptr)
-      elseif o.kind == "fx" and o.ptr then mirror.fx_load_knobs[order_key .. o.oid] = mirror.fx_params(o.ptr) end
+      -- (not a chain the band's version landed on in the last FX_LOAD_SECS: its knobs as it landed stand, so a knob turned since, then the
+      -- file saved and opened again, is still an edit. Noted afresh, it read as the plug-in loading and never went out: the soak's 5010. rt-sync2c)
+      elseif o.kind == "fx" and o.ptr and not (reaper.time_precise() < (mirror.fx_loading[order_key .. o.oid] or 0)) then
+        mirror.fx_load_knobs[order_key .. o.oid] = mirror.fx_params(o.ptr)
+      end
     end
   end
   w.order_was = mirror.order_seen[order_key] -- (the tracks as the look before had them: where a track deleted since sat, W.gone)
