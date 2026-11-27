@@ -73,7 +73,7 @@ band.session_path = function() return TMP .. "/no-such-session.json" end
 local real_time, toff = os.time, 0
 os.time = function(t) if t then return real_time(t) end return real_time() + toff end
 local manage, refuse_track = true, {}
-package.loaded.groups = { may_manage = function() return manage end, smart_take_names = function() return false end, smart_lane_names = function() return false end }
+package.loaded.groups = { may_manage = function() return manage end, role = function() return manage and "owner" or "member" end, smart_take_names = function() return false end, smart_lane_names = function() return false end }
 package.loaded.sync = { authority = function()
   return function(user, track) return not refuse_track[track] end, { mode = "claims", driver = "James", owner_of = function() return nil end }
 end }

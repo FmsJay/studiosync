@@ -89,7 +89,7 @@ assert(starts[#starts].pport == 0 and starts[#starts].cap == au.CAP and starts[#
   "started with no public port, the default cap and rate, the pages' folder")
 assert(au.action("P", cfg, b, { make = { hours = 2 } }):find("every 5 s") and #links_set == 1, "another within 5 s: refused")
 toff = toff + 10
-assert(au.action("P", cfg, b, { make = { hours = 2, public = true } }):find("Public listening on first") and #links_set == 1, "a public link while public listening is off: refused")
+assert(au.action("P", cfg, b, { make = { hours = 2, public = true } }):find("Public links on first") and #links_set == 1, "a public link while public listening is off: refused")
 ext_status = { links = { [L1.id] = { n = 3, pub = false, left = 7000 } }, listeners = 3, enc_load = 0.004, out_kbps = 310 }
 clock = clock + 2
 au.tick("P", cfg, b, publish, clock)
@@ -145,7 +145,7 @@ said = au.action("P", cfg, b, { public = { on = true, sure = true } })
 assert(said:find("didn't open Funnel") and said:find("not enabled") and not au.public_on() and starts[#starts].pport == 0, "Funnel refused: it stays off, the port shut again")
 ts_answer = "0\n"
 said = au.action("P", cfg, b, { public = { on = true, sure = true } })
-assert(said:find("PUBLIC listening is on for 6 hours") and au.public_on() and ts_calls[#ts_calls] == au.funnel_args(true), "the owner confirms: Funnel opened")
+assert(said:find("PUBLIC links are on for 6 hours") and au.public_on() and ts_calls[#ts_calls] == au.funnel_args(true), "the owner confirms: Funnel opened")
 local s_on = starts[#starts]
 assert(s_on.pport == au.PUBLIC_PORT, "the extension's public port opened first")
 toff = toff + 10

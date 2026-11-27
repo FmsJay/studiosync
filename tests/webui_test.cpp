@@ -163,6 +163,43 @@ static void guest_pure_tests()
                          gs, 500, "", gid) == 0, "through tailscale serve (https, its forwarded host): in");
   CHECK(webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\nHost: pc:47281\r\n" + ck + "\r\n"), gs, 1000, "", gid) == 403, "the session past its end: refused");
   CHECK(webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\nHost: pc:47281\r\nCookie: ss_guest=\r\n\r\n"), gs, 500, "", gid) == 403, "an empty cookie: refused");
+  // public guests (rt-guestnet): their own port only, the code used on Join (POST), never on a GET
+  CHECK(!webui_guest_path("POST", "/api/guest/redeem") && webui_guest_path("POST", "/api/guest/redeem", true) && !webui_guest_path("GET", "/api/guest/redeem", true) &&
+        !webui_guest_path("GET", "/api/state", true) && !webui_guest_path("GET", "/index.html", true), "redeem: the public port's only, POST only; nothing of the studio's there either");
+  WebGuest pg;
+  pg.code = "fedcba9876543210fedcba98"; pg.code_until = 100; pg.until = 1000; pg.pub = true;
+  gs["bbbbbbbbbbbbbbbb"] = pg;
+  WebGuest tg;
+  tg.code = "abababababababababababab"; tg.code_until = 100; tg.until = 1000;
+  gs["cccccccccccccccc"] = tg;
+  const std::string PH = "Host: pc.ts.net:10000\r\nX-Forwarded-Host: pc.ts.net:10000\r\nX-Forwarded-For: 203.0.113.9\r\n";
+  CHECK(webui_guest_auth(req("GET /guest.html?g=fedcba9876543210fedcba98 HTTP/1.1\r\nHost: pc:47281\r\n\r\n"), gs, 10, fresh, gid) == 403 &&
+        webui_guest_auth(req("GET /guest.html?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "\r\n"), gs, 10, fresh, gid) == 403 && !gs["bbbbbbbbbbbbbbbb"].code.empty(),
+        "a public guest's code on the tailnet port: refused, and not used up");
+  CHECK(webui_guest_auth(req("GET /guest.html?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "\r\n"), gs, 10, fresh, gid, true) == 200 && gid == "bbbbbbbbbbbbbbbb" &&
+        webui_guest_auth(req("GET /guest.html?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "\r\n"), gs, 11, fresh, gid, true) == 200 &&
+        gs["bbbbbbbbbbbbbbbb"].code == "fedcba9876543210fedcba98" && gs["bbbbbbbbbbbbbbbb"].session.empty(), "public: GET shows the page, twice (a link preview), and uses nothing up");
+  CHECK(webui_guest_auth(req("GET /guest.js HTTP/1.1\r\n" + PH + "\r\n"), gs, 10, fresh, gid, true) == 200 && gid.empty() &&
+        webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\n" + PH + "\r\n"), gs, 10, fresh, gid, true) == 403 &&
+        webui_guest_auth(req("GET /guest.html HTTP/1.1\r\n" + PH + "\r\n"), gs, 10, fresh, gid, true) == 403, "public: the script without a code; the page and the API not");
+  CHECK(webui_guest_auth(req("GET /guest.html?g=abababababababababababab HTTP/1.1\r\n" + PH + "\r\n"), gs, 10, fresh, gid, true) == 403 &&
+        webui_guest_auth(req("POST /api/guest/redeem?g=abababababababababababab HTTP/1.1\r\n" + PH + "X-StudioSync: 1\r\n\r\n"), gs, 10, fresh, gid, true) == 403 &&
+        !gs["cccccccccccccccc"].code.empty(), "a tailnet guest's code on the public port: refused, not used up");
+  CHECK(webui_guest_auth(req("POST /api/guest/redeem?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "\r\n"), gs, 10, fresh, gid, true) == 403 &&
+        webui_guest_auth(req("POST /api/guest/redeem?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "X-StudioSync: 1\r\nOrigin: https://evil.example\r\n\r\n"), gs, 10, fresh, gid, true) == 403,
+        "redeem without X-StudioSync, or from another site: refused");
+  const std::string pfresh(32, 'd');
+  CHECK(webui_guest_auth(req("POST /api/guest/redeem?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "X-StudioSync: 1\r\nOrigin: https://pc.ts.net:10000\r\n\r\n"), gs, 10, pfresh, gid, true) == 303 &&
+        gid == "bbbbbbbbbbbbbbbb" && gs[gid].code.empty() && gs[gid].session == pfresh, "public: Join's POST redeems, once");
+  CHECK(webui_guest_auth(req("POST /api/guest/redeem?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "X-StudioSync: 1\r\n\r\n"), gs, 11, std::string(32, 'e'), gid, true) == 403 &&
+        webui_guest_auth(req("GET /guest.html?g=fedcba9876543210fedcba98 HTTP/1.1\r\n" + PH + "\r\n"), gs, 11, fresh, gid, true) == 403, "used: no second redeem, and its page isn't shown again");
+  CHECK(webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\n" + PH + "Cookie: ss_pguest=" + pfresh + "\r\n\r\n"), gs, 500, "", gid, true) == 0 && gid == "bbbbbbbbbbbbbbbb" &&
+        webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\n" + PH + "Cookie: ss_guest=" + pfresh + "\r\n\r\n"), gs, 500, "", gid, true) == 403,
+        "public: its own cookie (ss_pguest) opens its API; by the tailnet's name, no");
+  CHECK(webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\nHost: pc:47281\r\nCookie: ss_guest=" + pfresh + "; ss_pguest=" + pfresh + "\r\n\r\n"), gs, 500, "", gid) == 403 &&
+        webui_guest_auth(req("GET /api/guest/events HTTP/1.1\r\n" + PH + "Cookie: ss_pguest=" + fresh + "; ss_guest=" + fresh + "\r\n\r\n"), gs, 500, "", gid, true) == 403,
+        "a public guest's session on the tailnet, a tailnet guest's on the public port: refused");
+  gs.erase("bbbbbbbbbbbbbbbb"); gs.erase("cccccccccccccccc");
   CHECK(webui_guest_set("aaaaaaaaaaaaaaaa", "0123456789abcdef01234567", 60, 600) == 1 && webui_guest_set("AAAAAAAAAAAAAAAA", "0123456789abcdef01234567", 60, 600) == 0 &&
         webui_guest_set("aaaaaaaaaaaaaaaa", "short", 60, 600) == 0 && webui_guest_set("aaaaaaaaaaaaaaaa", "0123456789abcdef01234567", 0, 600) == 0 &&
         webui_guest_set("aaaa", "0123456789abcdef01234567", 60, 600) == 0, "StudioSync_WebUIGuest: hex ids and codes, times given");

@@ -5,7 +5,7 @@
 -- listeners the song, who's playing and whether it's live, offers the latest mix, and keeps the owner's public switch.
 --  * Tailnet links (on by themselves for the owner and admins): https://<this computer>:8443/listen/?l=<code>, the studio's secure phone link
 --    (`tailscale serve`), so only the studio's tailnet reaches them, as the phone app.
---  * Public links (OFF unless the owner turns on "Public listening" and confirms the warning): `tailscale funnel` puts a port of the
+--  * Public links (OFF unless the owner turns on "Public links" and confirms the warning; the same switch opens public guest links, lib/guestweb.lua): `tailscale funnel` puts a port of the
 --    extension's own on the open internet, https://<this computer>:10000/listen/?l=<code>. That port serves the listening page, its script and
 --    style, the live socket and the latest mix, nothing else, and only to public links; listeners there are told the song and whether it's
 --    live, never names. It turns itself off after PUBLIC_HOURS, and turning it off revokes every public link.
@@ -22,10 +22,12 @@ audience.FUNNEL_PORT = 10000               -- Funnel's https port (Funnel takes 
 audience.PUBLIC_HOURS = 6                  -- the public switch turns itself off after this
 audience.TAILNET_PORT = 8443               -- the secure phone link's port (lib/phonerec.lua HTTPS_PORT)
 audience.KEY, audience.PUB_KEY = "audience links", "audience public"
-audience.WARNING = "Public listening puts a port of this computer on the open internet through Tailscale Funnel: anyone with a public link " ..
-  "hears the session live (everything this computer hears, bandmates included) and the song's latest mix, and sees the song's name. It " ..
-  "serves nothing else (no files, chat, controls or studio pages), and only public links open it. This computer's address " ..
-  "(<name>.ts.net) becomes public. It turns itself off after " .. audience.PUBLIC_HOURS .. " hours."
+-- (one switch, "Public links", for public listening links and public guest links: rt-guestnet, James 2026-11-27)
+audience.WARNING = "Public links put a port of this computer on the open internet through Tailscale Funnel. Anyone with a public listening " ..
+  "link hears the session live (everything this computer hears, bandmates included) and the song's latest mix, and sees the song's name. " ..
+  "Anyone with a public guest link also joins the session from a browser: they hear it, the band hears them, and their takes go onto their " ..
+  "own track. It serves nothing else (no files, chat, controls or studio pages), and only public links open it. This computer's address " ..
+  "(<name>.ts.net) becomes public. It turns itself off after " .. audience.PUBLIC_HOURS .. " hours, and turning it off ends every public link and guest."
 
 -- ---- pure -------------------------------------------------------------------------------------------------------------------------------
 local function hex(v, lo, hi) return type(v) == "string" and #v >= lo and #v <= hi and v:match("^[0-9a-f]+$") ~= nil end
@@ -156,7 +158,7 @@ function audience.make(cfg, d, now)
   now = now or os.time()
   if not audience.available() then return nil, "this computer's StudioSync extension is older: update it for listening links" end
   if not may_manage(cfg) then return nil, "only the owner or an admin can make a listening link" end
-  if d.public and not audience.public_on() then return nil, "a public link needs Public listening on first (the owner's switch)" end
+  if d.public and not audience.public_on() then return nil, "a public link needs Public links on first (the owner's switch)" end
   local l = list()
   local ok, why = audience.may_make(S.stamps, #l, now)
   if not ok then return nil, why end
@@ -190,10 +192,10 @@ function audience.revoke(id, why)
 end
 -- The owner's public switch. on needs sure (the page showed the warning). -> words.
 function audience.set_public(cfg, on, sure)
-  if not is_owner(cfg) then return nil, "only the studio's owner can turn public listening on or off" end
+  if not is_owner(cfg) then return nil, "only the studio's owner can turn Public links on or off" end
   local services = require("services")
   if on then
-    if not sure then return nil, "turning public listening on needs the warning confirmed" end
+    if not sure then return nil, "turning Public links on needs the warning confirmed" end
     if not audience.available() then return nil, "this computer's StudioSync extension is older: update it first" end
     if not services.tailscale_exe() then return nil, "Tailscale isn't installed on this computer" end
     band.set_ext_json(band.SECTION, audience.PUB_KEY, { ["until"] = os.time() + audience.PUBLIC_HOURS * 3600, by = cfg.user }, true)
@@ -207,18 +209,20 @@ function audience.set_public(cfg, on, sure)
       return nil, "Tailscale didn't open Funnel (the tailnet's admin has to allow Funnel for this computer, and HTTPS certificates must be on): " ..
         r:gsub("^%d+\n", ""):sub(1, 300)
     end
-    return "PUBLIC listening is on for " .. audience.PUBLIC_HOURS .. " hours (Tailscale Funnel, port " .. audience.FUNNEL_PORT .. ")"
+    return "PUBLIC links are on for " .. audience.PUBLIC_HOURS .. " hours (Tailscale Funnel, port " .. audience.FUNNEL_PORT .. "): listening and guests"
   end
   return audience.public_off("off")
 end
--- Public listening off (anyone's turning off is safe: the owner's switch, or its time run out): Funnel closed, the port shut, every public
--- link revoked. -> words.
+-- Public links off (anyone's turning off is safe: the owner's switch, or its time run out): Funnel closed, the port shut, every public
+-- listening link revoked and every public guest ended (lib/guestweb.lua; the extension ends them too as the port shuts). -> words.
 function audience.public_off(why)
+  -- (public guests first: each live page is told its session ended before Funnel cuts the connection, so it doesn't keep reconnecting)
+  local ok, n = pcall(function() return require("guestweb").end_public("ended (Public links " .. why .. ")") end)
   require("services").ts_exec(audience.funnel_args(false), 10000)
   reaper.DeleteExtState(band.SECTION, audience.PUB_KEY, true)
-  for _, k in ipairs(list()) do if k.pub then audience.revoke(k.id, "revoked (public listening " .. why .. ")") end end
+  for _, k in ipairs(list()) do if k.pub then audience.revoke(k.id, "revoked (Public links " .. why .. ")") end end
   if audience.available() then start() end
-  return "public listening is " .. why .. "; every public link revoked"
+  return "Public links are " .. why .. "; every public link revoked" .. (ok and (tonumber(n) or 0) > 0 and ", " .. n .. " public guest" .. (n == 1 and "" or "s") .. " ended" or "")
 end
 
 function audience.action(proj, cfg, b, a)

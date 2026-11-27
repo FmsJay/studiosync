@@ -197,28 +197,31 @@ int webui_auth(const WebReq &r, bool local, const std::string &token, int port, 
 // ---- browser guests: who gets in (webui.h; lib/guestweb.lua) ------------------------------------------------------------------------------
 // Only these: the guest's page and the shared files it loads, and its own API under /api/guest/ (event stream, live socket, upload, action).
 // Never /api/state or /api/events (every topic), /api/action, /api/upload, /api/file, /api/mix, /api/time or any other page.
-bool webui_guest_path(const std::string &method, const std::string &path)
+bool webui_guest_path(const std::string &method, const std::string &path, bool pub)
 {
-  if (method == "POST") return path == "/api/guest/action" || path == "/api/guest/upload";
+  if (method == "POST") return path == "/api/guest/action" || path == "/api/guest/upload" || (pub && path == "/api/guest/redeem");
   static const char *files[] = { "/guest.html", "/guest.js", "/guest.css", "/guestworklet.js", "/style.css", "/phonefile.js", "/api/guest/events", "/api/guest/live" };
   for (const char *f : files) if (path == f) return method == "GET";
   return false;
 }
-int webui_guest_auth(const WebReq &r, std::map<std::string, WebGuest> &guests, double now, const std::string &fresh, std::string &gid)
+int webui_guest_auth(const WebReq &r, std::map<std::string, WebGuest> &guests, double now, const std::string &fresh, std::string &gid, bool pub)
 {
   gid.clear();
   const std::string host = header(r, "host"), origin = header(r, "origin"), fwd_host = header(r, "x-forwarded-host");
   if (r.method == "POST" && header(r, "x-studiosync") != "1") return 403;
   if (!origin.empty() && origin != "http://" + host && origin != "https://" + host && !(proxied_req(r) && origin == "https://" + fwd_host)) return 403;
-  if (!webui_guest_path(r.method, r.path)) return 403;
-  const std::string ck = webui_cookie(header(r, "cookie"), "ss_guest");
+  if (!webui_guest_path(r.method, r.path, pub)) return 403;
+  const std::string ck = webui_cookie(header(r, "cookie"), pub ? "ss_pguest" : "ss_guest");
   for (auto &g : guests)
-    if (!g.second.session.empty() && now < g.second.until && same_text(ck, g.second.session)) { gid = g.first; return 0; }
+    if (g.second.pub == pub && !g.second.session.empty() && now < g.second.until && same_text(ck, g.second.session)) { gid = g.first; return 0; }
   const std::string code = webui_param(r.query, "g");
-  if (code.empty() || r.method != "GET" || r.path != "/guest.html" || fresh.size() < 32) return 403;
+  if (pub && r.method == "GET" && r.path != "/guest.html" && r.path.compare(0, 5, "/api/") != 0) return 200; // (the page's script and style: nothing of anyone's in them)
+  const bool peek = pub && r.method == "GET" && r.path == "/guest.html"; // (a public link opened, or a chat app's preview of it: shown, never used up)
+  if (code.empty() || fresh.size() < 32 || !(peek || (pub ? r.method == "POST" && r.path == "/api/guest/redeem" : r.method == "GET" && r.path == "/guest.html"))) return 403;
   for (auto &g : guests) {
     WebGuest &w = g.second;
-    if (w.code.empty() || now >= w.code_until || now >= w.until || !same_text(code, w.code)) continue;
+    if (w.pub != pub || w.code.empty() || now >= w.code_until || now >= w.until || !same_text(code, w.code)) continue;
+    if (peek) { gid = g.first; return 200; }
     w.code.clear(); // (single use: the first browser gets it)
     w.session = fresh;
     gid = g.first;
@@ -334,6 +337,8 @@ std::map<std::string, std::string> g_offers; // id -> the path
 std::map<std::string, WebGuest> g_guests; // gid -> the guest
 std::deque<std::string> g_guest_uploads;  // their upload ids, oldest first (each id starts with its guest's gid)
 const size_t MAX_GUESTS = 8, MAX_GUEST_UPLOADS = 2, GUEST_QUEUE = 8; // (GUEST_QUEUE: one guest's actions waiting, so a flood can't fill the queue)
+std::map<std::string, int> g_pub_long; // public guests' event streams and sockets open (each holds one of the public port's request threads)
+const int PUB_LONG = 2;                // at most, per public guest: the page's one stream and one socket (rt-guestnet)
 
 double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
 bool topic_ok(const char *t)
@@ -406,7 +411,7 @@ const char *reason(int code)
 {
   switch (code) {
   case 200: return "OK"; case 202: return "Accepted"; case 206: return "Partial Content"; case 416: return "Range Not Satisfiable"; case 303: return "See Other"; case 400: return "Bad Request"; case 403: return "Forbidden";
-  case 404: return "Not Found"; case 405: return "Method Not Allowed"; case 413: return "Payload Too Large"; case 503: return "Service Unavailable";
+  case 404: return "Not Found"; case 405: return "Method Not Allowed"; case 413: return "Payload Too Large"; case 429: return "Too Many Requests"; case 503: return "Service Unavailable";
   default: return "Error";
   }
 }
@@ -1002,6 +1007,38 @@ void guest_live(sock_t s, const WebReq &r, const std::string &gid)
   }
 }
 
+// An action's body (rest: what came with the head), read and queued for Lua: a page's, or a guest's wrapped as theirs (gid), or remote control's
+// answered at once (input). here: from this computer's own page (webui_poll_here).
+void post_body(sock_t s, const WebReq &r, std::string body, const std::string &gid, bool input, bool here)
+{
+  const std::string cl = header(r, "content-length");
+  const long long n = cl.empty() ? -1 : atoll(cl.c_str());
+  if (n <= 0 || (size_t)n > MAX_BODY || cl.find_first_not_of("0123456789") != std::string::npos) return answer(s, 413, "text/plain", "too big\n");
+  char chunk[4096];
+  while (body.size() < (size_t)n) {
+    const int k = (int)recv(s, chunk, sizeof(chunk), 0);
+    if (k <= 0) return;
+    body.append(chunk, (size_t)k);
+  }
+  body.resize((size_t)n);
+  if (body[0] != '{') return answer(s, 400, "text/plain", "an action is a JSON object\n"); // (Lua parses and checks the rest)
+  if (input) return answer(s, 200, "application/json", webui_input_http(body)); // (remotectl.cpp checks the rest)
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    if (g_actions.size() >= MAX_ACTIONS) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
+    if (!gid.empty()) { // (a guest's, wrapped so it can only ever be the guest's own topic; a few at a time per guest)
+      if (!json_one_object(body)) return answer(s, 400, "text/plain", "an action is one JSON object\n");
+      const std::string tag = "{\"topic\":\"guestweb\",\"gid\":\"" + gid + "\",\"a\":";
+      size_t mine = 0;
+      for (const auto &a : g_actions) if (a.first.compare(0, tag.size(), tag) == 0) ++mine;
+      if (mine >= GUEST_QUEUE) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
+      body = tag + body + "}";
+    }
+    g_actions.emplace_back(body, here);
+  }
+  answer(s, 202, "application/json", "{\"ok\":true}");
+}
+
 thread_local bool t_kept = false; // (a listener's socket handed to audience.cpp: client() leaves it open. rt-audience)
 thread_local bool t_extra = false; // (this thread is past MAX_CLIENTS: the listening page only)
 void handle(sock_t s, std::string buf, bool local)
@@ -1054,32 +1091,7 @@ void handle(sock_t s, std::string buf, bool local)
     const bool input = r.path == "/api/input" && gid.empty() && webui_input_http; // (remote control of a shared window: extension/remotectl.cpp. rt-share)
     if (input && (!local || proxied_req(r))) return answer(s, 403, "text/plain", "this computer only\n");
     if (!input && r.path != (gid.empty() ? "/api/action" : "/api/guest/action")) return answer(s, 404, "text/plain", "not found\n");
-    const std::string cl = header(r, "content-length");
-    const long long n = cl.empty() ? -1 : atoll(cl.c_str());
-    if (n <= 0 || (size_t)n > MAX_BODY || cl.find_first_not_of("0123456789") != std::string::npos) return answer(s, 413, "text/plain", "too big\n");
-    std::string body = buf.substr(end + 4);
-    while (body.size() < (size_t)n) {
-      const int k = (int)recv(s, chunk, sizeof(chunk), 0);
-      if (k <= 0) return;
-      body.append(chunk, (size_t)k);
-    }
-    body.resize((size_t)n);
-    if (body[0] != '{') return answer(s, 400, "text/plain", "an action is a JSON object\n"); // (Lua parses and checks the rest)
-    if (input) return answer(s, 200, "application/json", webui_input_http(body)); // (remotectl.cpp checks the rest)
-    {
-      std::lock_guard<std::mutex> l(g_mx);
-      if (g_actions.size() >= MAX_ACTIONS) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
-      if (!gid.empty()) { // (a guest's, wrapped so it can only ever be the guest's own topic; a few at a time per guest)
-        if (!json_one_object(body)) return answer(s, 400, "text/plain", "an action is one JSON object\n");
-        const std::string tag = "{\"topic\":\"guestweb\",\"gid\":\"" + gid + "\",\"a\":";
-        size_t mine = 0;
-        for (const auto &a : g_actions) if (a.first.compare(0, tag.size(), tag) == 0) ++mine;
-        if (mine >= GUEST_QUEUE) return answer(s, 503, "application/json", "{\"ok\":false,\"why\":\"busy\"}");
-        body = tag + body + "}";
-      }
-      g_actions.emplace_back(body, local && !proxied_req(r) && gid.empty()); // (this computer's own page: not the link's port, not `tailscale serve`, not a guest)
-    }
-    return answer(s, 202, "application/json", "{\"ok\":true}");
+    return post_body(s, r, buf.substr(end + 4), gid, input, local && !proxied_req(r) && gid.empty()); // (here: this computer's own page, not the link's port, not `tailscale serve`, not a guest)
   }
   if (r.method != "GET") return answer(s, 405, "text/plain", "GET or POST\n");
   if (r.path == "/api/events") return events(s);
@@ -1221,6 +1233,60 @@ int webui_guest_gain(const char *gid, double gain)
   if (it == g_guests.end() || !(gain >= 0)) return 0;
   it->second.gain = (float)std::min(gain, 4.0);
   return 1;
+}
+int webui_guest_public(const char *gid, int on)
+{
+  std::lock_guard<std::mutex> l(g_mx);
+  auto it = gid ? g_guests.find(gid) : g_guests.end();
+  if (it == g_guests.end()) return 0;
+  it->second.pub = on != 0;
+  g_cv.notify_all(); // (lib/guestweb.lua marks it right after StudioSync_WebUIGuest, before its link is shown)
+  return 1;
+}
+int webui_public_guests_end()
+{
+  std::lock_guard<std::mutex> l(g_mx);
+  int live = 0;
+  for (auto &s : g_gslot) if (s.taken.load() == 1) { auto it = g_guests.find(s.gid); live += it != g_guests.end() && it->second.pub; }
+  for (auto it = g_guests.begin(); it != g_guests.end();) { if (it->second.pub) it = g_guests.erase(it); else ++it; }
+  g_cv.notify_all();
+  return live;
+}
+int webui_public_guest(unsigned long long sv, const WebReq &r, const std::string &rest)
+{
+  const sock_t s = (sock_t)sv;
+  std::string gid, session, folder, snap;
+  int a;
+  {
+    std::lock_guard<std::mutex> l(g_mx);
+    folder = g_folder;
+    a = webui_guest_auth(r, g_guests, now_s(), rand_hex(4), gid, true);
+    if (a == 303) session = g_guests[gid].session;
+    if (a == 303 || (a == 0 && r.path == "/api/guest/redeem")) snap = snapshot_locked(-1, "guest-" + gid); // (the page starts from what its stream would say first)
+    ++(a == 403 ? g_refused : g_served);
+  }
+  if (a == 403) { answer(s, 403, "text/plain; charset=utf-8", "This guest link was used already, has run out, or was ended. Ask for a new one.\n"); return 403; }
+  if (!snap.empty()) { // (redeemed on Join: the cookie only over https, as Funnel is; or already this guest's: nothing new)
+    answer(s, 200, "application/json", snap, a == 303 ? "Set-Cookie: ss_pguest=" + session + "; Path=/; Secure; HttpOnly; SameSite=Lax\r\n" : "");
+    return 200;
+  }
+  if (r.method == "POST" && r.path == "/api/guest/upload") { upload(s, r, rest, gid); return 200; }
+  if (r.method == "POST") { post_body(s, r, rest, gid, false, false); return 202; } // (/api/guest/action: webui_guest_path lets no other POST through)
+  if (r.path == "/api/guest/events" || r.path == "/api/guest/live") {
+    {
+      std::lock_guard<std::mutex> l(g_mx);
+      if (g_pub_long[gid] >= PUB_LONG) { answer(s, 429, "text/plain", "this guest has a page open already\n"); return 429; }
+      ++g_pub_long[gid];
+    }
+    struct Done { std::string g; ~Done() { std::lock_guard<std::mutex> l(g_mx); if (--g_pub_long[g] <= 0) g_pub_long.erase(g); } } done{ gid };
+    if (r.path == "/api/guest/events") events(s, gid);
+    else guest_live(s, r, gid);
+    return 200;
+  }
+  std::string rel, ctype, page;
+  if (!webui_file_for(r.path, rel, ctype) || !read_page(folder, rel, page)) { answer(s, 404, "text/plain", "not found\n"); return 404; }
+  answer(s, 200, ctype.c_str(), page);
+  return 200;
 }
 void webui_guest_audio(double *const *out, int nout, int len, double srate)
 {
@@ -1405,6 +1471,7 @@ const char *webui_status()
     first = false;
     json_str(o, g.first);
     o += std::string(":{\"redeemed\":") + (g.second.code.empty() ? "true" : "false") + ",\"on\":" + (now_s() < g.second.until ? "true" : "false");
+    if (g.second.pub) o += ",\"pub\":true";
     for (auto &sl : g_gslot) {
       if (sl.taken.load(std::memory_order_acquire) != 1 || g.first != sl.gid) continue;
       char b[160];
@@ -1515,8 +1582,10 @@ static const char *api_upload_hash(const char *id) { return webui_upload_hash(id
 static int api_offer(const char *id, const char *path) { return webui_offer(id, path); }
 static int api_guest(const char *gid, const char *code, int code_s, int session_s) { return webui_guest_set(gid, code, code_s, session_s); }
 static int api_guest_gain(const char *gid, double gain) { return webui_guest_gain(gid, gain); }
+static int api_guest_public(const char *gid, int on) { return webui_guest_public(gid, on); }
 #define S_(i) (n > (i) ? (const char *)a[i] : nullptr)
 static void *va_guest(void **a, int n) { return n < 4 ? nullptr : (void *)(INT_PTR)api_guest(S_(0), S_(1), (int)(INT_PTR)a[2], (int)(INT_PTR)a[3]); }
+static void *va_guest_public(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_guest_public(S_(0), (int)(INT_PTR)a[1]); }
 static void *va_guest_gain(void **a, int n) { return n < 2 || !a[1] ? nullptr : (void *)(INT_PTR)api_guest_gain(S_(0), *(double *)a[1]); } // (a double comes as a pointer)
 static void *va_save_upload(void **a, int n) { return (void *)(INT_PTR)api_save_upload(S_(0), S_(1)); }
 static void *va_upload_hash(void **a, int n) { return (void *)api_upload_hash(S_(0)); }
@@ -1544,7 +1613,7 @@ void webui_register(reaper_plugin_info_t *rec)
       "device on the studio's link or through `tailscale serve` (0). lib/ai.lua: a yes for an AI run." },
     { "StudioSync_WebUIStatus", (void *)api_status, (void *)va_status,
       "const char*\0\0\0The web UI server's state, as JSON: listening, bind, port, error, token, clients, served, refused, guests "
-      "({ gid: { redeemed, on, live, peak, under, drops } })." },
+      "({ gid: { redeemed, on, pub, live, peak, under, drops } })." },
     { "StudioSync_WebUISaveUpload", (void *)api_save_upload, (void *)va_save_upload,
       "int\0const char*,const char*\0id,path\0"
       "A take a page uploaded (POST /api/upload's id), written to `path` and let go. Returns its bytes; 0 no such upload; -1 couldn't write "
@@ -1565,6 +1634,11 @@ void webui_register(reaper_plugin_info_t *rec)
       "StudioSync_WebUIStatus's guests say how each goes. Returns 1, or 0 for a bad gid or code or more than 8 guests." },
     { "StudioSync_WebUIGuestGain", (void *)api_guest_gain, (void *)va_guest_gain,
       "int\0const char*,double\0gid,gain\0A browser guest's level (linear, 0-4) in what this computer hears and sends on. Returns 1 when that guest is known." },
+    { "StudioSync_WebUIGuestPublic", (void *)api_guest_public, (void *)va_guest_public,
+      "int\0const char*,int\0gid,public\0"
+      "A browser guest made public (1; lib/guestweb.lua, rt-guestnet): their link opens only on Live to an audience's public port (Tailscale "
+      "Funnel), redeemed by the page's Join (POST), never by opening it, with a Secure cookie; never on the tailnet port. 0: tailnet only again. "
+      "The public port closing ends every public guest. Returns 1 when that guest is known." },
   };
   char key[96];
   for (const auto &f : fns) {

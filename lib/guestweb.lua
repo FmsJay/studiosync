@@ -25,6 +25,7 @@ guestweb.TAKE_GAP = 3               -- seconds between one guest's takes
 guestweb.READ_FOR = 120             -- seconds the play readings go on after a guest was last live (their take arrives after the stop)
 guestweb.KEY = "browser guests"     -- ExtState: the guests (never their codes)
 guestweb.PORT = 8443                -- the secure link's port (lib/phonerec.lua HTTPS_PORT)
+guestweb.PUBLIC_SESSION = 2 * 3600  -- a public guest's session at most, and never past Public links going off (rt-guestnet, James 2026-11-27)
 
 -- ---- pure -------------------------------------------------------------------------------------------------------------------------------
 -- The guest link: this computer's MagicDNS name on the secure port. nil from a bad name or code.
@@ -42,7 +43,7 @@ function guestweb.parse_host(a)
   local out = {}
   if type(a.make) == "table" then
     local name = require("phonerec").clean_name(a.make.name)
-    if name then out.make = { name = name, minutes = num(a.make.minutes, guestweb.MIN_SESSION / 60, guestweb.SESSION_MAX / 60) } end
+    if name then out.make = { name = name, minutes = num(a.make.minutes, guestweb.MIN_SESSION / 60, guestweb.SESSION_MAX / 60), public = a.make.public == true or nil } end
   end
   if hex(a.kick, 16, 16) then out.kick = a.kick end
   if type(a.gain) == "table" and hex(a.gain.gid, 16, 16) and num(a.gain.v, 0, 4) then out.gain = { gid = a.gain.gid, v = num(a.gain.v, 0, 4) } end
@@ -96,26 +97,41 @@ local function save(l) band.set_ext_json(band.SECTION, guestweb.KEY, l, true) en
 local function find(gid) for _, g in ipairs(list()) do if g.gid == gid then return g end end end
 local function tell(gid, text) S.said[gid] = { text = text, at = math.max(((S.said[gid] or {}).at or 0) + 1, os.time() * 1000) }; return text end
 local function may_manage(cfg) return require("groups").may_manage(cfg.root, cfg.user) end
+local function is_owner(cfg) return require("groups").role(cfg.root, cfg.user) == "owner" end
 
 -- A new guest for this project and room. -> the link and words, or nil and why.
 function guestweb.make(cfg, b, d, now)
   now = now or os.time()
   if not guestweb.available() then return nil, "this computer's StudioSync extension is older: update it for browser guests" end
   if not may_manage(cfg) then return nil, "only the owner or an admin can invite a browser guest" end
+  local pub -- (a public link: through Tailscale Funnel on Live to an audience's public port, for someone not on the studio's Tailscale. rt-guestnet)
+  if d.public then
+    if not is_owner(cfg) then return nil, "only the studio's owner can make a public guest link" end
+    if not reaper.StudioSync_WebUIGuestPublic then return nil, "this computer's StudioSync extension is older: update it for public guest links" end
+    pub = require("audience").public_on()
+    if not pub then return nil, "a public guest link needs Public links on first (the owner's switch)" end
+  end
   local l = list()
   local ok, why = guestweb.may_make(S.stamps, #l, now)
   if not ok then return nil, why end
   local name = require("services").my_tailscale_name()
   local gid, code = band.secret(16), band.secret(24)
-  local link = guestweb.link(name, code, guestweb.PORT)
+  local link = guestweb.link(name, code, pub and require("audience").FUNNEL_PORT or guestweb.PORT)
   if not link then return nil, "Tailscale has no name for this computer (MagicDNS off?): a guest link needs it" end
   local session = math.floor((d.minutes or guestweb.SESSION / 60) * 60)
+  if pub then session = math.floor(math.min(session, guestweb.PUBLIC_SESSION, (tonumber(pub["until"]) or now) - now)) end
+  if session < 60 then return nil, "Public links turn themselves off within a minute: turn them off and on again first" end
   if reaper.StudioSync_WebUIGuest(gid, code, guestweb.CODE_LIFE, session) ~= 1 then return nil, "the extension refused the guest (too many?)" end
+  if pub and reaper.StudioSync_WebUIGuestPublic(gid, 1) ~= 1 then reaper.StudioSync_WebUIGuest(gid, "", 0, 0); return nil, "the extension refused the public guest" end
   S.stamps[#S.stamps + 1] = now
   while #S.stamps > guestweb.MAKE_HOUR do table.remove(S.stamps, 1) end
-  l[#l + 1] = { gid = gid, name = d.name, song = b.song, room = b.room or "main", by = cfg.user, made = now, ends = now + session }
+  l[#l + 1] = { gid = gid, name = d.name, song = b.song, room = b.room or "main", by = cfg.user, made = now, ends = now + session, pub = pub and true or nil }
   save(l)
   S.links[gid] = { link = link, until_at = now + guestweb.CODE_LIFE } -- (shown to the host until it's used or runs out; never saved)
+  if pub then
+    return link, string.format("a PUBLIC browser guest link for %s (%s, %s), works without Tailscale: once within %d minutes, the session %d minutes (it ends when Public links go off)",
+      d.name, b.song, b.room or "main", guestweb.CODE_LIFE // 60, session // 60)
+  end
   local phonerec = require("phonerec")
   if phonerec.auto_on() then pcall(phonerec.auto_link) end -- (the secure link set up, as the phone app does: in the background, with HTTPS certificates on)
   return link, string.format("a browser guest link for %s (%s, %s): works once within %d minutes, the session %d minutes%s", d.name, b.song,
@@ -132,6 +148,13 @@ function guestweb.kick(gid, why)
   if not g then return end
   save(out)
   return "browser guest " .. g.name .. " " .. (why or "ended")
+end
+
+-- Public links went off (lib/audience.lua: the owner's switch, or its hours ran out): every public guest ended at once. -> how many.
+function guestweb.end_public(why)
+  local n = 0
+  for _, g in ipairs(list()) do if g.pub then guestweb.kick(g.gid, why); n = n + 1 end end
+  return n
 end
 
 -- Their own track, made at the end of the project when it isn't there (this computer's user's room rules decide, as for a phone's take).
@@ -242,10 +265,12 @@ function guestweb.tick(proj, cfg, b, publish, now)
     local lk = S.links[g.gid]
     if lk and (s.redeemed or os.time() >= lk.until_at) then S.links[g.gid], lk = nil, nil end -- (used or run out: the link isn't shown again)
     host[#host + 1] = { gid = g.gid, name = g.name, song = g.song, room = g.room, ends = g.ends, by = g.by, here = here or nil,
-      joined = s.redeemed or nil, live = s.live or nil, peak = s.peak, under = s.under, drops = s.drops, gain = g.gain or 1, link = lk and lk.link or nil }
+      joined = s.redeemed or nil, live = s.live or nil, peak = s.peak, under = s.under, drops = s.drops, gain = g.gain or 1, link = lk and lk.link or nil,
+      pub = g.pub or nil }
   end
+  local audience = require("audience")
   publish("guestweb", { may = may_manage(cfg) or nil, ok = true, song = b.song, room = b.room or "main", guests = host, last = S.last,
-    max = guestweb.MAX })
+    max = guestweb.MAX, owner = is_owner(cfg) or nil, public_on = audience.public_on() and true or nil, warning = audience.WARNING })
 end
 
 return guestweb

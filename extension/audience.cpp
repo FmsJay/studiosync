@@ -439,6 +439,21 @@ void pub_client(sock_t s)
   WebReq r;
   bool kept = false;
   if (end == std::string::npos || !webui_parse_head(buf.substr(0, end + 4), r)) answer(s, 400, "text/plain", "bad request\n");
+  else if (webui_guest_path(r.method, r.path, true)) { // (a public guest: webui.cpp's own allow-list and sessions, behind this way's buckets and lock. rt-guestnet)
+    bool ok;
+    {
+      std::lock_guard<std::mutex> l(g_mx);
+      const double now = now_s();
+      ok = now >= g_lock[1] && audience_bucket_take(g_bk[1], now, RATE, BURST);
+      if (!ok) ++g_limited;
+    }
+    if (!ok) answer(s, 429, "text/plain", "slow down\n", "Retry-After: 60\r\n");
+    else if (webui_public_guest((unsigned long long)s, r, buf.substr(end + 4)) == 403) {
+      std::lock_guard<std::mutex> l(g_mx);
+      if (!audience_bucket_take(g_bad[1], now_s(), BAD_RATE, BAD_BURST)) g_lock[1] = now_s() + LOCK_S;
+      ++g_refused;
+    }
+  }
   else kept = audience_http((unsigned long long)s, r, true);
   {
     std::lock_guard<std::mutex> l(g_mx);
@@ -473,9 +488,21 @@ void pub_loop(sock_t ls)
 void pub_close()
 {
   g_pub_run = false;
+  if (webui_public_guests_end() > 0) // (their streams and sockets end at once, their cookies with them. rt-guestnet)
+    std::this_thread::sleep_for(std::chrono::milliseconds(150)); // (a live one's socket says "ended" (1008) within 0.1 s: the page says so, rather than reconnecting)
+  { // (requests mid-way, a public guest's stream or socket among them: cut; each request thread closes its own socket, so a handle is never closed twice)
+    std::lock_guard<std::mutex> l(g_mx);
+    for (sock_t s : g_pub_active)
+#ifdef _WIN32
+      shutdown(s, SD_BOTH);
+#else
+      shutdown(s, SHUT_RDWR);
+#endif
+    g_pub_active.clear();
+    g_pub_port = 0;
+  }
   if (g_pub_thr.joinable()) g_pub_thr.join();
   if (g_pub_sock != BAD_SOCK) { close_sock(g_pub_sock); g_pub_sock = BAD_SOCK; }
-  { std::lock_guard<std::mutex> l(g_mx); for (sock_t s : g_pub_active) close_now(s); g_pub_active.clear(); g_pub_port = 0; } // (requests mid-way: cut)
   for (int i = 0; i < 300 && g_pub_workers.load() > 0; ++i) std::this_thread::sleep_for(std::chrono::milliseconds(10));
 }
 std::string pub_open(int port)

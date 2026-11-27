@@ -186,3 +186,93 @@ Build order: Phase 1 starts once rt-share has landed (both touch `extension/webu
 - Not measured: the pure Funnel hop latency (the page does not report round trip); scrcpy's capture of the phone came back silent (the in-page tap is the measure).
 - Cleaned up: link revoked, public listening off (Funnel 10000 gone), test track removed, phone back as it was.
 Verdict: Funnel carries the page, the event stream and the live WebSocket from off the tailnet; Phase 1 goes ahead.
+
+## Phase 1 (built, 2026-11-27, rt-guestnet1)
+Public guest links, as designed above, PCM on the socket (Opus is Phase 2). Tested offline only: native tests, Lua tests, headless Chromium
+against a stand-in. **Not run in REAPER, on a phone, or through Funnel yet; the extension's version was not raised** (it needs a new
+extension build: `StudioSync_WebUIGuestPublic` is new, and without it the owner is told the extension is older).
+
+### What changed
+- **One switch, "Public links"** (`lib/audience.lua`, `lib/webui/audiencehost.js`): the owner's public listening switch now covers public
+  guest links too. One warning (it now says a public guest link lets someone join, be heard and record onto their own track, and that
+  turning it off ends every public link and guest), the same 6 hours, the same `public = { on, sure }` action. Turning it off (the owner, or
+  its hours running out) ends every public guest first (so a live page is told "ended" before Funnel goes), then closes Funnel, revokes
+  public listening links and shuts the port.
+- **Making one** (`lib/guestweb.lua`, `lib/webui/guesthost.js`): the owner (only; admins keep tailnet guest links) types a name and presses
+  **Public link (works without Tailscale)**. While Public links are off it asks with the switch's warning (a plain confirm, text only), turns
+  them on, then makes the link. The link is `https://<name>.ts.net:10000/guest.html?g=<code>`; the session is 2 h at most (`PUBLIC_SESSION`)
+  and never past the switch's end (under a minute left: refused). The host's topic gains `pub` per guest, and `owner`, `public_on`,
+  `warning`; the guest list shows "public".
+- **The extension** (`extension/webui.cpp`, `webui.h`): `WebGuest.pub`; `StudioSync_WebUIGuestPublic(gid, on)` (registered with the other
+  `StudioSync_WebUI*` functions in `webui_register`, so `reaper_menu.cpp` needed nothing); `webui_guest_auth(..., pub)` and
+  `webui_guest_path(..., pub)` take which port asks: a guest opens only on its own kind of port, codes and cookies alike. Public guests'
+  cookie is `ss_pguest` (`Secure; HttpOnly; SameSite=Lax`), so it never clobbers or stands in for a tailnet `ss_guest`. On the public port
+  `GET /guest.html?g=` only shows the page (a link preview uses nothing up); **`POST /api/guest/redeem?g=`** (the page's Join) redeems and
+  answers with the guest's own topic; the page's script and style need no code (like `/listen/listen.js`). `webui_public_guest(sock, req,
+  rest)` serves it all, never calls `webui_auth`, and caps each guest at 2 long-lived connections (stream + socket; a third: 429).
+  `webui_public_guests_end()`: every public guest ended when the public port closes. The action-queue code moved out of `handle()` into
+  `post_body()` unchanged so both ports use it. `StudioSync_WebUIStatus`'s guests carry `pub`.
+- **The public port** (`extension/audience.cpp`): `pub_client` hands `webui_guest_path(.., true)`'s paths to `webui_public_guest` after the
+  public way's own bucket and wrong-code lock (`g_bk[1]`, `g_bad[1]`; a 403 there counts toward the lock), passing the body bytes already
+  read; everything else stays `audience_http`. A direct call, not the function pointer the design sketched: `audience.cpp` is always linked
+  with `webui.cpp`. `pub_close` now ends public guests first (and waits 150 ms when one was live, for its 1008), then **shuts down** the
+  active request sockets instead of closing them, so each request thread closes its own and no handle is closed twice.
+- **The guest page** (`lib/webui/guest.js`): a page opened with `?g=` keeps the code in memory (dropped from the address as before), opens
+  no stream, says "press Join to start"; Join POSTs the redeem first, then starts from its answer and opens the stream. Ended (the socket's
+  1008, or the stream refused) says "Your session has ended (the host ended it, or turned public links off)" and stops reconnecting.
+
+### Tests (all pass here)
+- `tests/webui_test.cpp` (all ok): redeem only on the public port and only by POST; a public guest's code refused on the tailnet port and not
+  used up; on the public port GET shows the page twice and uses nothing; the script without a code, page and API not; a tailnet guest's
+  code refused there; redeem without X-StudioSync or from another site refused; POST redeems once, then neither redeem nor the page again;
+  `ss_pguest` opens the API, the tailnet's cookie name doesn't; each kind's session refused on the other port.
+- `tests/audience_test.cpp` (all ok; the existing checks adjusted: the guest page's paths are no longer 404 on the public port, and the
+  wrong-code lock check allows for the guest section's few earlier wrong codes): live through the public port as Funnel delivers it: the
+  preview GET (page, no cookie), again, the script; no session, no stream; redeem without X-StudioSync refused; the public code on the tailnet
+  port refused (GET and POST) and still good after; Join's POST: `Secure; HttpOnly; SameSite=Lax` cookie and only the guest's own topic; a
+  second Join refused; the guest's own Join again: no new cookie; a tailnet guest's cookie (by either name), the studio token and `ss_webui`
+  open no guest API on the public port; a public cookie opens nothing on the tailnet port; nine studio paths 404 with a valid guest cookie,
+  the token and `ss_webui` all given, `/api/action` and `/api/upload` too; the action wrapped as theirs; a 100 KB upload saved byte for byte
+  (the bytes read with the head included); stream and socket open, the stream carries their topic only; the third long-lived connection 429;
+  the public port off: stream and socket closed in 0.155 s (the 150 ms wait for the 1008 included), the socket's close is 1008, the public
+  guest gone and the tailnet guest kept; on again: the old cookie 403; and while the wrong-code lock is on, a right guest code waits too.
+- `tests/test_0_60_rt_guestnet.lua`: `public` only when `true`; a member and an admin can't make one, the owner can't while Public links are
+  off, a public link never turns them on by itself; an older extension refused; made: 2 h session, the extension told it's public, kept as
+  public without the code, on port 10000, the host's topic (owner, public_on, the warning covering guests); a tailnet guest alongside
+  (4 h, never public, :8443); 30 minutes asked: 30; Public links ending in 10 minutes: 10; under a minute: refused; the owner turns them
+  off: the public guest ended (extension told), the tailnet guest kept, "1 public guest ended", Funnel closed; the hours run out: ended too,
+  logged; off again: refused. The pages: the owner's button, the warning as text before turning on, redeem by POST, no stream before it.
+  `tests/test_0_60_rt_audience.lua` follows the switch's new words; `tests/test_0_60_rt_browserjoin.lua`'s groups stand-in gained `role`.
+- **Headless Chromium, fake devices only** (scratch, not committed, the rt-browserjoin pattern: a stand-in exe from the real `webui.cpp` and
+  `audience.cpp` serving the real `lib/webui` on its public port, a fake audio thread with a 440 Hz "REAPER output", a fake Lua publishing the
+  guest topic; a 1 kHz WAV as the fake mic; Node over CDP): a link-preview-style GET first (the page, no cookie, the code still unused); the
+  page opened: code gone from the address, no cookie, "press Join to start", nothing used up; Join: redeemed, the socket open, the cookie
+  unreadable by script, the name from the redeem's answer; the AudioContext running at 48 kHz with the mix's map points arriving; **the fake
+  mic heard at the stand-in host at 0.50 peak, 0 underruns, 0 drops**; the same link from another browser refused (page and Join), the
+  guest's own other tab still theirs; the public port off: the page says ended, why, and stops reconnecting; no script errors.
+
+### REAPER and phone checks for James
+1. Desktop, extension with this build, Live sync on: Studio/Session > Browser guests, type a name, **Public link (works without Tailscale)**.
+   With Public links off it shows the warning; OK turns them on (Funnel 10000) and the link appears with Copy (`:10000`).
+2. **Paste the link into a chat app first** (WhatsApp/Messages/Discord: let it build its preview), then open it on a phone **with Tailscale
+   off, on mobile data**. The page says "press Join to start".
+3. Pick the interface, **Join**: headphones on, hear the session; the band hears the phone (the host row shows it live with a level).
+4. **Record a take** while REAPER plays; stop; it lands on "<name> (guest)" in time and the page says where.
+5. The host's list shows the guest as "public". Try the same link in another browser: "used already".
+6. **Turn Public links off** (Listening links box) mid-session: the phone's page says "Your session has ended ..." and stops; the guest is
+   gone from the list; a tailnet guest, if any, stays.
+7. Optional: the same code on `:8443` from off the tailnet (nothing), and a tailnet guest link (`:8443`) still works as before.
+
+### Review later (security review held)
+- Codes still from `band.secret` (REAPER GUIDs) and sessions from `std::random_device` (as before); `nat_random` could make them.
+- The public port's rate limit and wrong-code lock are per way in, shared by listeners and guests: one abuser locks real guests out for a
+  minute (DoS, not exposure). A per-client key from Funnel's forwarded headers would fix it.
+- A public guest's upload cap is still the tailnet's 160 MB; a lower public cap may be wise.
+- The page's static files (guest.js, guest.css, guestworklet.js, style.css, phonefile.js) open on the public port without a code (they carry
+  nothing of the studio's, as listen.js). Any future file added to `webui_guest_path` becomes public by construction.
+- `Secure` on the cookie is honoured by Chrome over `http://127.0.0.1` too (the tests rely on that); real use is https through Funnel.
+- Public links off: guests are ended before Funnel is closed; the "ended" the page shows relies on the 1008 reaching it before Funnel cuts
+  the connection (`tailscale funnel off` takes longer than the 0.1 s the socket needs, but that's not guaranteed).
+- iOS Safari: Join now awaits the redeem POST (~0.3 s through Funnel) before it opens the AudioContext and the microphone; the existing join
+  already awaits several steps before `resume()`, but Safari's user-gesture rules weren't tested here.
+- The session mix (talkback included) goes whole to a public guest, as to a tailnet one; the band sees them on Who's here only.

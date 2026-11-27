@@ -231,6 +231,117 @@ static void pure_tests()
         audience_ws_frame(2, std::string(70000, 'x')).size() == 70010, "WebSocket frames: 7, 16 and 64-bit lengths");
 }
 
+// ---- public guests on the public port (rt-guestnet, Phase 1) --------------------------------------------------------------------------
+// The guest page's paths handed to webui.cpp's public guest handler, as Funnel delivers them (its forwarded headers). Few wrong codes here: the
+// public way's wrong-code bucket is the listeners' too (the lock test at the end).
+static tsock open_raw(int port, const std::string &req) { const tsock s = dial(port); if (s != (tsock)-1) send(s, req.data(), (int)req.size(), 0); return s; }
+static std::string head_of(tsock s) { std::string h; char c; while (h.find("\r\n\r\n") == std::string::npos && recv(s, &c, 1, 0) == 1) h += c; return h; }
+static double closed_in(tsock s, double secs) // (seconds until the server ended the connection; -1 not within secs)
+{
+  char b[4096];
+  for (const double t0 = now_s(); now_s() - t0 < secs;) { const int k = (int)recv(s, b, sizeof b, 0); if (k <= 0) return now_s() - t0; }
+  return -1;
+}
+static void public_guest_tests(int web, int pubp, const std::string &pages, const std::string &dir)
+{
+  const std::string F = "Host: pc.tail.ts.net:10000\r\nX-Forwarded-Host: pc.tail.ts.net:10000\r\nX-Forwarded-Proto: https\r\nX-Forwarded-For: 203.0.113.9\r\n";
+  const std::string T = "Host: pc.tail.ts.net:8443\r\nX-Forwarded-Host: pc.tail.ts.net:8443\r\nX-Forwarded-Proto: https\r\nX-Forwarded-For: 100.64.0.9\r\n";
+  auto pq = [&](const std::string &line, const std::string &extra = "") { return ask(pubp, line + " HTTP/1.1\r\n" + F + extra + "\r\n"); };
+  auto tq = [&](const std::string &line, const std::string &extra = "") { return ask(web, line + " HTTP/1.1\r\n" + T + extra + "\r\n"); };
+  const std::string POST = "X-StudioSync: 1\r\nOrigin: https://pc.tail.ts.net:10000\r\nContent-Length: 0\r\n";
+  const std::string gid = "0123456789abcdef", gc = "c0de0123456789abcdef0123", tgid = "1111222233334444", tc = "7a11e70123456789abcdef01";
+  const std::string tok = webui_token("web-test-secret-0123456789");
+  CHECK(webui_guest_set(gid.c_str(), gc.c_str(), 60, 3600) == 1 && webui_guest_public(gid.c_str(), 1) == 1 && webui_guest_set(tgid.c_str(), tc.c_str(), 60, 3600) == 1,
+        "public guests: one public, one tailnet");
+  CHECK(webui_guest_public("ffffffffffffffff", 1) == 0, "StudioSync_WebUIGuestPublic: an unknown guest, 0");
+  CHECK(std::string(webui_status()).find("\"" + gid + "\":{\"redeemed\":false,\"on\":true,\"pub\":true") != std::string::npos, "the status says which is public");
+  webui_publish(("guest-" + gid).c_str(), "{\"name\":\"Bo\"}");
+  // a chat app's preview, then the guest opening it: the page, and the code still good
+  std::string r = pq("GET /guest.html?g=" + gc);
+  CHECK(code(r) == 200 && body(r) == "GUEST" && r.find("Set-Cookie") == std::string::npos && r.find("Referrer-Policy: no-referrer") != std::string::npos,
+        "a public link opened (or fetched for a preview): the page, no cookie, nothing used up");
+  CHECK(code(pq("GET /guest.html?g=" + gc)) == 200 && code(pq("GET /guest.js")) == 200, "opened again: still the page; its script needs no code");
+  CHECK(code(pq("GET /api/guest/events")) == 403, "no session yet: their stream refused");
+  CHECK(code(pq("POST /api/guest/redeem?g=" + gc, "Content-Length: 0\r\n")) == 403, "redeeming needs X-StudioSync (a form on another site can't send it)");
+  // the public code on the tailnet port: refused, and not used up there
+  CHECK(code(tq("GET /guest.html?g=" + gc)) == 403 && code(tq("POST /api/guest/redeem?g=" + gc, "X-StudioSync: 1\r\nContent-Length: 0\r\n")) == 403,
+        "the public code on the tailnet port: refused (GET and POST)");
+  // Join: POST redeems once
+  r = pq("POST /api/guest/redeem?g=" + gc, POST);
+  const size_t at = r.find("ss_pguest=");
+  const std::string ps = at == std::string::npos ? "" : r.substr(at + 10, 32);
+  CHECK(code(r) == 200 && ps.size() == 32 && r.find("; Path=/; Secure; HttpOnly; SameSite=Lax\r\n") != std::string::npos &&
+        body(r).find("\"guest-" + gid + "\":{\"name\":\"Bo\"}") != std::string::npos && body(r).find("guest-" + tgid) == std::string::npos,
+        "Join redeems (POST): a Secure HttpOnly cookie, and the guest's own topic");
+  CHECK(code(pq("POST /api/guest/redeem?g=" + gc, POST)) == 403, "used once: another browser's Join refused");
+  const std::string ck = "Cookie: ss_pguest=" + ps + "\r\n";
+  r = pq("POST /api/guest/redeem?g=" + gc, POST + ck);
+  CHECK(code(r) == 200 && r.find("Set-Cookie") == std::string::npos && code(pq("GET /guest.html", ck)) == 200, "the guest themselves: Join again just says the topic; the page");
+  // the tailnet guest's session, the studio's token and cookie: nothing on the public port
+  r = tq("GET /guest.html?g=" + tc);
+  const std::string ts = r.find("ss_guest=") == std::string::npos ? "" : r.substr(r.find("ss_guest=") + 9, 32);
+  CHECK(code(r) == 303 && ts.size() == 32, "(the tailnet guest redeemed on the tailnet port)");
+  CHECK(code(pq("GET /api/guest/events?t=" + tok, "Cookie: ss_guest=" + ts + "; ss_pguest=" + ts + "; ss_webui=" + tok + "\r\n")) == 403,
+        "public: a tailnet guest's cookie (by either name), the studio token and ss_webui open no guest's API");
+  CHECK(code(tq("GET /api/guest/events", "Cookie: ss_pguest=" + ps + "; ss_guest=" + ps + "\r\n")) == 403, "tailnet: a public guest's cookie (by either name) opens nothing");
+  const char *studio[] = { "/", "/index.html", "/api/state", "/api/events", "/api/time", "/api/file?id=1", "/api/mix", "/app.js", "/record.html" };
+  bool none = true;
+  for (const char *p : studio) {
+    const std::string a = pq(std::string("GET ") + p + (strchr(p, '?') ? "&" : "?") + "t=" + tok, "Cookie: ss_pguest=" + ps + "; ss_webui=" + tok + "\r\n");
+    if (code(a) != 404 || a.find("STUDIO") != std::string::npos || a.find("band talk") != std::string::npos) { printf("     answered %s: %d\n", p, code(a)); none = false; }
+  }
+  CHECK(none && code(pq("POST /api/action", ck + "X-StudioSync: 1\r\nContent-Length: 2\r\n")) == 404 && code(pq("POST /api/upload", ck + "X-StudioSync: 1\r\nContent-Length: 2\r\n")) == 404,
+        "public: every studio path not found, with a valid guest cookie, the token and ss_webui all given");
+  // their action, wrapped; their upload, the body bytes that came with the head kept
+  while (*webui_poll()) {}
+  r = ask(pubp, "POST /api/guest/action HTTP/1.1\r\n" + F + ck + "X-StudioSync: 1\r\nContent-Length: 15\r\n\r\n{\"leave\":false}");
+  CHECK(code(r) == 202 && std::string(webui_poll()) == "{\"topic\":\"guestweb\",\"gid\":\"" + gid + "\",\"a\":{\"leave\":false}}" && webui_poll_here() == 0,
+        "public: their action reaches Lua wrapped as theirs");
+  while (*webui_poll()) {}
+  std::string take(100000, '\0');
+  for (size_t i = 0; i < take.size(); ++i) take[i] = (char)(i * 7 + i / 300);
+  r = ask(pubp, "POST /api/guest/upload HTTP/1.1\r\n" + F + ck + "X-StudioSync: 1\r\nContent-Length: " + std::to_string(take.size()) + "\r\n\r\n" + take);
+  const size_t ia = body(r).find("\"id\":\"");
+  const std::string up = ia == std::string::npos ? "" : body(r).substr(ia + 6, 32);
+  const std::string saved = dir + "/public take.bin";
+  CHECK(code(r) == 200 && up.compare(0, 16, gid) == 0 && webui_save_upload(up.c_str(), saved.c_str()) == (int)take.size(), "public: their upload, an id starting with their gid");
+  FILE *f = fopen(saved.c_str(), "rb");
+  std::string back(take.size() + 1, '\0');
+  const size_t got = f ? fread(&back[0], 1, back.size(), f) : 0;
+  if (f) fclose(f);
+  CHECK(got == take.size() && back.compare(0, got, take) == 0, "every byte of it, the ones read with the head included");
+  // two long-lived connections each, no third
+  const tsock ev = open_raw(pubp, "GET /api/guest/events HTTP/1.1\r\n" + F + ck + "\r\n");
+  const std::string evh = head_of(ev);
+  const tsock ws = open_raw(pubp, "GET /api/guest/live HTTP/1.1\r\n" + F + ck + "Upgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n");
+  const std::string wsh = head_of(ws);
+  CHECK(code(evh) == 200 && evh.find("text/event-stream") != std::string::npos && code(wsh) == 101 && wsh.find("s3pPLMBiTxaQ9kYGzzhZRbK+xOo=") != std::string::npos,
+        "public: their event stream and live socket open");
+  char b[4096];
+  std::string evd;
+  for (int i = 0; i < 20 && evd.find("\"name\":\"Bo\"") == std::string::npos; ++i) { const int k = (int)recv(ev, b, sizeof b, 0); if (k <= 0) break; evd.append(b, (size_t)k); }
+  CHECK(evd.find("\"guest-" + gid + "\"") != std::string::npos && evd.find("band talk") == std::string::npos, "the stream: their topic only");
+  CHECK(code(pq("GET /api/guest/events", ck)) == 429, "a third long-lived connection for the guest: refused");
+  // Public links off: their stream and socket closed at once, the guest ended, the tailnet guest kept
+  const double t0 = now_s();
+  std::thread off([&] { audience_start(pages.c_str(), 30, 96, 0); }); // (the call itself waits out the accept loop's poll: the closing is what's timed)
+  const double ce = closed_in(ev, 2) >= 0 ? now_s() - t0 : -1;
+  std::string cd;
+  int op = 0;
+  while ((op = ws_read(ws, cd)) >= 0 && op != 8) {}
+  const double cw = now_s() - t0;
+  off.join();
+  printf("     public port off: stream closed after %.3f s, socket after %.3f s\n", ce, cw);
+  CHECK(ce >= 0 && ce < 0.25 && cw < 0.25, "the public port off: their stream and socket closed within 0.25 s");
+  CHECK(op == 8 && cd == "\x03\xf0", "the socket told why first (1008: the page says the session ended, not reconnecting)");
+  const std::string st = webui_status();
+  CHECK(st.find(gid) == std::string::npos && st.find(tgid) != std::string::npos, "the public guest ended in the extension; the tailnet guest kept");
+  closesocket(ev); closesocket(ws);
+  audience_start(pages.c_str(), 30, 96, pubp);
+  CHECK(code(pq("GET /guest.html", ck)) == 403, "on again: the old public cookie opens nothing");
+  webui_guest_set(tgid.c_str(), "", 0, 0);
+}
+
 int main()
 {
 #ifdef _WIN32
@@ -247,6 +358,7 @@ int main()
   spit(pages + "/listen.css", "/*css*/");
   spit(pages + "/index.html", "<!doctype html><title>STUDIO PAGE</title>");
   spit(pages + "/guest.html", "GUEST");
+  spit(pages + "/guest.js", "/*guest js*/");
   std::string mix(5000, '\0');
   for (size_t i = 0; i < mix.size(); ++i) mix[i] = (char)('a' + i % 26);
   spit(dir + "/song mix.wav", mix);
@@ -270,8 +382,8 @@ int main()
   CHECK(code(get(pubp, "/listen/listen.js")) == 200 && code(get(pubp, "/listen/listen.css")) == 200, "public: its script and style");
   CHECK(code(get(pubp, "/listen/?l=" + tc)) == 403, "public: a tailnet-only link refused");
   const std::string tok = webui_token("web-test-secret-0123456789");
-  const char *refuse[] = { "/", "/index.html", "/guest.html", "/api/state", "/api/events", "/api/mix", "/api/time", "/api/file?id=1", "/api/guest/live",
-                           "/notes.txt", "/listen/../index.html", "/listen/listen.html" };
+  const char *refuse[] = { "/", "/index.html", "/api/state", "/api/events", "/api/mix", "/api/time", "/api/file?id=1", "/record.html", "/app.js",
+                           "/notes.txt", "/listen/../index.html", "/listen/listen.html" }; // (the guest page's paths: public guests', below)
   bool none = true;
   for (const char *p : refuse) {
     const std::string a = get(pubp, std::string(p) + (strchr(p, '?') ? "&" : "?") + "l=" + pc + "&t=" + tok);
@@ -279,7 +391,7 @@ int main()
   }
   CHECK(none, "public: everything else not found, with a public code and the studio token both given");
   CHECK(code(get(pubp, "/api/action", "X-StudioSync: 1\r\nContent-Length: 2\r\n", "POST")) == 404 && code(get(pubp, "/listen/?l=" + pc, "", "HEAD")) == 404 &&
-        code(get(pubp, "/api/guest/action", "X-StudioSync: 1\r\n", "POST")) == 404, "public: no POST, no HEAD");
+        code(get(pubp, "/api/upload", "X-StudioSync: 1\r\nContent-Length: 2\r\n", "POST")) == 404, "public: no POST but a guest's, no HEAD");
   r = get(pubp, "/listen/mix?l=" + pc, "Range: bytes=10-19\r\n");
   CHECK(code(r) == 206 && body(r) == mix.substr(10, 10) && r.find("audio/wav") != std::string::npos && r.find("Content-Range: bytes 10-19/5000") != std::string::npos,
         "public: the latest mix, a byte range of it");
@@ -287,6 +399,8 @@ int main()
   audience_info("{\"song\":\"Bee\"}", "{\"song\":\"Bee\"}", (dir + "/notes.txt").c_str());
   CHECK(code(get(pubp, "/listen/mix?l=" + pc)) == 404, "a 'mix' that isn't audio isn't served");
   audience_info("{\"song\":\"Bee\",\"live\":true,\"who\":[\"James\",\"Chilio\"]}", "{\"song\":\"Bee\",\"live\":true}", (dir + "/song mix.wav").c_str());
+
+  public_guest_tests(web, pubp, pages, dir);
 
   // ---- the tailnet way in (the web UI server, as `tailscale serve` hands it over) ----
   r = ask(web, "GET /listen/?l=" + tc + " HTTP/1.1\r\nHost: pc.tail.ts.net:8443\r\nX-Forwarded-Host: pc.tail.ts.net:8443\r\nX-Forwarded-For: 100.64.0.9\r\n\r\n");
@@ -455,8 +569,13 @@ int main()
   audience_start(pages.c_str(), 30, 96, pubp);
   int c403 = 0, c429 = 0;
   for (int i = 0; i < 25; ++i) { const int c = code(get(pubp, "/listen/?l=" + std::string(32, '0' + (i % 10)))); c403 += c == 403; c429 += c == 429; }
-  CHECK(c403 == 21 && c429 == 4, "public: 20 wrong codes a minute, then the 21st locks it (every request after: 429)");
+  printf("     wrong codes: %d refused, %d locked out\n", c403, c429);
+  CHECK(c403 >= 15 && c403 <= 21 && c403 + c429 == 25, "public: 20 wrong codes a minute, then the 21st locks it (every request after: 429; the public guests' few earlier wrong codes count too)");
   CHECK(code(get(pubp, "/listen/?l=" + pc)) == 429, "locked: even the right code waits the minute out");
+  webui_guest_set("5555666677778888", "abcabcabcabcabcabcabcabc", 60, 3600);
+  webui_guest_public("5555666677778888", 1);
+  CHECK(code(get(pubp, "/guest.html?g=abcabcabcabcabcabcabcabc")) == 429, "public guests share the lock: a right guest code waits it out too");
+  webui_guest_set("5555666677778888", "", 0, 0);
   CHECK(code(ask(web, "GET /listen/?l=" + tc + " HTTP/1.1\r\nHost: x\r\n\r\n")) == 200, "the tailnet way in isn't locked by the public one");
   int flood429 = 0;
   for (int i = 0; i < 260; ++i) flood429 += code(ask(web, "GET /listen/listen.js HTTP/1.1\r\nHost: x\r\n\r\n")) == 429;

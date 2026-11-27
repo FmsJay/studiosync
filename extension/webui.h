@@ -74,12 +74,23 @@ struct WebGuest {
   std::string code, session; // (code "" once redeemed: single use)
   double code_until = 0, until = 0;
   float gain = 1;
+  bool pub = false; // a public guest (rt-guestnet): opens only on the public port (extension/audience.cpp's), a tailnet one only on the tailnet's
 };
-// May this guest request in? The same origin and X-StudioSync rules as webui_auth, and only webui_guest_path's paths. A valid ss_guest cookie:
-// 0 and its gid. A valid unused code (?g= on GET /guest.html): the code is used up, the session is `fresh`, 303 (the answer sets the cookie).
-// Else 403. Pure over `guests` (tests/webui_test.cpp).
-int webui_guest_auth(const WebReq &r, std::map<std::string, WebGuest> &guests, double now, const std::string &fresh, std::string &gid);
-bool webui_guest_path(const std::string &method, const std::string &path);
+// May this guest request in? The same origin and X-StudioSync rules as webui_auth, and only webui_guest_path's paths. A valid session cookie
+// (ss_guest; ss_pguest on the public port): 0 and its gid. A valid unused code: the code is used up, the session is `fresh`, 303 (the answer
+// sets the cookie); on the tailnet that's ?g= on GET /guest.html, on the public port only POST /api/guest/redeem?g= (the guest's Join press:
+// a chat app's preview GETs the link and must not use it up). Public port only: 200, nothing redeemed, for GET /guest.html?g=<a valid unused
+// code> (gid set: show the page) and for the page's own script and style (gid ""). Else 403. pub: which port asks; a guest of the other kind
+// is never let in. Pure over `guests` (tests/webui_test.cpp).
+int webui_guest_auth(const WebReq &r, std::map<std::string, WebGuest> &guests, double now, const std::string &fresh, std::string &gid, bool pub = false);
+bool webui_guest_path(const std::string &method, const std::string &path, bool pub = false); // pub: and POST /api/guest/redeem
+int webui_guest_public(const char *gid, int on); // StudioSync_WebUIGuestPublic: mark a guest public (1) or not. -> 1 when known
+int webui_public_guests_end(); // the public port closed (audience.cpp): every public guest ended at once, as code "" would. -> how many were live
+// A public guest's request on the public port (extension/audience.cpp's pub_client hands over webui_guest_path(.., true)'s paths, after its
+// rate limit; rest: body bytes it already read). Never webui_auth: the studio token and ss_webui open nothing here. At most 2 long-lived
+// connections (event stream, live socket) per guest. Blocks while a stream or socket lasts. -> the status answered (403: a wrong code or
+// cookie, which the caller counts toward its wrong-code lock).
+int webui_public_guest(unsigned long long sock, const WebReq &r, const std::string &rest);
 std::string webui_ws_accept(const std::string &key); // RFC 6455's Sec-WebSocket-Accept for a Sec-WebSocket-Key
 
 // Live to an audience (extension/audience.cpp sets these when it's linked in; nullptr otherwise, as in tests/webui_test.cpp): a /listen/
