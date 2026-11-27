@@ -178,3 +178,11 @@ End; turn the switch off mid-session and see the guest page end; try the same co
 ## James's decisions (2026-11-27)
 All seven accepted as proposed: public guest links through Tailscale Funnel on the existing public port; one "Public links" switch (one warning, off after 6 h); owner only; public sessions 2 h (tailnet guests 4 h); Opus on public guest sockets with PCM as fallback; WebRTC/TURN only if a real Funnel session measures badly (then Cloudflare hosted TURN); no plan B built now.
 Build order: Phase 1 starts once rt-share has landed (both touch `extension/webui.cpp`). Phase 0 steps 2 and 3 are James's.
+
+## Phase 0 result (2026-11-27, orchestrator, James OK'd testing on the S23)
+- Funnel was already allowed: the tailnet policy has `nodeAttrs` funnel for autogroup:member; JAMES-MAIN carries the funnel cap for ports 443, 8443, 10000.
+- Public listening on (owner switch), a public link made. From the desktop through Funnel's public address (public DNS, `--resolve`): the page 200 in ~0.4 s (TLS ~0.28 s, first byte +0.1 s); `:8443` unreachable from the public address; `/api/state` on the public port 404.
+- S23 (no SIM, so Wi-Fi on its own ISP, a different internet connection from the desktop): Listen pressed on the tailnet, then the phone's Tailscale turned off for 75 s (IPNReceiver DISCONNECT/CONNECT broadcasts). The page reconnected about 4 s after Tailscale went off (one underrun, 2 gaps for the switch), so through Funnel. The ears pattern fired during the off period came through clean: corr_windows 0.99, level 0 dB, no gaps, speed 0.9996, steady (0.4 ms jump). After Tailscale came back the Funnel socket carried on: 49 s more, no new underruns or gaps. The page settled at a 0.3 s lead.
+- Not measured: the pure Funnel hop latency (the page does not report round trip); scrcpy's capture of the phone came back silent (the in-page tap is the measure).
+- Cleaned up: link revoked, public listening off (Funnel 10000 gone), test track removed, phone back as it was.
+Verdict: Funnel carries the page, the event stream and the live WebSocket from off the tailnet; Phase 1 goes ahead.
