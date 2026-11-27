@@ -6,7 +6,7 @@
 --     chain's knobs were noted afresh as loading, and the knob was never sent, on that computer alone).
 --  2. The file opened again in its tab inside the minute after a chain landed, with a knob turned since: the knob goes out (5010).
 --  3. A record whose object no look of this session saw is no deletion of this person's (section 6 (2b)).
---  4. Deleting half the song's tracks or more asks first (James's decision 2).
+--  4. Deleting half the song's tracks or more asks first (James's decision 2), from 2 tracks deleted (his floor, 2026-11-27).
 --  5. A track StudioSync's Undo brings back gets what a bandmate made on it while it was gone (the soak's 5023).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
@@ -255,7 +255,12 @@ do
   B.F.clock = B.F.clock + 40
   S.edit(B, function() reaper.DeleteTrack(S.track(B, "Gtr")) end)
   assert(bee_gone(S) == 1 and not claimask.big_pending(B.F.proj), "a third of the tracks goes without asking")
-  print("rt-reopen 4: deleting half the song's tracks or more asks first; Yes sends, No or no answer puts them back")
+  -- one of two: half the song, but a single track never asks (James, 2026-11-27: "From 2 tracks deleted")
+  T = T + 5
+  B.F.clock = B.F.clock + 40
+  S.edit(B, function() reaper.DeleteTrack(S.track(B, "Keys")) end)
+  assert(bee_gone(S) == 2 and not claimask.big_pending(B.F.proj), "1 of 2 tracks goes without asking (was: asked, half the song)")
+  print("rt-reopen 4: deleting half the song's tracks or more asks first, from 2 tracks; Yes sends, No or no answer puts them back")
 end
 
 -- ---- 5. a track StudioSync's Undo brings back brings what a bandmate made on it while it was gone (the soak's 5023) ---------------------------

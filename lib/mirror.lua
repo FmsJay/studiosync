@@ -5426,14 +5426,15 @@ function W.gone(w)
   end
   -- (a look that would delete half the song's tracks or more asks this person first: James's decision 2, 2026-11-27, through opts.big_delete
   -- (Live sync's claimask.big_delete, the panel's Yes / No). Held meanwhile, with what's on them, as an ask holds; No, or no answer, puts them
-  -- back with what's on them. rt-sync2 section 6 (4), rt-sync2c)
+  -- back with what's on them. rt-sync2 section 6 (4), rt-sync2c. Only from 2 tracks deleted: one track never asks, even in a song of one or
+  -- two (James, 2026-11-27 15:57: "From 2 tracks deleted"; rt-sync2c Recommendation 4))
   local big_held, big_kept = {}, {}
   if opts.big_delete then
     local del, here = {}, 0
     for _, g in ipairs(gone) do if g.oid:sub(1, 1) == "T" and mirror.gone_why[pk .. g.oid] == "user" then del[#del + 1] = g.oid end end
     if #del > 0 then
       for t = 0, reaper.CountTracks(proj) - 1 do if not local_track(reaper.GetTrack(proj, t)) then here = here + 1 end end
-      if 2 * #del >= here + #del then
+      if #del >= 2 and 2 * #del >= here + #del then
         local yes = opts.big_delete(#del, here + #del, table.concat(del, ","))
         for _, oid in ipairs(del) do if yes == nil then big_held[oid] = true elseif yes == false then big_kept[oid] = true end end
       end
