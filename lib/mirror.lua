@@ -839,19 +839,33 @@ function mirror.began(e)
   if e.base ~= nil then return e.base == 0 end
   return (e.rev or 0) <= 1 -- (an event too old to carry its base)
 end
-function mirror.plan_restore(entries, upto, in_scope)
-  local at, last, first = {}, {}, {}
+-- (each object's version then is the judge's answer from its versions up to that row (lib/judge.lua, rt-sync2b): a merge of two people's edits
+-- made apart, not the newer alone, and a deletion over an edit made without seeing it, whatever their revs, as every computer held it then.
+-- Missing versions count as trimmed (History has what it has). Merges are rebuilt from the room's files (mirror.event_file), found from the
+-- rows' own paths; `read` (optional) says where else.)
+function mirror.plan_restore(entries, upto, in_scope, read)
+  local upto_by, last, first, by_id, room_dir = {}, {}, {}, {}, nil
   for i, e in ipairs(entries) do
     if e.kind == "obj" and e.oid then
+      by_id[e.id or ""] = e
       if won(e, last[e.oid]) then last[e.oid] = e end
       if not first[e.oid] or won(first[e.oid], e) then first[e.oid] = e end
-      if i <= upto and won(e, at[e.oid]) then at[e.oid] = e end
+      if i <= upto then local t = upto_by[e.oid] or {}; upto_by[e.oid] = t; t[#t + 1] = e end
+      room_dir = room_dir or (type(rawget(e, "path_")) == "string" and rawget(e, "path_"):match("^(.*)/events/[^/]+$"))
     end
   end
+  read = read or (room_dir and mirror.reader(room_dir))
+  local function rd(id)
+    local x = by_id[id]
+    if x then return x end
+    if read then return read(id) end
+  end
+  local opt = { mergeable = mirror.mergeable, days = mirror.MERGE_DAYS, give_up = true }
   local plan = {}
   for oid, l in pairs(last) do
-    if not in_scope or in_scope(oid, l, at[oid]) then
-      local t = at[oid]
+    local at = upto_by[oid] and judge.settled(upto_by[oid], rd, opt).v
+    if not in_scope or in_scope(oid, l, at) then
+      local t = at
       -- (nothing then, and its oldest version kept isn't its first: it existed, in a version trimmed away. Left as it is)
       if t or mirror.began(first[oid]) then plan[oid] = (t and not t.gone) and t or false end
     end

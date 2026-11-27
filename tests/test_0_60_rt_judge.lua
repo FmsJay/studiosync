@@ -238,6 +238,14 @@ do
   local s2 = judge.settled({ base, moved, nudged, gone, restore, on_r1, on_r2 }, mirror.reader(RD), { mergeable = mirror.mergeable })
   assert(s2.complete, "a merge that can't be built isn't one on its way: complete")
   assert(s2.v == on_r2, "the newest leaf stands: " .. tostring(s2.v and s2.v.id))
+  -- Restore and History playback go by the judge (mirror.plan_restore): at the row after the move and the nudge, the merge; after a deletion
+  -- and a newer edit that didn't see it, the deletion (false), whatever the revs. By rev alone it was the nudge, then the edit.
+  local function row(v) local e = {}; for k, x in pairs(v) do e[k] = x end; e.kind = "obj"; e.path_ = RD .. "/events/" .. v.id .. ".json"; return e end
+  local plan = mirror.plan_restore({ row(base), row(moved), row(nudged) }, 3)
+  assert(plan["I-B-1"] and plan["I-B-1"].track == "T-GTR" and plan["I-B-1"].state:find("POSITION 33.25", 1, true), "restore to after both: the merge")
+  assert(mirror.plan_restore({ row(base), row(moved), row(nudged) }, 2)["I-B-1"].id == moved.id, "restore to before the nudge: the move")
+  local late = put({ id = "Bee-20261122-120205Z-9", rev = 9, hlc = 3050, user = "Bee", track = "T-BASS", state = item(40), base_ev = nudged.id, base = 3 })
+  assert(mirror.plan_restore({ row(base), row(moved), row(nudged), row(gone), row(late) }, 5)["I-B-1"] == false, "after a deletion and a newer edit that didn't see it: gone")
 end
 
 print("ok judge: " .. merges .. " merges, " .. gones .. " gone, " .. restores .. " restores, " .. incompletes .. " incomplete")
