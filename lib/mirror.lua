@@ -2104,8 +2104,6 @@ function mirror.waiting(key)
 end
 mirror.anchor_seen = {} -- proj .. oid .. known hash -> its event was checked against what's here (see watch)
 mirror.said_outside = {} -- proj .. oid -> a landed chain's ReaInsert / ReaStream was mentioned
-mirror.orphaned = {} -- proj -> { track oid = true }: changes skipped while that track was gone (sync.receive looks again)
-mirror.heal_due = {} -- proj -> true: an edit landed over a deletion held here (sync.receive heals once at the pass's end)
 
 -- Crash-safe sessions. What's changed here and not gone out yet (mirror.unsent: plug-ins or automation settling or waiting for the stop, a big
 -- file still copying, a burst's rest; and held-back items) lived only in memory: REAPER killed or crashed, it went with the
@@ -3164,12 +3162,8 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       local colours = mirror.track_colours(proj)
       reaper.DeleteTrack(p)
       mirror.hold_colours(proj, colours)
-      -- (should the track come back (the deletion undone, a Restore), what sat on it is looked over again, on every computer: sync.receive
-      -- heals when a track noted here exists again. Only a computer that had skipped a change while the track was gone noted it, so a
-      -- bandmate's fresh take came back there and nowhere else, not even on the computer that recorded it: the soak's bug 4. rt-converge)
-      local o = mirror.orphaned[tostring(proj)] or {}
-      o[oid] = true
-      mirror.orphaned[tostring(proj)] = o
+      -- (should the track come back (the deletion undone, a Restore), what sat on it comes back by the judge, on every computer: sync.receive
+      -- judges what a track holds in the pass it comes back in (lib/evindex.lua contents). rt-sync2b)
     end
     return true, ""
   end
@@ -3376,102 +3370,84 @@ function mirror.apply(proj, ev, media_dir, local_mix)
   return true, ""
 end
 
--- Does revision (rev, order) beat what this machine holds for oid?
-function mirror.wins(proj, oid, rev, order)
-  local krev, _, _, korder = mirror.known(proj, oid)
-  return mirror.newer({ rev = rev, time = order }, krev and { rev = krev, time = korder } or nil)
-end
-
 local id_span = judge.id_span
 -- Two versions of an item, one started from a version over a month older than the newer of them: never merged, decided from the ids alone
 -- (lib/judge.lua). MERGE_DAYS stays here: lib/trim.lua keeps history twice as long.
 function mirror.too_old_to_merge(a, b) return judge.too_old_to_merge(a, b, mirror.MERGE_DAYS) end
 mirror.MERGE_DAYS = 30 -- (lib/trim.lua keeps history twice as long)
-
--- An item's deletion racing an edit (one of a and b is a deletion, the other not): the deletion wins over a version that doesn't build on it (made
--- before the deletion was seen there), whichever is newer, and loses to one that does (a restore). By rev and clock, an edit made a moment
--- after a delete-all by a computer that hadn't seen it yet (a tempo map re-timing its parts) outranked the deletion, and which computer kept
--- what depended on arrival order. -> true when a wins, false when b does, nil when it isn't such a race, "wait" when a version between is still on
--- its way. Pure but for reading events. (Cross test, James, rt)
--- shortcut: an edit made before an older deletion that was restored since still merges with the restore; walk each side's ancestry for gones if
--- restore races ever show up.
--- (a track's deletion against an edit of its settings too: newest won, so a rename a moment after someone deleted the track brought it back for
--- everyone, or not, by the clock. Backlog 1.3, rt-p1)
-local RACES = { item = true, track = true }
-function mirror.gone_race(room_dir, a, b)
-  if not (a and b and RACES[a.obj] and a.obj == b.obj and a.id ~= b.id and (a.gone == true) ~= (b.gone == true)) then return nil end
-  local g, e = a.gone and a or b, a.gone and b or a
-  local d = mirror.descends(room_dir, e, g.id, g.hlc)
-  if d == nil then return "wait" end
-  return (a == e) == d
-end
-
--- An item changed apart from the version this computer holds (each started before the other): the two put together, the same on every
--- computer (mirror.merge_item), so what only one of them changed isn't lost (docs/clashes.md). The merged version, or nil.
-mirror.first_seen = {} -- event id -> when merge_for first couldn't tell (time_precise)
-function mirror.merge_for(proj, ev, room_dir)
-  -- (items, and since rt-merge a track's settings and its automation too: mirror.MERGES)
-  if not (mirror.mergeable(ev) and ev.base_ev and ev.id) then return nil end
-  local krev, _, kev, kord = mirror.known(proj, ev.oid)
-  if not krev or kev == "" or kev == ev.id then return nil end
-  local k = mirror.event_file(room_dir, kev)
-  if not (mirror.mergeable(k) and k.obj == ev.obj and k.base_ev) then return nil end
-  if mirror.too_old_to_merge(k, ev) then return nil end
-  local apart = mirror.apart(room_dir, k, ev)
-  if apart == nil then -- (a change in between isn't here yet, most likely still on its way: this one waits for it, two minutes at most)
-    -- (two minutes from when it first turned up here, by this computer's clock: timed by the sender's, one running 3 minutes slow never
-    -- waited, and its out-of-order changes settled differently here than where they came in order. Review, 0.58.53)
-    local now = reaper.time_precise()
-    mirror.first_seen[ev.id] = mirror.first_seen[ev.id] or now
-    if now - mirror.first_seen[ev.id] < 120 then return nil, true end
-    return nil
-  end
-  if not apart then return nil end
-  -- (three or more made apart: put together in one order, from the versions themselves, not in the order they arrived. Merged pairwise as
-  -- they came, two computers that got them in different orders built different merges, and the projects came apart. Review list, 0.59.37.
-  -- Two of them come out as before: the newer wins.)
-  local leaves, seen = {}, {}
-  local function flat(id)
-    local w, l = mirror.split_merge(id)
-    if w then flat(w); flat(l) elseif not seen[id] then seen[id] = true; leaves[#leaves + 1] = id end
-  end
-  flat(kev); flat(ev.id)
-  local list = {}
-  for _, id in ipairs(leaves) do
-    local x = id == ev.id and ev or mirror.event_file(room_dir, id)
-    if not x or require("sync").too_new(x) then return nil end -- (too new for this version: as if missing. Round 3 review, 0.59.48)
-    list[#list + 1] = x
-  end
-  local keep = {}
-  for i, x in ipairs(list) do -- (one that another builds on is in that one already)
-    local under = false
-    for j, y in ipairs(list) do if i ~= j and not under and mirror.descends(room_dir, y, x.id, x.hlc) then under = true end end
-    if not under then keep[#keep + 1] = { id = x.id, rev = x.rev, order = mirror.order_of(x) } end
-  end
-  -- (two as well, through merge_order from the leaves: merged as "this one against what's held here", a held merge was nested inside the
-  -- new one and two people's edits ended different on different computers, 356 of 2,000 fuzzed runs. One leaf left: the new change builds on
-  -- everything held, so it's simply newer and `wins` takes it. Round 1 review, 0.59.45)
-  if #keep < 2 then return nil end
-  local id = mirror.merge_order(keep)
-  if id == kev then return nil end
-  mirror.base_missing = nil
-  local merged_ev = mirror.event_file(room_dir, id)
-  if not merged_ev and mirror.base_missing then -- (what they both build on is still on its way: this one waits for it, two minutes at most)
-    local now = reaper.time_precise()
-    mirror.first_seen[ev.id] = mirror.first_seen[ev.id] or now
-    if now - mirror.first_seen[ev.id] < 120 then return nil, true end
-  end
-  return merged_ev
-end
 mirror.merge_order = judge.merge_order -- (versions made apart as one merged version's id, in any order: lib/judge.lua)
 
--- Does `ev` land over the version held here because that one was made without seeing a deletion ev builds on (mirror.beaten_by)? For
--- sync.receive's undo point, which asks before mirror.receive does.
-function mirror.lands_over(proj, ev, room_dir)
-  if not RACES[ev.obj] or ev.gone then return false end
-  local _, kh, kev = mirror.known(proj, ev.oid)
-  local held = (kev or "") ~= "" and kh ~= "" and kev ~= ev.id and mirror.event_file(room_dir, kev) or nil
-  return held ~= nil and mirror.beaten_by(room_dir, held, ev)
+-- ---- the judge, asked here (lib/judge.lua, rt-sync2b) ----
+-- An answer may stay incomplete here (a version a walk needs isn't here yet) this long before what's missing counts as trimmed: a bound on
+-- waiting, not a decision (it was merge_for's and gone_race's two minutes). When the version arrives the object is judged again, so every
+-- computer ends on the same answer whatever it held meanwhile.
+mirror.WAIT_MISSING = 120
+mirror.missing_since = {} -- room dir \0 oid -> when its answer was first incomplete here (time_precise)
+local READABLE = { track = "table" }
+-- The judge's answer for object `oid` here: from its versions in the index (lib/evindex.lua), the ones given (`news`: what a receive pass read
+-- for it) and what this computer holds (a merge's sides too; a version held that can't be read here stands in from its record, so nothing
+-- older is put back over it, as `wins` did). Never a change too new for this version (sync.too_new), nor one in `skip` (ids refused here for
+-- now, or waiting for their tempo map: sync.receive). `proj` nil: nothing held. -> judge.settled's answer, with s.oid and s.held = { rev, h,
+-- id, order } from the record. Replaces wins, merge_for (and its first_seen), gone_race, beaten_by and lands_over: arrival order and how long
+-- anything took decide nothing. Cost: the object's versions sorted, and a walk per leaf pair and per deletion.
+function mirror.judge(proj, oid, room_dir, news, skip)
+  local too_new, vs, seen = require("sync").too_new, {}, {}
+  local function add(v)
+    if type(v) == "table" and type(v.id) == "string" and not seen[v.id] and not (skip and skip[v.id]) and v.oid == oid and type(v.rev) == "number"
+        and not (v.type ~= nil and too_new(v)) then
+      seen[v.id] = true
+      vs[#vs + 1] = v
+    end
+  end
+  for _, v in ipairs(news or {}) do add(v) end
+  for _, v in ipairs(require("evindex").versions(room_dir, oid)) do add(v) end
+  local held = {}
+  if proj then
+    local krev, kh, kev, kord = mirror.known(proj, oid)
+    held = { rev = krev, h = kh, id = kev, order = kord }
+    local function flat(id, depth)
+      if type(id) ~= "string" or id == "" or depth > 12 or seen[id] then return end
+      local w, l = mirror.split_merge(id)
+      if w then flat(w, depth + 1); flat(l, depth + 1); return end
+      local v = mirror.event_file(room_dir, id)
+      if v then add(v)
+      elseif id == kev and not (skip and skip[id]) then -- (its file not readable here: what it was, from the record)
+        local ms, who = judge.order_parts(kord)
+        add({ type = "obj", obj = mirror.KIND[oid:sub(1, 1)], oid = oid, id = id, rev = krev or 0, hlc = ms > 0 and ms or nil, user = who, stub = true })
+      end
+    end
+    flat(kev, 0)
+  end
+  local opt, rd = { mergeable = mirror.mergeable, days = mirror.MERGE_DAYS }, mirror.reader(room_dir)
+  local s
+  for _ = 1, 4 do -- (an answer whose state can't be read as its kind's is left out, and the rest judged again)
+    s = judge.settled(vs, rd, opt)
+    local v = s.v
+    if not (v and not v.gone and not v.stub and type(v.state) ~= (READABLE[v.obj] or "string")) then break end
+    for i = #vs, 1, -1 do if vs[i].id == v.id then table.remove(vs, i) end end
+  end
+  local key = room_dir .. "\0" .. oid
+  if s.complete then mirror.missing_since[key] = nil
+  else
+    local now = reaper.time_precise()
+    local t0 = mirror.missing_since[key] or now
+    mirror.missing_since[key] = t0
+    if now - t0 >= mirror.WAIT_MISSING then opt.give_up = true; s = judge.settled(vs, rd, opt) end
+  end
+  s.oid, s.held = oid, held
+  return s
+end
+-- Does the answer change anything here: another version than the one held, or the one held but not in place (recorded gone with its track,
+-- and the track is here: a part or item comes back with it; `force`: an item a track that came back in this pass holds, and isn't here)?
+function mirror.lands(proj, s, force)
+  local v = s and s.complete and s.v
+  if not v or v.stub then return false end
+  local _, kh, kev = mirror.known(proj, s.oid or v.oid)
+  if kev ~= v.id then return true end
+  if v.gone then return false end
+  if kh == "" then return not on_gone_track(proj, v) end
+  -- (an item its returning track held, deleted with the track in REAPER since no look recorded it gone: back with the track)
+  return force == true and v.obj == "item" and mirror.find(proj, "item", s.oid) == nil and not on_gone_track(proj, v)
 end
 -- An item landing in a lane resets which lanes play: the track's own settings go back on top (a merged item too: review, 0.58.47).
 local function lanes_back(proj, ev, media_dir, local_mix)
@@ -3500,7 +3476,6 @@ local function fx_landed(proj, ev)
     prints.hold_fx(tr) -- (once for the track, not once per item: review, 0.59.14)
   end
 end
--- An incoming "obj" event (from sync.apply). Returns true when handled (applied or older than what we hold).
 -- A bandmate's track change `x` about to land: the settings changed here and not sent yet, against the band's version as this computer holds
 -- it (mirror.track_seen), are kept over it where it doesn't change them itself. The record is then the band's version, under the band's
 -- hash, so the next look finds the track changed and sends yours built on theirs: both stand. Not the settings a bandmate's live move is
@@ -3537,72 +3512,53 @@ local function keep_unsent(proj, x, local_mix)
   if not full then return x, nil end
   return setmetatable({ state = full }, { __index = x }), mirror.track_hash(x.state, local_mix)
 end
-function mirror.receive(proj, ev, media_dir, local_mix, me)
-  if ev.obj == "fx" and ev.restless then mirror.restless_load(); mirror.restless_add(ev.restless) end
-  mirror.hlc_seen(ev.hlc)
-  local order = mirror.order_of(ev)
-  -- (before the usual "theirs wins or not": the loser's other changes go in too)
+-- An incoming change (sync.receive, through sync.apply): what its object is now by the judge (mirror.judge: this change, `more` (the object's
+-- other changes read in this pass), its other versions here and what's held), put in place when that differs from what's held. `s`: the
+-- answer, when the caller asked already (sync.receive asks first, for its undo point); `ev` may then be nil. `force`: put the answer in place
+-- even where the record names it (what a track that came back holds). -> true when handled (put in place, or nothing to change), false to
+-- try again later: the answer is incomplete, or a wait of this object's own (an edit here not sent yet, its track or media not here yet,
+-- playing, its tab behind, the MIDI editor). rt-sync2b
+function mirror.receive(proj, ev, media_dir, local_mix, me, more, s, force)
+  local news = {}
+  for _, x in ipairs(ev and { ev } or {}) do news[#news + 1] = x end
+  for _, x in ipairs(more or {}) do if x ~= ev then news[#news + 1] = x end end
+  for _, x in ipairs(news) do
+    if x.obj == "fx" and x.restless then mirror.restless_load(); mirror.restless_add(x.restless) end
+    mirror.hlc_seen(x.hlc)
+  end
   local room_dir = media_dir:gsub("/media$", "")
-  -- (a restore race: mirror.beaten_by. This change made without seeing a deletion that what's held here builds on: dropped, as where the
-  -- deletion landed first. What's held made without seeing a deletion this change builds on: this one lands over it, not merged with it)
-  local over = false
-  if RACES[ev.obj] and not ev.gone then
-    local _, kh0, kev0 = mirror.known(proj, ev.oid)
-    -- (the version recorded here, whether or not the item is: one that went with its deleted track is recorded under a version that isn't
-    -- a deletion, and with the item away this check was skipped, so an edit a deletion had beaten was merged into it on a computer catching
-    -- up. rt-converge)
-    local held = (kev0 or "") ~= "" and kev0 ~= ev.id and mirror.event_file(room_dir, kev0) or nil
-    if held and held.gone then held = nil end
-    if held and mirror.beaten_by(room_dir, ev, held) then mirror.dropped = true; return true end
-    over = held ~= nil and mirror.beaten_by(room_dir, held, ev)
-  end
-  local merging, wait
-  if not over then merging, wait = mirror.merge_for(proj, ev, room_dir) end
-  if wait then return false end
-  -- (an item's deletion against an edit that didn't see it: the deletion, in any order, rather than rev and clock: mirror.gone_race. Two
-  -- minutes for a version between that's on its way, as merge_for waits. Cross test, James, rt)
-  local race
-  if not merging and RACES[ev.obj] then
-    local _, _, kev = mirror.known(proj, ev.oid)
-    if (kev or "") ~= "" then race = mirror.gone_race(room_dir, ev, mirror.event_file(room_dir, kev)) end
-    if race == "wait" then
-      local now = reaper.time_precise()
-      mirror.first_seen[ev.id] = mirror.first_seen[ev.id] or now
-      if now - mirror.first_seen[ev.id] < 120 then return false end
-      race = nil
-    end
-  end
+  s = s or mirror.judge(proj, ev.oid, room_dir, news)
   -- (mirror.dropped: handled but nothing changed here, so sync.receive doesn't log "<who>: changed an item on X" for it. Cross test, James, rt)
   mirror.dropped = true
-  if race == false then return true end
-  if race == nil and not merging and not over and not mirror.wins(proj, ev.oid, ev.rev or 0, order) then return true end
+  if not s.complete then return false end
+  if not mirror.lands(proj, s, force) then return true end
+  local land = s.v
+  local oid = s.oid
+  local order = mirror.order_of(land)
+  local merging = mirror.split_merge(land.id) and land or nil
   -- (what would be put in place: a merged version sits on its winner's track, which may not be this change's. Asked of the change alone, a
   -- merge whose winner sat on a deleted track was tried every pass for good, "its track hasn't arrived": a computer catching up kept
   -- "Receiving 2" and never took the studio's track order, which waits for nothing to be pending. The soak's late joiner, seed 7051. rt-converge)
-  local land = merging or ev
-  mirror.dropped = ev.gone ~= true and on_gone_track(proj, land)
+  mirror.dropped = land.gone ~= true and on_gone_track(proj, land)
   -- (on a track the band has deleted since: nothing to apply it to, ever. Waiting for it kept "still to come" above
   -- 0 for good: review, 2026-10-31. Before the unsent check below: a flag
   -- left on a part of a deleted track held this back for good. 0.59.14, review)
   if on_gone_track(proj, land) then
-    -- (unless the track comes back later in the same download: its return may still be on its way, so the room is
-    -- looked over once its changes have all landed; sync.receive. Laptop, 0.34.8: a fresh song lost Keys' items)
-    local o = mirror.orphaned[tostring(proj)] or {}
-    o[land.track] = true
-    mirror.orphaned[tostring(proj)] = o
+    -- (unless the track comes back: then what it holds is judged again in that pass, sync.receive (Laptop, 0.34.8: a fresh song lost Keys'
+    -- items). rt-sync2b)
     -- (an item's own deletion is recorded though: it went with its track, and every computer then holds the same deletion, whichever came first)
     -- (and nothing of yours waits on it any more: a deletion of yours held for a claimer's answer, or an edit that went with the track, left
     -- its flag on, which only a look at an object still recorded here takes off (W.gone), and the item's return then waited behind it for
     -- good, on this computer alone. The soak's seed 5045. rt-converge)
-    if ev.gone then remember(proj, ev.oid, ev.rev, "", ev.id, order); mirror.unsent[tostring(proj) .. ev.oid] = nil end
+    if land.gone then remember(proj, oid, land.rev, "", land.id, order); mirror.unsent[tostring(proj) .. oid] = nil end
     -- (an item of yours kept on "(yours, not sent)" when the band deleted its track, as new work they might not have had: this is their
     -- deletion of the very version you hold, so they had it, saw it, and deleted it with the track. It goes, and so does the kept track if
     -- nothing else is on it. A Redo's item, deleted with its track 21 s after it reached the deleter, stayed on the redoer's computer alone
     -- (rt-r6's H). An edit of yours made since, or a version they never had, stays kept. rt-fix9)
-    local kn = ev.gone and ev.obj == "item" and mirror.kept_new[tostring(proj) .. ev.oid]
+    local kn = land.gone and land.obj == "item" and mirror.kept_new[tostring(proj) .. oid]
     if kn then
-      mirror.kept_new[tostring(proj) .. ev.oid] = nil
-      if kn.ev ~= nil and ev.base_ev == kn.ev and reaper.ValidatePtr2(proj, kn.it, "MediaItem*") and select(2, reaper.GetSetMediaItemInfo_String(kn.it, "P_EXT:band_oid", "", false)) == "" then
+      mirror.kept_new[tostring(proj) .. oid] = nil
+      if kn.ev ~= nil and land.base_ev == kn.ev and reaper.ValidatePtr2(proj, kn.it, "MediaItem*") and select(2, reaper.GetSetMediaItemInfo_String(kn.it, "P_EXT:band_oid", "", false)) == "" then
         local ktr = reaper.GetMediaItem_Track(kn.it)
         reaper.DeleteTrackMediaItem(ktr, kn.it)
         if reaper.CountTrackMediaItems(ktr) == 0 and mirror.local_track(ktr) then reaper.DeleteTrack(ktr) end
@@ -3615,24 +3571,24 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
     -- (recorded so whether or not the item is here yet: its earlier versions may land after this one (Syncthing brings files in any order,
     -- and a version waits for its audio), and with nothing recorded the earlier one landed as the newest: the item on its old track on this
     -- computer, gone with the deleted track on the others. The soak's seed 5010. rt-converge)
-    if ev.obj == "item" and not ev.gone then
-      local it = mirror.find(proj, "item", ev.oid)
-      local key = tostring(proj) .. ev.oid
+    if land.obj == "item" and not land.gone then
+      local it = mirror.find(proj, "item", oid)
+      local key = tostring(proj) .. oid
       if it then
-        if mirror.unsent[key] or mirror.unsent_elsewhere(proj)[ev.oid] then
+        if mirror.unsent[key] or mirror.unsent_elsewhere(proj)[oid] then
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, select(2, reaper.GetTrackName(reaper.GetMediaItem_Track(it)))))
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
         else reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it) end
         mirror.dropped = false
       end
       mirror.unsent[key] = nil
-      remember(proj, ev.oid, land.rev, "", land.id, merging and mirror.order_of(merging) or order)
+      remember(proj, oid, land.rev, "", land.id, order)
     end
     -- (and a track's part, its plug-ins, automation or sends: its newer version is recorded too, gone with the track under that version.
     -- A returning track brings each part back as this computer's record names it (mirror.bring_parts); with nothing recorded for a change
     -- that arrived while the track was away, that was the version before, and a plug-in a bandmate had taken off just as the track was
     -- deleted was back on this computer alone once the deletion was undone. The soak's long run, seed 11013. rt-converge)
-    if mirror.PART[ev.obj] and not ev.gone then remember(proj, ev.oid, land.rev, "", land.id, merging and mirror.order_of(merging) or order) end
+    if mirror.PART[land.obj] and not land.gone then remember(proj, oid, land.rev, "", land.id, order) end
     return true
   end
   -- a change of ours to it hasn't gone out yet (plug-ins and automation waiting to settle or
@@ -3646,16 +3602,16 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- new value with it, and the edit was gone on every computer with no line anywhere (P1-4 and P1-1's first try, rt-r2). The knobs as the
   -- chain last landed here or went out from here (mirror.fx_last) against now: moved, it may be an edit of yours not sent yet, and theirs
   -- waits for the next look to say (it sends yours, or finds nothing changed and takes the knobs as they are: W.one). rt-converge)
-  if ev.obj == "fx" and not ev.gone then
-    local key = tostring(proj) .. ev.oid
-    local tr = not mirror.unsent[key] and mirror.fx_last[key] ~= nil and mirror.find(proj, "track", ev.track)
+  if land.obj == "fx" and not land.gone then
+    local key = tostring(proj) .. oid
+    local tr = not mirror.unsent[key] and mirror.fx_last[key] ~= nil and mirror.find(proj, "track", land.track)
     -- (not where no plug-in is here: none has a knob to turn. The chain had gone with its track, or by the band's deletion, with the knobs
     -- of its last landing still noted; that read as "moved", and no look settles a chain recorded gone, so the band's new chain for the
     -- track waited behind the doubt for good, on this computer alone. The soak's seed 5008. rt-converge)
     local knobs = tr and mirror.fx_params(tr)
     if tr and knobs ~= "" and mirror.fx_last[key] ~= knobs then mirror.unsent[key], mirror.fx_doubt[key], mirror.unsettled = true, true, true end
   end
-  if mirror.unsent[tostring(proj) .. ev.oid] or mirror.unsent_elsewhere(proj)[ev.oid] then return false end
+  if mirror.unsent[tostring(proj) .. oid] or mirror.unsent_elsewhere(proj)[oid] then return false end
   -- (an item of yours held back (its audio couldn't be copied, its last version unreadable) is about to be replaced by the band's: a copy goes to
   -- "(yours, not sent)" first, as a refusal keeps one; it went with no copy. Only for held-back items. Round 2 review, 0.59.46)
   -- (once per item and band version, as W.put_back's copy_key: a retry while the band's audio still arrived made a copy every pass. Its mark goes
@@ -3664,10 +3620,10 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   -- open in the MIDI editor) and was edited meanwhile was replaced with no copy of that edit. Cost: one chunk read and hash per such receive,
   -- held-back items only. Data safety, Round 4 review, 0.59.49)
   local hb = mirror.held_back[tostring(proj)]
-  local held = hb and hb[ev.oid] and ev.obj == "item"
+  local held = hb and hb[oid] and land.obj == "item"
   if held then
-    local it = mirror.find(proj, "item", ev.oid)
-    local key = it and (tostring(proj) .. ev.oid .. "\0held " .. tostring((merging or ev).id) .. "\0" .. mirror.hash(select(2, reaper.GetItemStateChunk(it, "", false))))
+    local it = mirror.find(proj, "item", oid)
+    local key = it and (tostring(proj) .. oid .. "\0held " .. tostring(land.id) .. "\0" .. mirror.hash(select(2, reaper.GetItemStateChunk(it, "", false))))
     if key and not mirror.copied[key] then
       if not mirror.keep_item_copy(proj, it) then return false end
       mirror.copied[key] = true
@@ -3688,17 +3644,17 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
   if merging then
     local land, band_h = keep_unsent(proj, merging, local_mix)
     local ok, h = mirror.apply(proj, placed(land), media_dir, local_mix)
-    if ok and held then hb[ev.oid] = nil end
-    if ok and band_h then h = band_h; mirror.track_seen[tostring(proj) .. ev.oid] = merging.state end
+    if ok and held then hb[oid] = nil end
+    if ok and band_h then h = band_h; mirror.track_seen[tostring(proj) .. oid] = merging.state end
     if ok then
-      remember(proj, ev.oid, merging.rev, h, merging.id, mirror.order_of(merging))
-      if ev.obj == "item" then
+      remember(proj, oid, merging.rev, h, merging.id, mirror.order_of(merging))
+      if merging.obj == "item" then
         require("sync").landed_media = true
         lanes_back(proj, merging, media_dir, local_mix)
       end
-      local lost, on = merging.loser, (ev.name or "") ~= "" and ev.name or "an unnamed track"
+      local lost, on = merging.loser, (merging.name or "") ~= "" and merging.name or "an unnamed track"
       -- (what was merged, in words: an item, a track's settings, its automation. rt-merge)
-      local what = ev.obj == "track" and ("track " .. on) or ev.obj == "env" and ("the automation on " .. on) or ev.obj == "fx" and ("the plug-ins on " .. on) or ("an item on " .. on)
+      local what = merging.obj == "track" and ("track " .. on) or merging.obj == "env" and ("the automation on " .. on) or merging.obj == "fx" and ("the plug-ins on " .. on) or ("an item on " .. on)
       local takes = false
       for _, key in ipairs(merging.clashed or {}) do takes = takes or (key:find("<SOURCE", 1, true) ~= nil and not key:find("\0notes", 1, true)) end
       -- (nothing said where your side was only your tempo change's move: you changed nothing of it. rt-fix9)
@@ -3706,57 +3662,53 @@ function mirror.receive(proj, ev, media_dir, local_mix, me)
       if only_map then
       elseif lost and me and lost.user == me and #(merging.clashed or {}) > 0 then -- (only what you both changed is theirs; Use mine brings all of yours back)
         require("sync").put_back(string.format("%s changed the same thing as you on %s: %s, and the rest of your change is in", tostring(merging.user), what,
-          takes and "their take plays, and yours is kept as another take on it" or "theirs stands where you both changed it"), { oid = ev.oid, ev = lost.id, name = ev.name })
+          takes and "their take plays, and yours is kept as another take on it" or "theirs stands where you both changed it"), { oid = oid, ev = lost.id, name = merging.name })
       elseif me and (merging.user == me or (lost and lost.user == me)) then
         require("band").log(string.format("%s changed %s as you did, at the same time: both changes are kept", tostring(merging.user == me and lost and lost.user or merging.user), what))
       end
-      if ev.obj == "fx" then fx_landed(proj, ev) end -- (a merged chain picks its track's prints as any chain does. rt-p1)
+      if merging.obj == "fx" then fx_landed(proj, merging) end -- (a merged chain picks its track's prints as any chain does. rt-p1)
     end
     return ok
   end
   -- both changed it while apart: theirs wins everywhere (the same on every machine); ours stays in History
-  local krev, kh, kev = mirror.known(proj, ev.oid)
-  -- (an edit landing over a deletion held here: a deletion is never merged across, so computers that got the race in different orders held
-  -- different versions until heal ran. This pass ends with one heal, as for a returning track: sync.receive. Cost: one heal per such race.
-  -- Round 2 review, 0.59.46)
-  if ev.obj == "item" and not ev.gone and krev and kh == "" then mirror.heal_due[tostring(proj)] = true end
+  local krev, _, kev = mirror.known(proj, oid)
   -- (sync.is_mine, not the name as a prefix: "James" took "James-Laptop"'s changes for its own, and said you both changed it. James, 0.58.82)
-  if me and krev and ev.base and ev.base < krev and require("sync").is_mine(kev, me) then
+  if me and krev and land.base and land.base < krev and require("sync").is_mine(kev, me) then
     -- (within seconds of each other it was a race, not time apart: "while you were apart" read wrong, laptop round 2)
     local function secs(y, mo, d, h, mi, s) return y and os.time({ year = y, month = mo, day = d, hour = h, min = mi, sec = s }) end
     local mine = secs(kev:match("%-(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)(%d%d)Z"))
-    local theirs = secs((ev.time or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)"))
+    local theirs = secs((land.time or ""):match("(%d+)-(%d+)-(%d+)T(%d+):(%d+):(%d+)"))
     local race = mine and theirs and math.abs(mine - theirs) <= 10
-    require("sync").put_back(string.format("%s also changed %s %s: theirs is in.", tostring(ev.user), (ev.name or "") ~= "" and ("something on " .. ev.name) or "the same thing",
-      race and "at the same moment as you" or "while you were apart"), { oid = ev.oid, ev = kev, name = ev.name })
+    require("sync").put_back(string.format("%s also changed %s %s: theirs is in.", tostring(land.user), (land.name or "") ~= "" and ("something on " .. land.name) or "the same thing",
+      race and "at the same moment as you" or "while you were apart"), { oid = oid, ev = kev, name = land.name })
   end
-  local midiview = ev.obj == "item" and not ev.gone and require("midiview")
-  if midiview and not (midiview.on() and midiview.recent(ev.time)) then midiview = nil end
-  local notes_before = midiview and midiview.notes(mirror.find(proj, "item", ev.oid))
-  local land, band_h = keep_unsent(proj, ev, local_mix)
-  local ok, h = mirror.apply(proj, placed(land), media_dir, local_mix)
-  if ok and held then hb[ev.oid] = nil end
-  if ok and band_h then h = band_h; mirror.track_seen[tostring(proj) .. ev.oid] = ev.state end
-  if ok then remember(proj, ev.oid, ev.rev, h, ev.id, order) end
-  if ok and ev.obj == "item" then require("sync").landed_media = true end -- (Live sync builds its peaks, if nothing else will)
-  if ok and midiview then midiview.show(proj, mirror.find(proj, "item", ev.oid), notes_before) end
+  local midiview = land.obj == "item" and not land.gone and require("midiview")
+  if midiview and not (midiview.on() and midiview.recent(land.time)) then midiview = nil end
+  local notes_before = midiview and midiview.notes(mirror.find(proj, "item", oid))
+  local put, band_h = keep_unsent(proj, land, local_mix)
+  local ok, h = mirror.apply(proj, placed(put), media_dir, local_mix)
+  if ok and held then hb[oid] = nil end
+  if ok and band_h then h = band_h; mirror.track_seen[tostring(proj) .. oid] = land.state end
+  if ok then remember(proj, oid, land.rev, h, land.id, order) end
+  if ok and land.obj == "item" then require("sync").landed_media = true end -- (Live sync builds its peaks, if nothing else will)
+  if ok and midiview then midiview.show(proj, mirror.find(proj, "item", oid), notes_before) end
   -- applied, but it isn't what they have: the projects differ (only when made the same way: a change from an older
   -- StudioSync hashed fewer of a track's settings, so it always reads as different; the laptop saw 4 on its first open)
   -- (nor when the colour counts on one machine and not the other: SWS auto-colouring)
-  local same_way = ev.obj ~= "track" or type(ev.state) ~= "table" or (ev.state.autocolour == true) == (mirror.own_colours() == true)
-    and (ev.local_mix == true) == (local_mix == true) -- (nor when one has Local mixing on and the other not: their faders count differently. 0.59.14)
+  local same_way = land.obj ~= "track" or type(land.state) ~= "table" or (land.state.autocolour == true) == (mirror.own_colours() == true)
+    and (land.local_mix == true) == (local_mix == true) -- (nor when one has Local mixing on and the other not: their faders count differently. 0.59.14)
   -- (nor when it was put on another tempo map than it was made under: it reads as it should here, not as it did there. rt-converge)
-  if ok and ev.hash and ev.hv == mirror.HV and same_way and h ~= ev.hash and not ev.gone and not mirror.retimed_here and not band_h then
+  if ok and land.hash and land.hv == mirror.HV and same_way and h ~= land.hash and not land.gone and not mirror.retimed_here and not band_h then
     local band = require("band")
     local n = (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) + 1
     reaper.SetExtState(band.SECTION, "mirror drift " .. tostring(proj), tostring(n), false)
-    reaper.SetExtState(band.SECTION, "mirror drift last", ev.oid .. " here " .. tostring(h) .. " theirs " .. ev.hash, false) -- (for a bug report)
-    local where = (ev.name or "") ~= "" and ev.name or "an unnamed track"
-    band.log(string.format("%s's change to %s came out different here than on their machine (the panel's Health shows it)", tostring(ev.user),
-      mirror.PART[ev.obj] and (mirror.PART[ev.obj] .. " on " .. where) or ev.obj == "track" and ("track " .. where) or ("an item on " .. where)))
+    reaper.SetExtState(band.SECTION, "mirror drift last", oid .. " here " .. tostring(h) .. " theirs " .. land.hash, false) -- (for a bug report)
+    local where = (land.name or "") ~= "" and land.name or "an unnamed track"
+    band.log(string.format("%s's change to %s came out different here than on their machine (the panel's Health shows it)", tostring(land.user),
+      mirror.PART[land.obj] and (mirror.PART[land.obj] .. " on " .. where) or land.obj == "track" and ("track " .. where) or ("an item on " .. where)))
   end
-  if ok and ev.obj == "item" then lanes_back(proj, ev, media_dir, local_mix) end
-  if ok and ev.obj == "fx" and not ev.gone then fx_landed(proj, ev) end
+  if ok and land.obj == "item" then lanes_back(proj, land, media_dir, local_mix) end
+  if ok and land.obj == "fx" and not land.gone then fx_landed(proj, land) end
   return ok
 end
 
@@ -3786,7 +3738,7 @@ end
 -- -> it like an event (the winner's fields; rev, base, state its own), or nil when an event or a base (base_ev: 0.58.43 on) isn't there.
 mirror.merge_id, mirror.split_merge = judge.merge_id, judge.split_merge
 -- Ancestry, read from a room's versions (lib/judge.lua: descends, apart, common_base): true, false, or nil while a version on the way isn't here.
-local function reader(room_dir) return function(id) return (mirror.event_file(room_dir, id)) end end
+local function reader(room_dir) return function(id) return mirror.event_file(room_dir, id) end end -- (and true when a merge's side or base isn't here)
 mirror.reader = reader
 function mirror.descends(room_dir, v, of, of_hlc) return judge.descends(reader(room_dir), v, of, of_hlc) end
 function mirror.apart(room_dir, a, b) return judge.apart(reader(room_dir), a, b) end
@@ -3801,19 +3753,21 @@ local function event_file(room_dir, evid, depth)
   depth = (depth or 0) + 1
   if depth > 12 then return nil end
   local w, l = event_file(room_dir, w_id, depth), event_file(room_dir, l_id, depth)
+  if not (w and l) then return nil, true end -- (a side not here yet: the judge waits for it. rt-sync2b)
   if not (mirror.mergeable(w) and mirror.mergeable(l) and w.obj == l.obj) then return nil end
   local base_id, missing = common_base(room_dir, w, l)
   -- (a version one of them builds on isn't here yet, so where the two meet can't be told: no merge for now, and none remembered. With "the
   -- older of their two bases" in its place a computer that had a change before the change it was built on (the link ahead of Syncthing) put
   -- the two together from the wrong version, kept that for good, and held a merge of the same name as everyone else's with other notes in
   -- it: nothing ever compared them again. The soak's seed 43. mirror.merge_for waits for it as it waits for a change in between. rt-converge)
-  if not base_id and missing then mirror.base_missing = true; return nil end
+  if not base_id and missing then mirror.base_missing = true; return nil, true end
   if not base_id then -- (no shared past here: the older of their two bases, as before 0.58.47)
     local older = w
     if (l.base or 0) < (w.base or 0) or ((l.base or 0) == (w.base or 0) and (l.base_ev or "") < (w.base_ev or "")) then older = l end
     base_id = older.base_ev
   end
   local b = base_id and event_file(room_dir, base_id, depth)
+  if not b and base_id then return nil, true end
   if not (b and type(b.state) == type(w.state)) then return nil end
   local v = {}
   for k, x in pairs(w) do v[k] = x end
@@ -3859,44 +3813,6 @@ local function event_file(room_dir, evid, depth)
   return v
 end
 mirror.event_file = event_file
--- Is version `x` beaten by a deletion that `w` builds on and x doesn't: x was made without seeing a deletion that was taken back since (an
--- Undo, a Restore), and w is that restore or comes after it? A deletion beats an edit made without seeing it (mirror.gone_race), and stays the
--- winner when someone restores the thing: the restore is what the thing is, and the beaten edit isn't merged back in. Judged against the
--- deletion itself that only happened where the deletion landed before the restore; where the restore came first, or both in one pass, the
--- beaten edit was merged into it, so computers ended different by the order things arrived (gone_race's old shortcut; the soak's Undo and
--- Redo of a share with a bandmate's edit between). x's ancestry once, then w's down to where the two meet. Pure but for reading events.
--- rt-converge
-function mirror.beaten_by(room_dir, x, w)
-  if not (type(x) == "table" and type(w) == "table") or x.gone or not RACES[x.obj] or x.obj ~= w.obj or x.id == w.id then return false end
-  local mine, todo, steps = { [x.id or ""] = true }, { x }, 0
-  while #todo > 0 and steps < 400 do
-    steps = steps + 1
-    for _, id in ipairs(parents(table.remove(todo))) do
-      if not mine[id] then
-        mine[id] = true
-        local y = event_file(room_dir, id)
-        if y then todo[#todo + 1] = y end
-      end
-    end
-  end
-  local seen
-  todo, steps, seen = { w }, 0, {}
-  while #todo > 0 and steps < 400 do
-    steps = steps + 1
-    local y = table.remove(todo)
-    local id = y.id or ""
-    if not mine[id] and not seen[id] then
-      seen[id] = true
-      if y.gone then return true end
-      for _, p in ipairs(parents(y)) do
-        local e = event_file(room_dir, p)
-        if e then todo[#todo + 1] = e end
-      end
-    end
-  end
-  return false
-end
-
 -- The name permissions use for an object (claims are by track name): its track's name.
 local function perm_name(o, by_oid)
   if o.kind == "track" then return o.state.name end
@@ -6619,78 +6535,42 @@ local function light_event(room_dir, f, inbox) -- (inbox: it's in the direct lin
   return ev
 end
 mirror.light_event = light_event
+-- An event already read whole (sync.receive's), kept as light_event would have kept it: for the index, without reading its file again.
+function mirror.light_of(room_dir, f, ev)
+  local box = light_events[room_dir]
+  if not box then box = {}; light_events[room_dir] = box end
+  if box[f] ~= nil then return box[f] end
+  local l = {}
+  for k, x in pairs(ev) do if k ~= "state" then l[k] = x end end
+  if ev.state ~= nil then l.path_ = room_dir .. "/events/" .. f; setmetatable(l, lazy_state) end
+  box[f] = l
+  return l
+end
 function mirror.room_newest(room_dir, since)
-  local band, too_new = require("band"), require("sync").too_new
+  local too_new, evindex = require("sync").too_new, require("evindex")
   local out, all = {}, {}
-  -- (and what came over the direct link, in its inbox until Syncthing's copy is here, as sync.receive reads it: with the folder alone, a
-  -- change received and applied seconds ago wasn't among the room's changes, the newest left was the version before it, and heal put that
-  -- back over it. A native undo of a cut does exactly that on every receiver: an item landing over a deletion ends the pass with a heal.
-  -- F5, rt-undo. Cost: one listing of the inbox per call)
-  local names, inbox = band.files(room_dir .. "/events", ".json"), {}
-  local inbox_names = require("direct").inbox_names -- (a test's stand-in link may have none)
-  local extra = inbox_names and inbox_names(room_dir .. "/events") or {}
-  if #extra > 0 then
-    local have, list = {}, {}
-    for i, f in ipairs(names) do have[f], list[i] = true, f end
-    for _, f in ipairs(extra) do if not have[f] then have[f], inbox[f] = true, true; list[#list + 1] = f end end
-    names = list
-  end
-  for _, f in ipairs(names) do
-    local ev = light_event(room_dir, f, inbox[f])
-    -- (not a change too new for this version: receive leaves it for the version that knows it, and heal applied it anyway and recorded it held,
-    -- so once updated it never landed properly. Round 3 review, 0.59.48. Cost: one comparison an event)
-    if type(ev) == "table" and ev.type == "obj" and ev.oid and (not since or (ev.time or "") > since) and not too_new(ev) then
-      local cur = out[ev.oid]
-      if not cur or mirror.newer({ rev = ev.rev, time = mirror.order_of(ev) }, { rev = cur.rev, time = mirror.order_of(cur) }) then
-        out[ev.oid] = ev
+  evindex.load(room_dir)
+  for _, oid in ipairs(evindex.oids(room_dir)) do
+    local list = evindex.versions(room_dir, oid)
+    table.sort(list, function(a, b) return a.id < b.id end)
+    for _, ev in ipairs(list) do
+      -- (not a change too new for this version: receive leaves it for the version that knows it, and heal applied it anyway and recorded it held,
+      -- so once updated it never landed properly. Round 3 review, 0.59.48. Cost: one comparison an event)
+      if (not since or (ev.time or "") > since) and not too_new(ev) then
+        local cur = out[oid]
+        if not cur or mirror.newer({ rev = ev.rev, time = mirror.order_of(ev) }, { rev = cur.rev, time = mirror.order_of(cur) }) then out[oid] = ev end
+        all[oid] = all[oid] or {}
+        table.insert(all[oid], ev)
       end
-      all[ev.oid] = all[ev.oid] or {}
-      table.insert(all[ev.oid], ev)
     end
   end
   return out, all
 end
--- The version of an item every computer ends on: its newest change, merged with the newest of any made apart from it (mirror.merge_item), as each
--- computer's receive did it. `all`: its changes (room_newest). -> an event, or a merged version.
+-- The version every computer ends on, from an object's changes in a room (`all`, as room_newest lists them; `newest`, its newest): the judge's
+-- answer (lib/judge.lua), or the newest while that's incomplete. rt-sync2b
 function mirror.settled(room_dir, newest, all)
-  -- (an edit a deletion beats, mirror.gone_race, isn't a candidate: heal took the newest edit over the deletion receive had kept. Cross test, James, rt)
-  if RACES[newest.obj] and not newest.gone then
-    local gones, alive, top = {}, {}, nil
-    for _, x in ipairs(all or {}) do if x.gone then gones[#gones + 1] = x end end
-    local function newer(x, y) return not y or mirror.newer({ rev = x.rev, time = mirror.order_of(x) }, { rev = y.rev, time = mirror.order_of(y) }) end
-    if #gones > 0 then
-      for _, x in ipairs(all) do
-        local beaten = x.gone
-        for _, g in ipairs(gones) do beaten = beaten or mirror.gone_race(room_dir, g, x) == true end
-        if not beaten then alive[#alive + 1] = x; if newer(x, top) then top = x end end
-      end
-      if not top then for _, g in ipairs(gones) do if newer(g, top) then top = g end end; return top end
-      newest, all = top, alive
-    end
-  end
-  if not mirror.mergeable(newest) or not newest.base_ev then return newest end
-  local behind, todo = {}, { newest } -- (what the newest builds on, walked once: two walks per past change froze a long history. Review, 0.58.47)
-  while #todo > 0 and #todo < 2000 do
-    for _, id in ipairs(parents(table.remove(todo))) do
-      if not behind[id] then behind[id] = true; local y = event_file(room_dir, id); if y then todo[#todo + 1] = y end end
-    end
-  end
-  local cand = { newest }
-  for _, x in ipairs(all or {}) do
-    -- (not one over a month older than the newest, as merge_for doesn't merge those: heal merged what receive had refused. Round 2, 0.59.46)
-    if x ~= newest and not behind[x.id] and not x.gone and x.base_ev and not mirror.too_old_to_merge(x, newest) and type(x.state) == type(newest.state)
-        and mirror.apart(room_dir, x, newest) then cand[#cand + 1] = x end
-  end
-  if #cand < 2 then return newest end
-  -- (every change no other change builds on, through merge_order, as merge_for builds it: newest plus one rival undid three-way merges every
-  -- computer agreed on. Cost: a few ancestry walks per object with rivals, in heal only. Round 1 review, 0.59.45)
-  local leaves = {}
-  for i, x in ipairs(cand) do
-    local under = false
-    for j, y in ipairs(cand) do if i ~= j and not under and mirror.descends(room_dir, y, x.id, x.hlc) then under = true end end
-    if not under then leaves[#leaves + 1] = { id = x.id, rev = x.rev, order = mirror.order_of(x) } end
-  end
-  return #leaves >= 2 and event_file(room_dir, mirror.merge_order(leaves)) or newest
+  local s = judge.settled(all or { newest }, reader(room_dir), { mergeable = mirror.mergeable, days = mirror.MERGE_DAYS })
+  return s.v or newest
 end
 
 -- Has this object been changed here since the version this computer last sent or took in (its record's hash `h`)? Then it isn't sent yet

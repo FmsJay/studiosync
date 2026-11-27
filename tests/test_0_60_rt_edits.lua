@@ -1562,7 +1562,7 @@ do
   mirror.MERGE_SINCE = { track = os.date("!%Y%m%d-%H%M%S", now_t + 86400), env = os.date("!%Y%m%d-%H%M%S", now_t + 86400) }
   newest, all = mirror.room_newest(rdir)
   assert(mirror.settled(rdir, newest[vox], all[vox]).id == newest[vox].id, "a pair from before track merging: heal settles on the newer")
-  assert(not mirror.mergeable(newest[vox]) and mirror.merge_for(B.F.proj, newest[vox], rdir) == nil, "and nothing merges it")
+  assert(not mirror.mergeable(newest[vox]) and not mirror.split_merge(mirror.judge(B.F.proj, vox, rdir).v.id), "and the judge merges nothing")
   mirror.MERGE_SINCE = since
   print("rt-edits: Undo leaves a track where it sits unless a move is undone; a track order that came apart is put right mid-session; no late merges")
 end
@@ -2314,16 +2314,15 @@ do
   as(A)
   set(item_named(bass, "Bass 2"), "MUTE", "1 0")
   skip_on_b(select(2, look(A, true)))
-  -- an edit landing over a held deletion asks for a heal at the end of the receive (mirror.heal_due)
+  -- a heal is one undo point, its own; a receive pass never heals (heal_due, its heal at the end of a pass, went with the judge: rt-sync2b),
+  -- and one with nothing new opens no point (the line "caught up on ..." is Live sync's, beside its heal)
   as(B)
-  mirror.heal_due[tostring(B.F.proj)] = true
   B.F.undos, logged = {}, {}
   B.F.clock = B.F.clock + 1
   sync.receive(B.F.proj, B.cfg, song, room, yes)
-  assert(#B.F.undos == 1 and B.F.undos[1] == "StudioSync: changes that hadn't arrived here", "one point, the heal's (" .. table.concat(B.F.undos, " / ") .. ")")
-  local caught = 0
-  for _, l in ipairs(logged) do if l:find("caught up on 1 change that hadn't arrived here", 1, true) then caught = caught + 1 end end
-  assert(caught == 1, "and its line (" .. table.concat(logged, " | ") .. ")")
+  assert(#B.F.undos == 0, "a receive with nothing new opens no point (" .. table.concat(B.F.undos, " / ") .. ")")
+  assert(mirror.heal(B.F.proj, rdir, false) == 1 and #B.F.undos == 1 and B.F.undos[1] == "StudioSync: changes that hadn't arrived here",
+    "one point, the heal's (" .. table.concat(B.F.undos, " / ") .. ")")
   same(A, B, "(healed)")
   -- automation that can't land while recording: no point opened for it
   tick()

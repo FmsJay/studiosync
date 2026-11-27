@@ -210,17 +210,23 @@ assert(extras.open_template(cfg, "Demo"), "opened")
 assert(theirs_has(TT) and theirs_has(MT2), "the track's and the master's chains are theirs")
 reaper.CountTracks, reaper.EnumProjects = function() return 0 end, function() return nil end
 
--- code 1: merge_for treats a leaf too new for this version as missing
-local real_m = { apart = mirror.apart, event_file = mirror.event_file, descends = mirror.descends, old = mirror.too_old_to_merge }
+-- code 1: a version too new for this version is left out of what the judge weighs (it waits for the update): no merge with it. (Was
+-- merge_for's "a leaf too new is missing"; mirror.judge since rt-sync2b.)
+local real_m = { event_file = mirror.event_file }
 local held = { id = "Me-20261119-100000Z-00001-0001", type = "obj", obj = "item", oid = "I-F", rev = 2, state = "a", base_ev = "X-0", user = "Me" }
-mirror.event_file = function(_, id) if id == held.id then return held end; return { id = id, type = "obj", obj = "item", oid = "I-F", state = "m" } end
-mirror.apart, mirror.descends, mirror.too_old_to_merge = function() return true end, function() return false end, function() return false end
+mirror.event_file = function(_, id)
+  if id == held.id then return held end
+  if id == "X-0" then return { id = id, type = "obj", obj = "item", oid = "I-F", rev = 1, state = "o" } end
+  if mirror.split_merge(id) then return { id = id, type = "obj", obj = "item", oid = "I-F", rev = 2, state = "m" } end
+end
 reaper.SetProjExtState("PF", mirror.SEC, "I-F", "2|h|" .. held.id .. "|1")
 local theirs = { id = "Bo-20261119-100100Z-00002-0001", type = "obj", obj = "item", oid = "I-F", rev = 2, state = "b", base_ev = "X-0", user = "Bo", format = 1 }
-assert(mirror.merge_for("PF", theirs, "RF") ~= nil, "(made apart: merged)")
+local js = mirror.judge("PF", "I-F", "RF", { theirs })
+assert(js.complete and mirror.split_merge(js.v.id), "(made apart: merged)")
 theirs.format = band.FORMAT + 1
-assert(mirror.merge_for("PF", theirs, "RF") == nil, "a leaf too new for this version: no merge")
-mirror.apart, mirror.event_file, mirror.descends, mirror.too_old_to_merge = real_m.apart, real_m.event_file, real_m.descends, real_m.old
+js = mirror.judge("PF", "I-F", "RF", { theirs })
+assert(js.complete and js.v == held, "a version too new for this version: left out, no merge")
+mirror.event_file = real_m.event_file
 
 -- code 1: "yours before X's work done alone" is saved with its map (recall.save's 7th argument) even mid catch-up
 local real_save, args = recall.save, nil

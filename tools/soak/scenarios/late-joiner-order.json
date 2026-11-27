@@ -2,7 +2,7 @@
  "name": "late-joiner-order",
  "what": "rt-converge's 9034 class (the rest of bug 6): the late joiner places tracks made after the newest order list by rule, while the three who were there placed them as they landed. This is today's seed 9034 at 150 edits (the current driver's table, reopen included): by coincidence it fails the same way, Dee's tracks under other neighbours (\"after\") than James's. It didn't shrink in 20 minutes, so it's the whole run. rt-sync2 phase 4's gate (a rank per track: a late joiner sorts and is right).",
  "phase": 4,
- "today": "fails",
+ "today": "passes",
  "signature": "log:T differs",
  "seed": 9034,
  "edits": [

@@ -2,7 +2,7 @@
  "name": "seed-5028",
  "what": "rt-converge's seed 5028 at 150 edits, drawn as it was then (before rt-guard's reopen edit joined the driver's table), shrunk to the edits that still fail at bf500ba: a plug-in knob turned around the moment the project is taken for a new opening (the first track's deletion, a reopen) is never sent, on that computer alone: the look notes every chain's knobs afresh as how it loaded (mirror.fx_load_knobs), so the knob's difference reads as the plug-in's own loading. Here ReaComp's knob differs between James and Bee. rt-sync2 phase 3's gate (the project instance told by its master track). The same class fails most of the current long soak's F-differs seeds.",
  "phase": 3,
- "today": "fails",
+ "today": "passes",
  "signature": "converged:F differs",
  "seed": 5028,
  "edits": [

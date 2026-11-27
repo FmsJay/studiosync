@@ -12,14 +12,14 @@
 --  8. Undo then Redo brings the song back (mirror.revert, lib/undo.lua): bug 9 and the soak's undo probe.
 --  9. The studio's track order is the order everyone landed: new tracks as they were made, and every move reaches the order list
 --     (mirror.wanted_order, mirror.order_after_band, W.send).
--- 10. An edit beaten by a deletion stays beaten when the deletion is taken back, in whatever order they arrive (mirror.beaten_by).
+-- 10. An edit beaten by a deletion stays beaten when the deletion is taken back, in whatever order they arrive (the judge's step 3).
 -- 11. Undo and Redo of an act with a marker or tempo change go by the timeline's own order (sync.undo_timeline).
 -- 12. No choice follows Lua's table order: heal and Undo work through their objects in one order (mirror.heal, mirror.revert): bug 8.
 -- 13. A plug-in knob turned here that no look has seen holds the band's chain back (mirror.receive): rt-r2's P1-4 and P1-1.
 -- 14. REAPER's own Undo of a track deletion brings the track back for everyone (mirror.watch, settle_ids): rt-r2's P1-6.
 -- 15. (a pin) which plug-in changes ask the bandmate who holds the track while they edit: rt-r2's P1-5.
 -- 16. A track's lanes that only read differently here, with no edit behind the look, don't go out (W.one): LinuxBox2's lane names.
--- 17. A merge isn't built while a version it rests on is still on its way (mirror.event_file, mirror.merge_for).
+-- 17. A merge isn't built while a version it rests on is still on its way (mirror.event_file; the judge says incomplete).
 -- 18. An item moved onto a track a bandmate deleted that moment goes with the track on every computer (mirror.receive).
 -- 19. Deleting an item goes out though a grey stand-in still carries its id here (mirror.local_copy_is_it, W.gone).
 -- 20. A deletion of yours waiting for a claimer's answer doesn't hold the item's later versions back once the band has deleted it (mirror.receive).

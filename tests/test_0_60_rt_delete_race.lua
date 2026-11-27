@@ -94,11 +94,13 @@ local GI = ev({ id = "Al-20261119-172558Z-00005-0001", obj = "item", oid = I, tr
 local EC = ev({ id = "Mac-20261119-172558Z-00001-0001", obj = "item", oid = I, track = T, rev = 5, base = 4, base_ev = V1.id, state = RETIMED, user = "Mac", hlc = H0 + 120, name = "Drums" })
 local EB = ev({ id = "Bo-20261119-172558Z-00001-0001", obj = "item", oid = I, track = T, rev = 5, base = 4, base_ev = V1.id, state = RETIMED, user = "Bo", hlc = H0 + 700, name = "Drums" })
 
--- the race rule itself
-assert(mirror.gone_race(R, GI, EB) == true and mirror.gone_race(R, EB, GI) == false, "the deletion beats a later edit that didn't see it")
-assert(mirror.gone_race(R, EB, EC) == nil and mirror.gone_race(R, GT, EB) == nil, "two edits, or a track and an item: no such race")
+-- the race rule itself (the judge's step 3 since rt-sync2b: lib/judge.lua; was mirror.gone_race)
+local judge, rd = require("judge"), mirror.reader(R)
+local function settle(list) return judge.settled(list, rd, { mergeable = mirror.mergeable }) end
+assert(settle({ GI, EB }).v == GI and settle({ EB, GI }).v == GI, "the deletion beats a later edit that didn't see it, in either order")
+assert(not settle({ EB, EC }).gone and settle({ GT }).v == GT, "two edits merge (no deletion between them); a track's deletion is its own object")
 local RESTORE = { id = "Al-20261119-172700Z-00009-0001", obj = "item", oid = I, track = T, rev = 6, base = 5, base_ev = GI.id, state = OLD, user = "Al", hlc = H0 + 2000 }
-assert(mirror.gone_race(R, RESTORE, GI) == true, "an edit built on the deletion (a restore) beats it")
+assert(settle({ RESTORE, GI }).v == RESTORE, "an edit built on the deletion (a restore) beats it")
 assert(mirror.settled(R, EB, { V1, GI, EC, EB }).id == GI.id, "heal settles on the deletion, not the newest edit")
 assert(mirror.settled(R, RESTORE, { V1, GI, EC, EB, RESTORE }).id == RESTORE.id, "and on a restore after it")
 

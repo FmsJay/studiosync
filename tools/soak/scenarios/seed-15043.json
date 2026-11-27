@@ -2,7 +2,7 @@
  "name": "seed-15043",
  "what": "Today's seed 15043 at 150 edits, shrunk to 140: an item James recorded ends missing on Cee alone, after Restores by James and Cee and a deletion of the track around it (Cee's Restore says \"1 couldn't change here yet and weren't sent\"). Not traced to the line; most likely the containment class rt-sync2 phase 2 removes (an item is in the song exactly when its track is).",
  "phase": 2,
- "today": "fails",
+ "today": "passes",
  "signature": "converged:I missing",
  "seed": 15043,
  "edits": [

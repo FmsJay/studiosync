@@ -2041,22 +2041,10 @@ function sync.receive(proj, cfg, song, room, can)
     return not (sync.ANYONE[ev.type] or ev.alone or (ev.type == "obj" and (sync.obj_allowed(ev, can, driver_at(ev.time)) or soft_ok(ev)))
       or (ev.type ~= "obj" and can(ev.user, ev.was or ev.track, ev.pos, ev.take, driver_at(ev.time), ev.time)))
   end
-  -- Catching up (joining late, back from a week away): only the newest revision of each object is applied; the
-  -- older ones are counted as done (they stay in the folder for Restore). Replaying every revision of every object
-  -- rewrote a plug-in chain changed 50 times 50 times (review, 2026-10-31).
+  -- Newer of two changes to one object, as mirror sync orders them (rev, then clock, then name): set_back answers only the newest.
   local function mirror_newer(a, x)
     local mirror = require("mirror")
     return mirror.newer({ rev = a.rev, time = mirror.order_of(a) }, { rev = x.rev, time = mirror.order_of(x) })
-  end
-  -- (but a change to an item made apart from the newest one isn't older news: the two are merged, mirror.receive, as every computer does)
-  local function apart(x, w) -- (true, false, or nil while a change between hasn't arrived: then it isn't counted as done either)
-    -- (an item's deletion that beats the newer edit made without seeing it isn't older news: it lands, mirror.gone_race. Counted done, a
-    -- delete-all raced by tempo re-times never landed where all of them came in one pass. Cross test, James, rt)
-    local race = w and require("mirror").gone_race(sync.room_dir(cfg, song, room), x, w)
-    if race == true then return true elseif race == "wait" then return nil end
-    -- (items, tracks' settings and automation: what mirror merges. rt-merge)
-    if not (require("mirror").mergeable(x) and require("mirror").mergeable(w) and x.obj == w.obj and x.base_ev and w.base_ev) then return false end
-    return require("mirror").apart(sync.room_dir(cfg, song, room), x, w)
   end
   -- An object change StudioSync can read. (Checked before the newest of each object is picked: a malformed or newer-format one, picked as the
   -- newest, marked the readable ones before it superseded, and was then skipped itself. 0.59.14, review)
@@ -2091,36 +2079,46 @@ function sync.receive(proj, cfg, song, room, can)
       if not cur or mirror_newer(ev, cur) then latest[ev.oid] = ev end
     end
   end
-  -- (a track's newest change lands after the track it sits under when that one lands in this pass too: a late joiner made a track whose
-  -- newest change came before the newest of the track above it, found nothing to sit under, put it first, and kept it there (an Undo's or
-  -- Redo's track carries no hash, so nothing read it as out of place). A loop of them stays in time order. rt-edits)
-  do
-    local at, out, placed, wait = {}, {}, {}, {}
-    for i, ev in ipairs(pending) do at[ev] = i end
-    local function place(ev)
-      if placed[ev] then return end
-      out[#out + 1], placed[ev] = ev, true
-      local l = wait[ev]
-      wait[ev] = nil
-      for _, x in ipairs(l or {}) do place(x) end
-    end
-    for _, ev in ipairs(pending) do
-      local above = ev.type == "obj" and ev.obj == "track" and not ev.gone and latest[ev.oid] == ev and type(ev.state) == "table"
-        and type(ev.state.after) == "string" and latest[ev.state.after]
-      if above and above.obj == "track" and not above.gone and not placed[above] and at[above] > at[ev] then
-        wait[above] = wait[above] or {}
-        table.insert(wait[above], ev)
-      else place(ev) end
-    end
-    for _, ev in ipairs(pending) do place(ev) end
-    pending = out
-  end
   sync.ev_cache[dir] = kept
   local t0, budget_out = reaper.time_precise(), false -- (and a quarter second of applying per pass, a second while loading: the rest next pass)
   require("mirror").index_for(proj)
   local applied, done, undo_open, late_point, fresh_move = 0, {}, false, false, false
   sync.backlog = false
   local rdir = sync.room_dir(cfg, song, room)
+  local evindex = require("evindex")
+  -- (what was read, in the index (light: a state is read again from its file when asked), so the judge has every version of each object.
+  -- rt-sync2b)
+  for f, ev in pairs(kept) do
+    if ev.type == "obj" and readable(ev) then evindex.add(rdir, require("mirror").light_of(rdir, f, ev), f) end
+  end
+  -- After a change landed (or was handled): marked done, and said. `waited`: it waited last pass (its undo point comes after the pass).
+  local function after(ev, theirs_obj)
+    setext(proj, sync.APPLIED, ev.id, "1")
+    stamp(proj, ev)
+    if require("mirror").order_moved[pk] then -- (it moved a track here: mirror.apply. The order list follows, below)
+      require("mirror").order_moved[pk] = nil
+      fresh_move = fresh_move or band.age(ev.time) < sync.CUE_OLD
+    end
+    if type(ev.note) == "string" and ev.user ~= cfg.user and band.age(ev.time) < 3600 then band.log(ev.note) end -- (a copy's credit, a bus: mirror.watch)
+    -- (nor one mirror.receive dropped (on a deleted track, beaten by a deletion, older than what's here): "James-Laptop: changed an item on
+    -- XT Drums A" was logged for an edit that never landed. Cross test, James, rt)
+    local obj = ev.type == "obj"
+    local theirs = ev.user ~= cfg.user and (not obj or theirs_obj) -- (your own changes come back too: they aren't "from the band")
+    if theirs then applied = applied + 1 end
+    if theirs and (obj or ev.type == "timeline") then pcall(require("compat").landed, proj, obj and ev.oid or "timeline") end -- (a change here to it soon after: lib/compat.lua)
+    local what = ({ timeline = "changed the tempo map / markers",
+      start = (ev.rec and "record" or "play") .. " together at " .. tostring(ev.pos), stop = "stop together",
+      note = "note: " .. tostring(ev.text), like = "liked " .. tostring(ev.take or (ev.track and ("a part on " .. ev.track)) or "a part"),
+      obj = (ev.gone and "deleted " or "changed ") .. (require("mirror").PART[ev.obj] or (ev.obj == "item" and "an item" or "a track")) ..
+        " on " .. ((ev.name or "") ~= "" and ev.name or "an unnamed track"),
+      shift = ((ev.len or 0) > 0 and "inserted " or "removed ") .. string.format("%.2f s at %.2f s", math.abs(ev.len or 0), ev.at or 0) })[ev.type]
+    if theirs and what then done[#done + 1] = ev.user .. ": " .. what end
+  end
+  -- Object changes are gathered per object (`groups`, in the order their first change came) and judged once each below. The rest land in
+  -- time order around them: a tempo map (and inserted time) after the tracks and before their parts and items (a region names the tracks it
+  -- renders; an item lands on its beat under the map in place, mirror.on_map), anything else after them all (a note names an item).
+  -- `skip`: object changes this pass leaves out of the judge (refused here for now, or waiting for their tempo map).
+  local groups, gorder, skip, maps, later = {}, {}, {}, {}, {}
   for _, ev in ipairs(pending) do
     if budget_out then break end
     local obj = ev.type == "obj"
@@ -2135,7 +2133,7 @@ function sync.receive(proj, cfg, song, room, can)
     elseif obj and not readable(ev) then
       sync.skip(proj, ev, "StudioSync can't read it") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
-    elseif (ev.type == "timeline" and ev.user ~= cfg.user and newest_map ~= ev.id) or superseded(proj, ev) or (obj and latest[ev.oid] ~= ev and apart(ev, latest[ev.oid]) == false) then
+    elseif (ev.type == "timeline" and ev.user ~= cfg.user and newest_map ~= ev.id) or superseded(proj, ev) then
       setext(proj, sync.APPLIED, ev.id, "1") -- superseded
     -- (a start or stop from long ago: a project reopened from an old file read every one since as news, and the log said "<who>: record together
     -- at 1.84" and "stop together" at each restart. Live sync never played them (their moment had passed), so nothing to do and nothing to say.
@@ -2152,10 +2150,6 @@ function sync.receive(proj, cfg, song, room, can)
       -- synced here yet, so it waits a minute from when it arrived, then lands like any other, as an object change does. Dropped once
       -- 10 minutes old, one that came in before the handover it rested on was lost for good. Review, 0.58.91
       sync.deferred[ev.id] = true
-    elseif obj and sync.map_waits(proj, ev, cfg.user) then
-      -- (made while REAPER moved things for a tempo map that isn't here yet: it lands once the map has, in the pass that brings it. Landed
-      -- before it, REAPER moved it a second time when the map came: REAPER check F6. rt-edits)
-      sync.waited[ev.id] = true
     elseif obj and set_back(ev) then -- (answered, not applied: this computer's next look sends the track as it is here)
     elseif obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
       -- (the minute is from when it arrived here, not the sender's own clock: one running a minute or more behind had a refused change land at
@@ -2164,61 +2158,128 @@ function sync.receive(proj, cfg, song, room, can)
       -- refused here is most likely a claim or handover still on its way, either way: it waits a minute, then lands
       -- like any other. Judging it by today's claims and dropping it after 10 minutes left a machine that was away
       -- (or a claim released since) with a different project for good, and nothing said so (review, 2026-10-31).
-      sync.deferred[ev.id] = true
-    else
+      sync.deferred[ev.id], skip[ev.id] = true, true
+    elseif obj then
+      if not groups[ev.oid] then groups[ev.oid] = {}; gorder[#gorder + 1] = ev.oid end
+      table.insert(groups[ev.oid], ev)
+    elseif ev.type == "timeline" or ev.type == "shift" then maps[#maps + 1] = ev
+    else later[#later + 1] = ev end
+  end
+  -- Each object that changed, judged once (mirror.judge, lib/judge.lua: its versions here, not the order they came in), and put in place when
+  -- the answer differs from what's held: tracks first, each after the track it sits under when that one is in the pass too (a late joiner put
+  -- a track first and kept it there: rt-edits), then their parts, then items, by id. A track that came back or went in this pass brings what
+  -- it holds into the same pass (lib/evindex.lua contents: its items and parts, judged; one that can't land now is tried again next pass,
+  -- sync.contents_due). This replaces newest-only catch-up (latest, apart, superseded objects, the after-sort), the lands check (wins,
+  -- merge_for, lands_over), and the heals at the end of a pass for a returning track (orphaned) or an edit over a held deletion (heal_due).
+  -- rt-sync2b
+  local function land_rest(list) -- (one undo point per pass for all of it, and the pass's budget)
+    for _, ev in ipairs(list) do
+      if budget_out then break end
       -- one undo point per pass, only when something lands: reading our own change back opened one too, which sat on
       -- top of the edit and held its print, so Ctrl+Z took two presses and the first left the note moved (PC, 0.40.3)
-      local m = require("mirror")
       -- one bad event must never block everything behind it (2026-10-28: a take-less "driver" event threw on every
       -- pass, so the handover's edits and tempo change never applied): log it and move on
-      -- (whether it lands, inside the same pcall: wins and merge_for read the event too, and an error there stopped the pass with an undo
-      -- block open. 0.59.14, review)
       -- (no undo block for a change that waited last pass: the block opened before apply said it waits, and closed named whatever happened, an
       -- empty undo point every pass while a recording arrived or a part was open in the MIDI editor. Each changed the project's count (a full look and a 2 s pause followed), and on top of REAPER's list sent Ctrl+Z StudioSync's
       -- way. One that waited and lands now gets its point after: below. Cost: one table entry per waiting change. Round 2 review, 0.59.46)
       local waited = sync.waited[ev.id]
       local ok, res = pcall(function()
-        local lands
-        if obj then lands = m.wins(proj, ev.oid, ev.rev or 0, m.order_of(ev)) or m.merge_for(proj, ev, sync.room_dir(cfg, song, room)) ~= nil -- (or it's merged in)
-          or m.lands_over(proj, ev, sync.room_dir(cfg, song, room)) -- (or over a version a deletion beat: mirror.beaten_by)
-        else lands = sync.alters(proj, ev) end
-        -- (nor on its first wait, where that's cheap to know: mirror.will_wait. Round 3 review, 0.59.48)
-        if lands and not waited and obj and m.will_wait(proj, ev) then waited = true end
-        if lands and not waited and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
-        return sync.apply(proj, ev, sync.room_dir(cfg, song, room), can, cfg.user)
+        if sync.alters(proj, ev) and not waited and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
+        return sync.apply(proj, ev, rdir, can, cfg.user)
       end)
       if ok and res == false then sync.waited[ev.id] = true
       elseif ok and res and waited then sync.waited[ev.id], late_point = nil, true end
       if not ok then
-        sync.failed[ev.id] = (sync.failed[ev.id] or 0) + 1
-        if not obj or sync.failed[ev.id] >= 5 then
-          band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync couldn't apply (" .. tostring(ev.type) .. "): " .. tostring(res))
-          sync.skip(proj, ev, res)
-        end
+        band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync couldn't apply (" .. tostring(ev.type) .. "): " .. tostring(res))
+        sync.skip(proj, ev, res)
       elseif res then
-        setext(proj, sync.APPLIED, ev.id, "1")
-        stamp(proj, ev)
-        if require("mirror").order_moved[pk] then -- (it moved a track here: mirror.apply. The order list follows, below)
-          require("mirror").order_moved[pk] = nil
-          fresh_move = fresh_move or band.age(ev.time) < sync.CUE_OLD
-        end
-        if type(ev.note) == "string" and ev.user ~= cfg.user and band.age(ev.time) < 3600 then band.log(ev.note) end -- (a copy's credit, a bus: mirror.watch)
+        after(ev)
         if reaper.time_precise() - t0 > budget then budget_out, sync.backlog = true, true end
-        -- (nor one mirror.receive dropped (on a deleted track, beaten by a deletion, older than what's here): "James-Laptop: changed an item on
-        -- XT Drums A" was logged for an edit that never landed. Cross test, James, rt)
-        local theirs = ev.user ~= cfg.user and not (obj and require("mirror").dropped) -- (your own changes come back too: they aren't "from the band")
-        if theirs then applied = applied + 1 end
-        if theirs and (obj or ev.type == "timeline") then pcall(require("compat").landed, proj, obj and ev.oid or "timeline") end -- (a change here to it soon after: lib/compat.lua)
-        local what = ({ timeline = "changed the tempo map / markers",
-          start = (ev.rec and "record" or "play") .. " together at " .. tostring(ev.pos), stop = "stop together",
-          note = "note: " .. tostring(ev.text), like = "liked " .. tostring(ev.take or (ev.track and ("a part on " .. ev.track)) or "a part"),
-          obj = (ev.gone and "deleted " or "changed ") .. (require("mirror").PART[ev.obj] or (ev.obj == "item" and "an item" or "a track")) ..
-            " on " .. ((ev.name or "") ~= "" and ev.name or "an unnamed track"),
-          shift = ((ev.len or 0) > 0 and "inserted " or "removed ") .. string.format("%.2f s at %.2f s", math.abs(ev.len or 0), ev.at or 0) })[ev.type]
-        if theirs and what then done[#done + 1] = ev.user .. ": " .. what end
       end
     end
   end
+  local maps_done = false
+  local m = require("mirror")
+  local due = sync.contents_due[pk] or {}
+  sync.contents_due[pk] = nil
+  local force, placed, order = {}, {}, {}
+  local due_list = {}
+  for oid in pairs(due) do due_list[#due_list + 1] = oid end
+  for _, oid in ipairs(due_list) do if not groups[oid] then gorder[#gorder + 1] = oid end; force[oid] = true end
+  local rank = { T = 1, F = 2, E = 2, R = 2, M = 2 }
+  table.sort(gorder, function(a, b)
+    local ra, rb = rank[a:sub(1, 1)] or 3, rank[b:sub(1, 1)] or 3
+    if ra ~= rb then return ra < rb end
+    return a < b
+  end)
+  local function place(oid)
+    if placed[oid] then return end
+    placed[oid] = true
+    local l = groups[oid]
+    local top = l and l[#l]
+    local above = top and top.obj == "track" and not top.gone and type(top.state) == "table" and type(top.state.after) == "string" and top.state.after
+    if above and groups[above] then place(above) end
+    order[#order + 1] = oid
+  end
+  for _, oid in ipairs(gorder) do place(oid) end
+  local media, i = rdir .. "/media", 1
+  while i <= #order do
+    local oid = order[i]
+    i = i + 1
+    if not maps_done and oid:sub(1, 1) ~= "T" then maps_done = true; land_rest(maps) end
+    if budget_out then -- (the rest next pass: their changes are still waiting; what a returning track holds, as owed)
+      if not groups[oid] then sync.contents_due[pk] = sync.contents_due[pk] or {}; sync.contents_due[pk][oid] = true end
+    else
+      -- (made while REAPER moved things for a tempo map that isn't here yet: it lands once the map has, in the pass that brings it, which is
+      -- just above for one in this pass. Landed before it, REAPER moved it a second time when the map came: REAPER check F6. rt-edits)
+      local list = {}
+      for _, x in ipairs(groups[oid] or {}) do
+        if sync.map_waits(proj, x, cfg.user) then sync.waited[x.id], skip[x.id] = true, true else list[#list + 1] = x end
+      end
+      local ev = list[#list] -- (the newest that came in: what the log names)
+      local wkey = ev and ev.id or ("obj " .. oid) -- (the newest change's id: as each change's own was before)
+      local waited = sync.waited[wkey]
+      local had = oid:sub(1, 1) == "T" and m.find(proj, "track", oid) ~= nil
+      if groups[oid] and not ev then goto next_obj end
+      -- (whether it lands, inside the same pcall: the judge reads events too, and an error there stopped the pass with an undo block open.
+      -- 0.59.14, review) (nor on its first wait, where that's cheap to know: mirror.will_wait. Round 3 review, 0.59.48)
+      local ok, res = pcall(function()
+        local s = m.judge(proj, oid, rdir, list, skip)
+        local lands = m.lands(proj, s, force[oid])
+        if lands and not waited and m.will_wait(proj, s.v) then waited = true end
+        if lands and not waited and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
+        return m.receive(proj, ev, media, sync.local_mix, cfg.user, list, s, force[oid])
+      end)
+      if ok and res == false then
+        sync.waited[wkey] = true
+        if not ev then sync.contents_due[pk] = sync.contents_due[pk] or {}; sync.contents_due[pk][oid] = true end
+      elseif ok and res and waited then sync.waited[wkey], late_point = nil, true end
+      if not ok then
+        local first = ev and ev.id or oid
+        sync.failed[first] = (sync.failed[first] or 0) + 1
+        if sync.failed[first] >= 5 then
+          for _, x in ipairs(list) do
+            band.log("skipped a change from " .. tostring(x.user) .. " that StudioSync couldn't apply (" .. tostring(x.type) .. "): " .. tostring(res))
+            sync.skip(proj, x, res)
+          end
+        elseif not ev then sync.contents_due[pk] = sync.contents_due[pk] or {}; sync.contents_due[pk][oid] = true end
+      elseif res then
+        local theirs = not m.dropped
+        for _, x in ipairs(list) do if x == ev then after(x, theirs) else setext(proj, sync.APPLIED, x.id, "1"); stamp(proj, x) end end
+        if not ev and theirs then applied = applied + 1 end
+        if reaper.time_precise() - t0 > budget then budget_out, sync.backlog = true, true end
+        if had ~= (oid:sub(1, 1) == "T" and m.find(proj, "track", oid) ~= nil) then
+          for _, c in ipairs(evindex.contents(rdir, oid)) do
+            force[c] = true
+            if not placed[c] then placed[c] = true; order[#order + 1] = c end
+          end
+        end
+      end
+    end
+    ::next_obj::
+  end
+  if not maps_done then land_rest(maps) end
+  land_rest(later)
   require("mirror").index_for(nil)
   require("mirror").order_after_band(proj)
   -- (a bandmate's track move landed in this pass: this computer says the order it has now. The studio's order is the newest list anyone
@@ -2228,38 +2289,10 @@ function sync.receive(proj, cfg, song, room, can)
   -- a project past its first catch-up: a computer catching up on old moves would say an order half-way through them, and as the newest
   -- list that became the studio's. rt-converge)
   if fresh_move and not sync.loading[pk] then pcall(require("mirror").publish_order, proj, sync.room_dir(cfg, song, room), cfg.user) end
-  -- a change skipped because its track was gone, and the track may have come back since (a download arrives in
-  -- batches, out of history order): once this pass has drained the queue, everything's newest change that hasn't
-  -- landed is put in place (mirror.heal: only what differs)
-  local mirror = require("mirror")
   if undo_open then reaper.Undo_EndBlock2(proj, "StudioSync: changes from the others", -1)
   -- (a change that waited, landed: its point now. Every kind of state, not items only (Undo_OnStateChange2): a plug-in chain, automation or
   -- track change landing under an items-only point was taken back by your next native Ctrl+Z and sent as your change. Round 3 review, 0.59.48)
   elseif late_point then reaper.Undo_OnStateChangeEx2(proj, "StudioSync: changes from the others", -1, -1) end
-  -- (the heals below come after that point, each with its own, "StudioSync: changes that hadn't arrived here" (mirror.heal), and the same log
-  -- line as Live sync's heal: inside this pass's block its point was lost in "changes from the others" while its line said otherwise, and the
-  -- held-deletion heal left its point with no line and a second, empty "changes from the others" on top. REAPER recheck, 0.59.49.79, round 6)
-  local function healed(n, why)
-    if n > 0 then sync.redraw = true; band.log(string.format("caught up on %d change%s that hadn't arrived here%s", n, n == 1 and "" or "s", why)) end
-  end
-  local orph = mirror.orphaned[tostring(proj)]
-  if orph and not budget_out then
-    local back = false
-    for toid in pairs(orph) do if mirror.find(proj, "track", toid) then orph[toid] = nil; back = true end end
-    if back then -- (only when such a track exists again: a track that stays deleted costs one lookup a pass)
-      local hok, n = pcall(mirror.heal, proj, rdir, sync.local_mix)
-      if hok then healed(n, " (their track is back)") end
-    end
-    if next(orph) == nil then mirror.orphaned[tostring(proj)] = nil end
-  end
-  -- (an edit landed over a deletion held here: mirror.receive. Round 2 review, 0.59.46. Held until the tab is in front and stopped, as Live sync's
-  -- own heal is: the session's first heal reads the room's whole history, up to a second or more, and it landed mid-playback in any tab.
-  -- Round 3 review, 0.59.48)
-  if mirror.heal_due[pk] and not budget_out and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0 then
-    mirror.heal_due[pk] = nil
-    local hok, n = pcall(mirror.heal, proj, rdir, sync.local_mix)
-    if hok then healed(n, "") end
-  end
   if sync.loading[pk] and not budget_out then
     sync.loading[pk], loading_said[pk] = nil, nil
     reaper.DeleteExtState(band.SECTION, "loading " .. pk, false)
@@ -2347,6 +2380,7 @@ function sync.pending_events(proj, cfg, song, room)
   return n
 end
 sync.ev_cache = {} -- events dir -> { file -> decoded event }, for the files still waiting (sync.receive)
+sync.contents_due = {} -- tostring(proj) -> { oid = true }: what a track that came back or went holds, not put in place yet (sync.receive)
 sync.waited = {} -- event id -> true: its apply said "later" last pass (no undo block is opened for it again: sync.receive)
 
 -- Events refused for now (authority not synced here yet): retried until 10 minutes old. And the room's driver

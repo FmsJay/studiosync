@@ -2,7 +2,7 @@
  "name": "seed-9058",
  "what": "rt-converge's seed 9058 at 150 edits, drawn as it was then (before rt-guard's reopen edit joined the driver's table), shrunk to the edits that still fail at bf500ba: the restore-race class (an Undo's restore made at the same time as a bandmate's edit of the same thing ends as different merges). Here Keys A ends muted on James and unmuted on Cee, with nothing pending. rt-sync2 phase 2's gate (the judge: no merge timer, one deletion rule for every kind). Its network randomness is the seed's, so any change to what runs before can move it off the bug: if it starts passing, check with the restore-race scenario and a long soak before believing it fixed.",
  "phase": 2,
- "today": "fails",
+ "today": "passes",
  "signature": "converged:I differs",
  "seed": 9058,
  "edits": [

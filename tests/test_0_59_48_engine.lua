@@ -221,32 +221,21 @@ recall.save("PR", cfg, "S", "main", "full disk", true)
 assert(#logged == 1 and logged[1]:find("restores by time", 1, true), "said: " .. tostring(logged[1]))
 proxy.write_json = function(path, v) written[path] = v; files[path] = v end
 
--- M2, M13, sync5: sync.receive publishes its loading mark and clears it; heal_due waits for the tab in front and stopped, and what it lands
--- gets an undo point of every kind of state (not Undo_OnStateChange2's items only)
-local healed, points = 0, {}
+-- M2: sync.receive publishes its loading mark and clears it. (M13, sync5's heal_due, a heal at the end of a pass after an edit landed over a
+-- deletion held here, is gone: the judge settles that race inside the pass, the same in any order, so a receive pass never heals. rt-sync2b)
+local healed = 0
 local real_heal = mirror.heal
 mirror.heal = function() healed = healed + 1; return 1 end
-reaper.Undo_OnStateChangeEx2 = function(_, desc, which) points[#points + 1] = which end
-reaper.Undo_OnStateChange2 = function() points[#points + 1] = "items only" end
 local can = function() return true end
 sync.loading.PH = true
-mirror.heal_due.PH = true
-reaper.EnumProjects = function(i) if i == -1 then return "other" end end
+reaper.EnumProjects = function(i) if i == -1 then return "PH" end end
+reaper.GetPlayStateEx = function() return 0 end
 local published
 local real_set = reaper.SetExtState
 reaper.SetExtState = function(s, k, v, p) if k == "loading PH" then published = v end; real_set(s, k, v, p) end
 sync.receive("PH", cfg, "S", "main", can)
 assert(published == "1" and gext[band.SECTION .. "\0loading PH"] == nil and not sync.loading.PH, "published while loading, cleared once loaded")
-assert(healed == 0 and mirror.heal_due.PH, "the heal waits while the tab is behind")
-reaper.EnumProjects = function(i) if i == -1 then return "PH" end end
-reaper.GetPlayStateEx = function() return 1 end
-sync.receive("PH", cfg, "S", "main", can)
-assert(healed == 0, "and while playing")
-reaper.GetPlayStateEx = function() return 0 end
-sync.receive("PH", cfg, "S", "main", can)
-assert(healed == 1 and not mirror.heal_due.PH, "in front and stopped: it heals")
--- (its point is mirror.heal's own block, every kind of state, after the receive's: no second, empty "changes from the others". rt-edits round 6)
-assert(#points == 0, "with no second undo point on top of the heal's own (" .. tostring(points[1]) .. ")")
+assert(healed == 0, "a receive pass never heals")
 mirror.heal = real_heal
 reaper.SetExtState = real_set
 -- sync2: a change that waits on its first pass (here an edit of yours to it unsent) opens no undo block, so leaves no empty undo point

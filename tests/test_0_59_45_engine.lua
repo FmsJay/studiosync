@@ -45,16 +45,14 @@ local mirror = require("mirror")
 local R = "ROOM"
 
 -- S1: two people, one item. Al moves it, then sets a fade in the same edit (same rev); Bo, having seen neither, moves it elsewhere. Every
--- computer ends on the same version, whatever order the events reached it in (mirror.merge_for's two-version path, through merge_order)
+-- computer ends on the same version, whatever order the events reached it in (the judge, mirror.judge, since rt-sync2b: merge_for's path)
 local function st(pos, fade, vol) return "<ITEM\nPOSITION " .. pos .. "\nLENGTH 2\nFADEIN " .. fade .. "\nVOLPAN " .. vol .. " 0 1 -1\n>\n" end
 local function ev(id, t) t.id, t.obj, t.oid, t.type = id, t.obj or "item", t.oid or "I-X", "obj"; store[id] = t; return t end
 local V0 = ev("Zed-20261118-090000Z-00001-0001", { rev = 1, base = 0, state = st(0, 0, 1), user = "Zed", hlc = 100 })
 local function recv(P, e)
-  local merging, wait = mirror.merge_for(P, e, R)
-  assert(not wait, "nothing on its way")
-  if not merging and not mirror.wins(P, e.oid, e.rev or 0, mirror.order_of(e)) then return end
-  if merging then mirror.remember(P, e.oid, merging.rev, "h", merging.id, mirror.order_of(merging))
-  else mirror.remember(P, e.oid, e.rev, "h", e.id, mirror.order_of(e)) end
+  local js = mirror.judge(P, e.oid, R, { e })
+  assert(js.complete, "nothing on its way")
+  if mirror.lands(P, js) then mirror.remember(P, e.oid, js.v.rev, "h", js.v.id, mirror.order_of(js.v)) end
 end
 for _, P in ipairs({ "A", "B", "C" }) do mirror.remember(P, "I-X", 1, "h", V0.id, mirror.order_of(V0)) end
 local A1 = ev("Al-20261118-100001Z-00001-0001", { rev = 2, base = 1, base_ev = V0.id, state = st(5, 0, 1), user = "Al", hlc = 200 })
