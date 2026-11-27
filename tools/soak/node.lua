@@ -336,6 +336,10 @@ function N.state()
       end
       hashes[o.oid] = mirror.hash((o.state:gsub("%-?%d+%.%d+e%-?%d+", num9):gsub("%-?%d+%.%d+", num9)))
     else hashes[o.oid] = o.hash end
+    -- (and where it sits: an item's track, a track's folder parent. An item on another track read as converged before, its text the same:
+    -- rt-sync2b's track check found three seeds of that in 28. rt-sync2c)
+    if o.kind == "item" then hashes[o.oid] = mirror.hash(tostring(o.track) .. "\n" .. hashes[o.oid])
+    elseif o.kind == "track" and type(o.state) == "table" then hashes[o.oid] = mirror.hash(tostring(o.state.parent) .. "\n" .. hashes[o.oid]) end
     if o.kind == "track" then order[#order + 1] = o.oid end
   end
   -- (two items alike in everything but their ids, on one track: one change applied twice. The driver never makes two alike: every place it
@@ -370,7 +374,7 @@ end
 -- One object as this computer reads it (for a failure's report).
 function N.show(oid)
   for _, o in ipairs(mirror.scan(F.proj, USER, MEDIA, false)) do
-    if o.oid == oid then return type(o.state) == "table" and json(o.state) or tostring(o.state) end
+    if o.oid == oid then return type(o.state) == "table" and json(o.state) or (o.kind == "item" and "on " .. tostring(o.track) .. " | " or "") .. tostring(o.state) end
   end
   return "(not here)"
 end
