@@ -356,9 +356,19 @@ local info = setmetatable({}, { __mode = "k" }) -- event (recall's cached table)
 function webhistory.info(ev) return info[ev] end
 -- An action a page sent ({ topic = "history", want }): "I'm looking" or "not any more". Hearing a point, A/B and Restore (the History page's
 -- hear-it-as-it-was panel, lib/webui/histhear.js) are lib/histhear.lua's. The time lapse itself changes nothing.
+-- History > Changes and Versions ({ changes = {...} }: lib/webrestore.lua) and Mixes ({ mixes = {...} }: lib/webmixes.lua) come the same way
+-- (rt-ui3). `here`: the page is on this computer (what plays or opens in this REAPER needs it). -> words for the log, or nil.
 function webhistory.action(proj, cfg, b, a)
   if type(a) ~= "table" then return end
-  if a.hear ~= nil or a.cancel ~= nil or a.restore ~= nil then return require("histhear").action(proj, cfg, b, a) end
+  local here = reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1
+  local said
+  if type(a.changes) == "table" then said = require("webrestore").action(proj, cfg, b, a.changes, here)
+  elseif type(a.mixes) == "table" then said = require("webmixes").action(proj, cfg, b, a.mixes, here)
+  elseif a.hear ~= nil or a.cancel ~= nil or a.restore ~= nil or a.rplay ~= nil or a.rstop ~= nil or a.open ~= nil then
+    said = require("histhear").action(proj, cfg, b, a, here)
+  end
+  if said then band.log(said) end
+  if a.want == nil then return said end
   local now = reaper.time_precise()
   if a.want == true then S.want_until = now + webhistory.WANT_FOR elseif a.want == false then S.want_until = -math.huge end
 end
@@ -380,6 +390,8 @@ end
 -- Each tick in front, while a page looks. publish(topic, table) sends only what changed.
 function webhistory.tick(proj, cfg, b, publish, now)
   require("histhear").tick(proj, cfg, b, publish, now) -- (a preview rendering goes on, and comes in, whatever page is shown)
+  require("webrestore").tick(proj, cfg, b, publish, now) -- (History > Changes and Versions, while a page shows one: rt-ui3)
+  require("webmixes").tick(proj, cfg, b, publish, now) -- (History > Mixes, while a page shows it)
   if now >= S.want_until then return end
   local key = b.song .. "/" .. b.room
   if S.key ~= key then S = { want_until = S.want_until, key = key, at = -math.huge, queue = {}, qi = 1 } end

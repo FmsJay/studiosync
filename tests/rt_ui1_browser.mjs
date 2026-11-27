@@ -137,7 +137,7 @@ ok(await ev('document.getElementById("where").textContent') === 'Chilio▸Cross 
   ok(!sub('session', 'play').coming && sub('session', 'play').label === 'Play together', 'play.js is Session > Play together');
   ok(!sub('session', 'here').coming && sub('session', 'here').label === 'Who’s here', 'Who\'s here is Session\'s');
   ok(['arrange', 'mixer', 'sheet', 'beat'].every((s) => !sub('project', s).coming), 'Project > Arrange, Mixer, Sheet, Beat (daw.js, mixer.js, sheet.js, visuals.js)');
-  ok(!sub('history', 'playback').coming && sub('history', 'changes').coming && sub('history', 'mixes').coming, 'History > Playback is history.js; Changes and Mixes coming');
+  ok(['changes', 'versions', 'playback', 'mixes'].every((s) => !sub('history', s).coming), 'History’s four sub-tabs are built (history.js, histhear.js: rt-ui3)');
   ok(!sub('plugins', 'try').coming && sub('plugins', 'try').label === 'Try a bandmate’s', 'tryfx.js is Plug-ins > Try a bandmate\'s');
   ok(!sub('health', 'checks').coming && !sub('ai', 'ai').coming, 'health.js and ai.js in their tabs');
 }
@@ -152,12 +152,15 @@ ok(await ev('document.getElementById("sstabs").querySelectorAll(".sssubs").lengt
 // a click on a tab button
 await ev('[...document.querySelectorAll("#sstabs .tab")].find((b) => b.textContent === "History").click(); 1');
 await sleep(150);
-ok(await route() === 'history/playback' && await visible('.sspage.history'), 'History opens on Playback, the part built');
+ok(await route() === 'history/changes' && await visible('.sspage.hchanges'), 'History opens on Changes, its first sub-tab');
 ok(await ev('[...document.querySelectorAll(".sstab[data-tab=history] .sssubs button")].filter((b) => !b.hidden).map((b) => b.textContent).join(",")') === 'Changes,Versions,Playback,Mixes', 'its sub-tabs');
-await ev('[...document.querySelectorAll(".sstab[data-tab=history] .sssubs button")].find((b) => b.textContent === "Changes").click(); 1');
+await ev('[...document.querySelectorAll(".sstab[data-tab=history] .sssubs button")].find((b) => b.textContent === "Playback").click(); 1');
 await sleep(100);
-ok(await route() === 'history/changes' && (await ev('document.querySelector(".sstab[data-tab=history] .sscoming:not([hidden])").textContent')).includes('Coming here'), 'Changes says it\'s coming, and where it is meanwhile');
-ok(await ev('location.hash') === '#history/changes', 'the address follows: a deep link to here');
+ok(await route() === 'history/playback' && await visible('.sspage.history'), 'Playback: the time lapse');
+ok(await ev('location.hash') === '#history/playback', 'the address follows: a deep link to here');
+await ev('location.hash = "#session/rooms"; 1');
+await sleep(150);
+ok(await route() === 'session/rooms' && (await ev('document.querySelector(".sstab[data-tab=session] .sscoming:not([hidden])").textContent')).includes('Coming here'), 'a part not built yet says it’s coming, and where it is meanwhile');
 
 // a project closes while you're on it: Studio meanwhile; it opens again: back where you were
 await ev('ssTabs.go("project/mixer"); 1');
@@ -191,7 +194,7 @@ state = { engine: PROJECT.engine, topics: JSON.parse(JSON.stringify(PROJECT.topi
 await open(LOCAL + '#project/beat');
 ok(await route() === 'project/beat' && await visible('.sstab[data-tab="project"] .sspage:not([hidden])'), '#project/beat opens Project > Beat');
 await open(LOCAL + '#history');
-ok(await route() === 'history/playback', '#history opens History on Playback');
+ok(await route() === 'history/changes', '#history opens History on Changes');
 await open(LOCAL + '#nope/x');
 ok(await route() === 'studio/overview', 'a link to no tab: Studio');
 // narrow (a docker): More

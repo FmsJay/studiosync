@@ -819,21 +819,39 @@ local function track_names(proj)
   end
   return out
 end
+histhear.track_names = track_names -- (History > Changes' chosen tracks: lib/webrestore.lua)
 local function entries_of(cfg, b) return require("recall").entries(cfg, b.song, b.room) end
 local function newest_id(entries) local e = entries[#entries]; return e and tostring(e.id) or "none" end
 -- Another song or room in front: what was asked for the last one goes.
 function histhear.room(b)
   local key = b.song .. "/" .. b.room
   if S.key == key then return end
-  if S.key then cancel("the song or room changed") end
+  if S.key then cancel("the song or room changed"); histhear.rp_stop(true) end
   S.slots, S.ask, S.key, S.tracks_at = {}, nil, key, nil
 end
 
 -- A page's ask: { hear = { t, now } } (a point to hear, or now for A/B), { cancel = true }, { restore = { t, tracks } } (what would change)
--- or { restore = { id, yes = true } } (do it). -> words for the log, or nil.
-function histhear.action(proj, cfg, b, a)
+-- or { restore = { id, yes = true } } (do it). From a page on this computer only (`here`: these reach this REAPER, rt-ui3): { rplay = { slot,
+-- pos } } (play a ready preview through REAPER), { rstop = true }, { open = { t } } (Open this point in REAPER). -> words for the log, or nil.
+function histhear.action(proj, cfg, b, a, here)
   histhear.room(b)
   if a.cancel == true then cancel("cancelled"); return nil end
+  if a.rstop == true then histhear.rp_stop(); return nil end
+  if type(a.rplay) == "table" or type(a.open) == "table" then
+    if not here then S.said = "That plays or opens in REAPER on the studio's computer: do it there."; return nil end
+    if type(a.open) == "table" then
+      local t = tonumber(a.open.t)
+      if not (t and t > 0 and t < 1e11) then return nil end
+      local ok, said, why = pcall(histhear.open_point, proj, cfg, b, t)
+      S.said = ok and (said or ("Couldn't open it: " .. tostring(why) .. ".")) or ("Couldn't open it: " .. tostring(said))
+      return "History page: " .. S.said
+    end
+    local s = S.slots[a.rplay.slot == "now" and "now" or "then"]
+    if not (s and s.state == "ready" and s.path) then return nil end
+    local why = histhear.rp_play(s.path, a.rplay.pos, a.rplay.slot == "now" and "now" or "then")
+    if why then S.said = "Couldn't play it through REAPER: " .. why .. "." end
+    return nil
+  end
   if type(a.hear) == "table" then
     local h = a.hear
     local slot = h.now == true and "now" or "then"
@@ -862,27 +880,34 @@ end
 
 -- Is this object in the project now? (mirror's own record of it: a hash, "" once it's gone here)
 function histhear.here(proj, oid) local _, h = require("mirror").known(proj, oid); return (h or "") ~= "" end
--- One job: the copy saved, rebuilt, its prep and the hidden REAPER started. -> nil, or why not.
-local function start(proj, cfg, b, slot, s)
+-- The project's copy in dir, rebuilt to entries[upto] (nil: as it is now). -> its text, rebuild's info (with .tl) and the timeline then, or
+-- nil and why. (The preview's job and Open this point in REAPER both start from it.)
+local function copy_at(proj, cfg, b, upto, dir)
   local mirror, sync = require("mirror"), require("sync")
-  local dir = string.format("%s/hear-%s-%06x", bg().TMP, s.id:sub(1, 12), math.floor(reaper.time_precise() * 1000) % 0x1000000) -- (one a start)
-  reaper.RecursiveCreateDirectory(dir, 0)
   local copy = dir .. "/copy.rpp"
   band.save_copy(proj, copy) -- (a copy: the open project isn't renamed, and its "changed" mark is kept)
   local text = band.read(copy)
   os.remove(copy)
-  if not text then tidy(dir); return "the project's copy couldn't be saved" end
+  if not text then return nil, "the project's copy couldn't be saved" end
   local plan, entries, tl = {}, nil, nil
-  if slot == "then" then
+  if upto then
     entries = entries_of(cfg, b)
-    plan = histhear.settle(mirror.plan_restore(entries, s.upto), function(oid) return histhear.here(proj, oid) end)
-    tl = histhear.timeline_at(entries, s.upto, { first = histhear.first_map(cfg, b, band.read_json(band.session_path(cfg, b.song))) })
+    plan = histhear.settle(mirror.plan_restore(entries, upto), function(oid) return histhear.here(proj, oid) end)
+    tl = histhear.timeline_at(entries, upto, { first = histhear.first_map(cfg, b, band.read_json(band.session_path(cfg, b.song))) })
   end
   local now = {}
   for oid in pairs(plan) do local _, _, ev = mirror.known(proj, oid); now[oid] = ev end
   local out, info = histhear.rebuild(text, plan, { media = sync.room_dir(cfg, b.song, b.room) .. "/media", now = now, exists = reaper.file_exists,
-    guid = function() return reaper.genGuid("") end, moves = entries and histhear.moves_since(entries, s.upto), map_of = entries and histhear.map_of(entries) })
+    guid = function() return reaper.genGuid("") end, moves = entries and histhear.moves_since(entries, upto), map_of = entries and histhear.map_of(entries) })
   info.tl = histhear.tempo_plan(info.placed, tl, band.capture_tempo(proj), info.envplaced) -- (today's map: what the copy was saved with)
+  return out, info, tl
+end
+-- One job: the copy saved, rebuilt, its prep and the hidden REAPER started. -> nil, or why not.
+local function start(proj, cfg, b, slot, s)
+  local dir = string.format("%s/hear-%s-%06x", bg().TMP, s.id:sub(1, 12), math.floor(reaper.time_precise() * 1000) % 0x1000000) -- (one a start)
+  reaper.RecursiveCreateDirectory(dir, 0)
+  local out, info, tl = copy_at(proj, cfg, b, slot == "then" and s.upto or nil, dir)
+  if not out then tidy(dir); return info end
   s.tempo = tl and tl.how or "unknown"
   band.write_atomic(dir .. "/job.rpp", out)
   band.write_atomic(dir .. "/prep.lua", histhear.prep(info))
@@ -892,6 +917,74 @@ local function start(proj, cfg, b, slot, s)
   s.job = { dir = dir, started = reaper.time_precise(), limit = limit }
   s.state, s.missing, s.len, s.passes = "rendering", #info.missing, info.len, histhear.PASSES
   S.last_start = reaper.time_precise()
+end
+-- Open this point in REAPER (rt-ui3, plan 5.2 (3)): the point as a project of its own in a new tab, a plain copy (no StudioSync state, so no
+-- Live sync runs there and nothing in it goes to anyone), in this computer's temp folder. Its file name says what it is. -> words, or nil and why.
+function histhear.open_point(proj, cfg, b, t)
+  local entries = entries_of(cfg, b)
+  local upto = histhear.upto(entries, t)
+  if upto < 1 then return nil, "that point is before anything kept in History" end
+  local dir = cache_dir(cfg, b) .. "/look-" .. require("mirror").fnv(tostring(entries[upto].id))
+  reaper.RecursiveCreateDirectory(dir, 0)
+  local out, info = copy_at(proj, cfg, b, upto, dir) -- (in the same folder as its copy: relative media paths read the same)
+  if not out then return nil, info end
+  local path = string.format("%s/%s (as it was %s, not synced).rpp", dir, band.clean(b.song), os.date("%Y-%m-%d %H%M", t))
+  band.write_atomic(path, require("sessionfile").plain(out, require("mixlayer").split_live))
+  reaper.Main_OnCommand(40859, 0) -- File: New project tab
+  reaper.Main_openProject(path)
+  -- (what a chunk can't say: lanes, picked takes, track settings, the map then; the preview's prep, run on the new tab)
+  local prep = load(histhear.prep(info), "=histhear prep", "t")
+  local ok, err = pcall(prep, reaper.EnumProjects(-1))
+  if not ok then band.log("Open this point: some settings then couldn't be put in (" .. tostring(err) .. ")") end
+  return "Opened " .. b.song .. " as it was " .. os.date("%a %H:%M", t) .. " in a new tab. Nothing in it is synced: close the tab when you're done."
+end
+-- ---- Play through REAPER (rt-ui3, plan 5.2 (2)): one file at a time through SWS's preview player, so it comes out of REAPER's own output
+-- (ASIO), not the web view's. The page's preview here, and History > Mixes' A/B (lib/webmixes.lua). Stopped, it keeps its place to go on from.
+local P = {} -- { preview, src, path, len, pos, key (what it is: "then", "now", "a", "b"), gain }
+histhear.P = P
+local function rp_free()
+  if P.preview then reaper.CF_Preview_Stop(P.preview) end -- (stops and destroys it; one that ended by itself is already gone, and SWS says false)
+  if P.src then reaper.PCM_Source_Destroy(P.src) end -- (SWS doesn't own it: after the preview, never before)
+  P.preview, P.src = nil, nil
+end
+function histhear.rp_can() return reaper.CF_CreatePreview ~= nil end
+-- Where it is, in seconds, reading the player while it plays; it ending by itself is noticed here. -> pos, playing
+function histhear.rp_pos()
+  if P.preview then
+    local ok, pos = reaper.CF_Preview_GetValue(P.preview, "D_POSITION")
+    if ok and pos < (P.len or 0) - 0.05 then P.pos = pos; return pos, true end
+    P.pos = ok and pos or P.pos
+    rp_free()
+    if (P.pos or 0) >= (P.len or 0) - 0.1 then P.pos = 0 end -- (played to the end: the next play starts it again)
+  end
+  return P.pos, false
+end
+-- Play `path` from pos (seconds) at gain, as `key`. -> nil, or why not.
+function histhear.rp_play(path, pos, key, gain)
+  if not histhear.rp_can() then return "playing through REAPER needs SWS" end
+  rp_free()
+  local src = reaper.PCM_Source_CreateFromFile(path)
+  if not src then return "the file couldn't be read" end
+  local len = reaper.GetMediaSourceLength(src)
+  local preview = reaper.CF_CreatePreview(src)
+  if not preview then reaper.PCM_Source_Destroy(src); return "SWS's player didn't start" end
+  P.preview, P.src, P.path, P.len, P.key, P.gain = preview, src, path, len, key, gain or 1
+  P.pos = math.max(0, math.min(tonumber(pos) or 0, len - 0.1))
+  reaper.CF_Preview_SetValue(preview, "D_VOLUME", P.gain)
+  reaper.CF_Preview_SetValue(preview, "D_POSITION", P.pos)
+  reaper.CF_Preview_Play(preview)
+end
+-- Stop (keeping its place), or forget it altogether (`forget`: what it played went away).
+function histhear.rp_stop(forget)
+  histhear.rp_pos()
+  rp_free()
+  if forget then for k in pairs(P) do P[k] = nil end end
+end
+-- The player for a page: { key, pos, len, on }, or nil.
+function histhear.rp_model()
+  if not P.path then return nil end
+  local pos, on = histhear.rp_pos()
+  return { key = P.key, pos = math.floor((pos or 0) * 10 + 0.5) / 10, len = P.len and math.floor(P.len * 10 + 0.5) / 10, on = on or nil }
 end
 -- A job's progress: "done", "failed" and why, or nil while it runs (and which pass it's on).
 local function poll(s)
@@ -951,7 +1044,7 @@ function histhear.tick(proj, cfg, b, publish, now)
     S.driver = who and who.driver == cfg.user or nil -- (whole-song restores: the driver's, as on the panel)
   end
   local model = { tracks = S.tracks, ask = S.ask and { id = S.ask.id, words = S.ask.words, n = S.ask.n, t = S.ask.t, whole = S.ask.whole } or nil,
-    said = S.said, driver = S.driver }
+    said = S.said, driver = S.driver, rp = histhear.rp_model(), sws = histhear.rp_can() or nil }
   for _, slot in ipairs({ "then", "now" }) do
     local s = S.slots[slot]
     if s then

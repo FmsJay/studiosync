@@ -93,3 +93,29 @@
 .hhyes { font-weight: 600; margin-right: 6px; }
 .hhsaid { color: var(--dim); margin: 6px 0 0; }
 .hhsaid:empty { display: none; }
+/* History > Changes, Versions and Mixes (history.js's second part, lib/webrestore.lua, lib/webmixes.lua; rt-ui3) */
+.hcfilters { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 6px 0 8px; }
+.hcfilters[hidden], .hcask[hidden], .hhrp[hidden], .hhopts [hidden] { display: none !important; }
+.hcfilters select, .hcfilters input[type="text"], .hcfilters input[type="search"] { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 6px; min-width: 0; max-width: 100%; }
+.hcfilters input[type="text"], .hcfilters input[type="search"] { flex: 1 1 12em; }
+.hclist { list-style: none; margin: 0; padding: 0; }
+.hcrow { border-bottom: 1px solid var(--line); font-size: 13px; }
+.hchead { display: block; width: 100%; text-align: left; border: 0; border-radius: 0; background: transparent; padding: 6px 4px; overflow-wrap: anywhere; }
+.hchead[aria-expanded="true"] { background: var(--panel); }
+.hctime { color: var(--dim); font-variant-numeric: tabular-nums; margin-right: 8px; }
+.hcgone .hchead span:last-child { color: #c8372f; }
+.hcback .hchead span:last-child { color: #1c8a47; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .hcgone .hchead span:last-child { color: #e0605a; } :root:not([data-theme="light"]) .hcback .hchead span:last-child { color: #59cc73; } }
+:root[data-theme="dark"] .hcgone .hchead span:last-child { color: #e0605a; }
+:root[data-theme="dark"] .hcback .hchead span:last-child { color: #59cc73; }
+.hcopts { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 4px 8px 4px; }
+.hcopts > span { flex: 1 1 12em; }
+.hctracks { flex-basis: 100%; display: flex; flex-wrap: wrap; gap: 4px 12px; max-height: 10em; overflow-y: auto; }
+.hcask { flex-basis: 100%; margin-top: 4px; padding: 8px 10px; border: 1px solid var(--accent); border-radius: 8px; font-size: 13px; }
+.hcask p { margin: 0 0 8px; }
+.hcyes { font-weight: 600; margin-right: 6px; }
+.hcsaid { color: var(--dim); font-size: 13px; margin: 4px 0; }
+.hcsaid:empty { display: none; }
+.hckept { margin-top: 12px; }
+.hhopts { margin-top: 6px; }
+.hhrp .hsrange { flex: 1 1 160px; margin: 0; }
