@@ -144,9 +144,10 @@ What is possible, and is now automatic:
 - Headless Chrome (no media devices) against a stand-in `ssTabs` around the real `tryfx.js`: the toast shows the ask, Allow sends
   `{allow}`, the toast hides; a try's head has Add to track / Print / Stop, a borrowed one's Stop the hop; Add to track sends `{keep}`; Your
   plug-ins hidden with nothing in it.
-- `python tests/run.py --no-luals` in a clean clone of HEAD plus these changes, also with `TZ=UTC0`: see the commit's report.
-- Builds to scratch outputs only (nothing C++ changed): `extension\build_windows.cmd` with `DLL_OUT` in the scratch folder, and
-  `plugin\build_windows.cmd` in the clean clone.
+- `python tests/run.py --no-luals` in a clean clone at aedf91d (these commits plus the others' since): **fails 0**, and **fails 0** with
+  `TZ=UTC0` (files_check / release_check only note that lib/files.txt needs regenerating at release).
+- Builds to scratch outputs only (nothing C++ changed): `extension\build_windows.cmd` with `DLL_OUT` in the scratch folder links;
+  `plugin\build_windows.cmd` in a clean clone builds the VST3 and CLAP.
 
 ## Check in REAPER (two computers; desktop tries/borrows, laptop owns the plug-in)
 
