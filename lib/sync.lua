@@ -2281,6 +2281,7 @@ function sync.receive(proj, cfg, song, room, can)
   if not maps_done then land_rest(maps) end
   land_rest(later)
   require("mirror").index_for(nil)
+  local track_landed = require("mirror").order_band[pk] -- (before order_after_band takes it: the sort below. rt-sync2c)
   require("mirror").order_after_band(proj)
   -- (a bandmate's track move landed in this pass: this computer says the order it has now. The studio's order is the newest list anyone
   -- wrote, each a whole list, and only movers wrote one: of two moves made at once the later mover's list had not the other's move in it, so
@@ -2293,6 +2294,13 @@ function sync.receive(proj, cfg, song, room, can)
   -- (a change that waited, landed: its point now. Every kind of state, not items only (Undo_OnStateChange2): a plug-in chain, automation or
   -- track change landing under an items-only point was taken back by your next native Ctrl+Z and sent as your change. Round 3 review, 0.59.48)
   elseif late_point then reaper.Undo_OnStateChangeEx2(proj, "StudioSync: changes from the others", -1, -1) end
+  -- (a track landed in a room with ranks: the whole order sorted by them now, not only the track that landed (mirror.apply placed that one
+  -- among tracks that may sit elsewhere here). Not mid-drag; keep_order itself waits for the tab in front, stopped and caught up. rt-sync2
+  -- section 3 "Applying", rt-sync2c)
+  if track_landed and not sync.loading[pk] and not (reaper.JS_Mouse_GetState and (tonumber((reaper.JS_Mouse_GetState(1))) or 0) & 1 == 1)
+      and require("mirror").ranked(proj) then
+    pcall(require("mirror").keep_order, proj, cfg, song, room)
+  end
   if sync.loading[pk] and not budget_out then
     sync.loading[pk], loading_said[pk] = nil, nil
     reaper.DeleteExtState(band.SECTION, "loading " .. pk, false)

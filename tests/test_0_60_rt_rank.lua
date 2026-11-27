@@ -14,6 +14,7 @@
 -- 10. With old computers in the room: the order list follows the ranks (old computers go to the newest list), and an older StudioSync's move
 --     merged with a new edit keeps its place.
 -- 11. The order comes from the versions held, not from a rank left on a track (a version recorded without being put in place: sync.set_back).
+-- 12. A receive pass that lands a track sorts the whole order by rank (sync.receive), not only the track that landed.
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -207,12 +208,12 @@ do
   local id = "Old-20270101-000000Z-00001-0001"
   files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "track", oid = h.oid, id = id, user = "Old", name = "Gtr", rev = h.rev + 1, base = h.rev,
     base_ev = h.id, state = st, moved = S.track(A, "Bass") and h.state.after or "", time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (h.hlc or 0) + 1000 }
-  S.recv(A); S.recv(B)
-  assert(S.names(A) == "Gtr, Drums, Bass, Keys" and S.names(B) == S.names(A), "the old computer's move lands at the top on both: " .. S.names(A) .. " / " .. S.names(B))
-  assert(not S.rank(A, "Gtr") and not S.rank(B, "Gtr"), "with no rank on either: it sits under what its version names, as on the old computers")
+  S.recv(B)
+  assert(S.names(B) == "Gtr, Drums, Bass, Keys" and not S.rank(B, "Gtr"), "the old computer's move lands at the top, with no rank: it sits under what its version names, as on the old computers: " .. S.names(B))
   S.keep(B)
   assert(S.names(B) == "Gtr, Drums, Bass, Keys", "keeping the order by rank keeps it there: " .. S.names(B))
-  S.keep(A) -- (James made Gtr: his computer ranks it for that place, and sends it)
+  S.recv(A) -- (James made Gtr: once it has landed, his computer ranks it for that place, and sends it)
+  assert(S.names(A) == "Gtr, Drums, Bass, Keys", "on James's too: " .. S.names(A))
   S.recv(B); S.keep(B)
   assert(S.rank(A, "Gtr") and S.rank(A, "Gtr") == S.rank(B, "Gtr") and rank.less(S.rank(A, "Gtr"), S.rank(A, "Drums")), "then one rank for that place on both, sent by its maker")
   assert(S.names(A) == "Gtr, Drums, Bass, Keys" and S.names(B) == S.names(A), "and there it stays: " .. S.names(A) .. " / " .. S.names(B))
@@ -359,6 +360,24 @@ do
   assert(S.names(B) == "Keys, Drums, Bass, Gtr" and S.names(A) == S.names(B), "Bee's goes by the version she holds: " .. S.names(B) .. " / " .. S.names(A))
   assert(S.rank(B, "Keys") == mv.state.rank, "and the rank on her Keys is that version's again")
   print("rt-rank 11: the order comes from the versions held, not from a rank left on a track")
+end
+
+-- ---- 12. a pass that lands a track sorts the whole order by rank, not only the track that landed -----------------------------------------
+do
+  local S, A, B = song("Rank12")
+  S.recv(B)
+  -- Bee's tracks out of the studio's order with nobody's move behind it (as a half-applied catch-up or an older computer can leave them)
+  S.as(B)
+  for i, t in ipairs(B.F.tracks) do if t.name == "Keys" then table.insert(B.F.tracks, 1, table.remove(B.F.tracks, i)); break end end
+  local list = {}
+  for _, t in ipairs(B.F.tracks) do list[#list + 1] = t.ext.band_oid end
+  mirror.order_seen[tostring(B.F.proj)] = table.concat(list, ",")
+  assert(S.names(B) == "Keys, Drums, Bass, Gtr", "(out of order: " .. S.names(B) .. ")")
+  T = T + 5
+  S.edit(A, function() reaper.GetSetMediaTrackInfo_String(S.track(A, "Gtr"), "P_NAME", "Gtr 2", true) end)
+  S.recv(B)
+  assert(S.names(B) == "Drums, Bass, Gtr 2, Keys", "the pass that landed James's rename put Bee's order right (was: only Gtr placed, Keys left on top): " .. S.names(B))
+  print("rt-rank 12: a pass that lands a track sorts the whole order by rank")
 end
 
 print("ok rt-rank")
