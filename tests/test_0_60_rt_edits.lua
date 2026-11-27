@@ -1542,7 +1542,7 @@ do
   local vox = mirror.track_oid(track(B, "Vox"))
   local newest, all = mirror.room_newest(rdir)
   assert(newest[vox].user == "Bee" and mirror.settled(rdir, newest[vox], all[vox]).id ~= newest[vox].id, "(heal settles on a merge of the two)")
-  tick(mirror.MERGE_NEWS_SECS + 60)
+  tick(3660) -- (an hour on: these versions predate mirror.JUDGE_SINCE, so the grandfather rule keeps what each computer holds where it is a leaf)
   as(B)
   local held = select(3, mirror.known(B.F.proj, vox))
   B.F.undos = {}

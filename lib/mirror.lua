@@ -3444,27 +3444,42 @@ function mirror.judge(proj, oid, room_dir, news, skip)
       local v = mirror.event_file(room_dir, id)
       if v then add(v)
       elseif id == kev and not (skip and skip[id]) then -- (its file not readable here: what it was, from the record)
+        -- (held as absent here, a deletion (or gone with its track): it counts as one, so an edit made without seeing it doesn't bring the
+        -- thing back while its file is on its way (the soak's seed 8059: heal undid a deletion that had come over the link))
         local ms, who = judge.order_parts(kord)
-        add({ type = "obj", obj = mirror.KIND[oid:sub(1, 1)], oid = oid, id = id, rev = krev or 0, hlc = ms > 0 and ms or nil, user = who, stub = true })
+        add({ type = "obj", obj = mirror.KIND[oid:sub(1, 1)], oid = oid, id = id, rev = krev or 0, hlc = ms > 0 and ms or nil, user = who, stub = true,
+          gone = kh == "" or nil })
       end
     end
     flat(kev, 0)
   end
   local opt, rd = { mergeable = mirror.mergeable, days = mirror.MERGE_DAYS }, mirror.reader(room_dir)
   local s
-  for _ = 1, 4 do -- (an answer whose state can't be read as its kind's is left out, and the rest judged again)
-    s = judge.settled(vs, rd, opt)
-    local v = s.v
-    if not (v and not v.gone and not v.stub and type(v.state) ~= (READABLE[v.obj] or "string")) then break end
-    for i = #vs, 1, -1 do if vs[i].id == v.id then table.remove(vs, i) end end
+  local function settle()
+    for _ = 1, 4 do -- (an answer whose state can't be read as its kind's is left out, and the rest judged again)
+      s = judge.settled(vs, rd, opt)
+      local v = s.v
+      if not (v and not v.gone and not v.stub and type(v.state) ~= (READABLE[v.obj] or "string")) then break end
+      for i = #vs, 1, -1 do if vs[i].id == v.id then table.remove(vs, i) end end
+    end
+    -- (a version held here and present, unreadable just now, beside another leaf: it can't be merged or weighed, so nothing lands over it
+    -- until it reads (as heal's "ahead" kept it), or until it's given up on)
+    if s.complete and not opt.give_up and #s.leaves > 1 then
+      for _, v in ipairs(vs) do
+        if v.stub and not v.gone then
+          for _, id in ipairs(s.leaves) do if id == v.id then s.complete, s.v, s.gone, s.missing = false, nil, nil, { v.id } end end
+        end
+      end
+    end
   end
+  settle()
   local key = room_dir .. "\0" .. oid
   if s.complete then mirror.missing_since[key] = nil
   else
     local now = reaper.time_precise()
     local t0 = mirror.missing_since[key] or now
     mirror.missing_since[key] = t0
-    if now - t0 >= mirror.WAIT_MISSING then opt.give_up = true; s = judge.settled(vs, rd, opt) end
+    if now - t0 >= mirror.WAIT_MISSING then opt.give_up = true; settle() end
   end
   s.oid, s.held = oid, held
   return s
@@ -6686,17 +6701,33 @@ function mirror.bring_parts(proj, toid, media_dir, local_mix)
   end
 end
 
--- Bring this project in line with the band's newest version of every object whose last change it doesn't hold: a
--- change that was skipped or never landed here (an unreadable file, a failed apply) left two projects different for
--- good, since nothing applied it again (review, 2026-10-31). Always towards the room's own events, never towards a
--- particular machine, so two machines can't pull each other back and forth. Objects whose newest change this machine
--- already holds are left as they are (what came out different there isn't fixed by applying it again). Returns how
--- many were brought in line.
+-- Bring this project in line with the judge's answer for every object in the room (lib/evindex.lua, lib/judge.lua: the folder and the link's
+-- inbox): a change that was skipped or never landed here (an unreadable file, a failed apply) left two projects different for good, since
+-- nothing applied it again (review, 2026-10-31). Always towards the room's own events, never towards a particular machine, so two machines
+-- can't pull each other back and forth. What the judge says is already held is left as it is (what came out different there isn't fixed by
+-- applying it again). The judge replaces mirror.settled's newest-plus-rivals and its exceptions (rt-sync2b): a version held here but not read
+-- ("ahead") stands in from its record, so nothing older goes back over it; a part or item recorded gone with a track that's here comes back
+-- with it ("bare", mirror.lands); and MERGE_NEWS_SECS's hour is the grandfather rule below. Returns how many were brought in line.
+-- Grandfathered (rt-sync2 section 1, "Old history"): an object whose every version predates JUDGE_SINCE (by its id's time), and whose held
+-- version is one of its leaves, stands as it is: a race settled before the judge (newest-wins, or by clock), which the judge would settle
+-- otherwise now, changed a day or a month late on every computer. A held version behind a leaf is still brought forward. Health's "Bring in
+-- line" settles the rest deliberately (James, 2026-11-27: a button, not automatic; phase 8).
 mirror.STAY = {} -- (see mirror.apply: a track version put in place without moving the track)
-mirror.MERGE_NEWS_SECS = 3600 -- how long after its newest change a merge is still caught up on by a computer that holds that change (mirror.heal)
+mirror.JUDGE_SINCE = "20261128-000000"
+local function grandfathered(s, kev, versions)
+  if (kev or "") == "" then return false end
+  for _, v in ipairs(versions) do
+    for d in tostring(v.id):gmatch("(%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d)Z") do if d >= mirror.JUDGE_SINCE then return false end end
+  end
+  local leaf = {}
+  for _, id in ipairs(s.leaves or {}) do leaf[id] = true end
+  for id in tostring(kev):gmatch("[^()&]+") do if id ~= "m" and not leaf[id] then return false end end
+  return true
+end
 function mirror.heal(proj, room_dir, local_mix)
   local n = 0
-  local newest, all = mirror.room_newest(room_dir)
+  local evindex = require("evindex")
+  evindex.load(room_dir)
   -- (its changes under one undo point, StudioSync's, opened before the first: with none, the person's next edit took them into its own point,
   -- and REAPER's Undo of that edit undid the catch-up too, which the next look sent as theirs. keep_order's reason too. rt-edits)
   -- (and not for a change that waits (mirror.will_wait, as sync.receive opens none): opened, it closed as a point with nothing in it and no log
@@ -6710,59 +6741,36 @@ function mirror.heal(proj, room_dir, local_mix)
   -- then items, by id. Walked as Lua's table gave them, an item came before its track and waited for the next heal, five minutes on, and a
   -- track before the one it sits under went to the top; which computer had which depended on its Lua's hash seed. The soak's bug 8.
   -- rt-converge)
-  local oids, rank = {}, { T = 1, F = 2, E = 2, R = 2, M = 2 }
-  for oid in pairs(newest) do oids[#oids + 1] = oid end
+  local oids, rank, answers = evindex.oids(room_dir), { T = 1, F = 2, E = 2, R = 2, M = 2 }, {}
   table.sort(oids, function(a, b)
     local ra, rb = rank[a:sub(1, 1)] or 3, rank[b:sub(1, 1)] or 3
     if ra ~= rb then return ra < rb end
     return a < b
   end)
+  local function answer(oid)
+    local s = answers[oid]
+    if not s then s = mirror.judge(proj, oid, room_dir, {}); answers[oid] = s end
+    return s
+  end
   local ordered, placed = {}, {}
   local function place(oid)
     if placed[oid] then return end
     placed[oid] = true
-    local ev = newest[oid]
-    local above = ev.obj == "track" and not ev.gone and type(ev.state) == "table" and ev.state.after
-    if type(above) == "string" and newest[above] and newest[above].obj == "track" then place(above) end
+    local ev = oid:sub(1, 1) == "T" and answer(oid).v
+    local above = ev and ev.obj == "track" and not ev.gone and type(ev.state) == "table" and ev.state.after
+    if type(above) == "string" and above:sub(1, 1) == "T" and evindex.versions(room_dir, above)[1] then place(above) end
     ordered[#ordered + 1] = oid
   end
   for _, oid in ipairs(oids) do place(oid) end
   local ok_all, err_all = pcall(function()
   for _, oid in ipairs(ordered) do
-    local ev = newest[oid]
-    local plain = ev
-    ev = mirror.settled(room_dir, ev, all[oid]) -- (a merge of two changes made apart: what every computer holds)
-    local krev, kh, kev, kord = mirror.known(proj, oid)
-    -- (not a merge found long after its changes were made, on a computer that holds the newest of them: every computer took that one then and
-    -- counted the other done (before tracks and automation merged; or the same change sent by two computers), so nobody holds the merge and
-    -- nobody is behind. Made now, the track changed on each computer whenever its heal next ran, a day or a month late. A merge is caught
-    -- up on while it's news, MERGE_NEWS_SECS from its newest change; a computer that holds neither the merge nor the newest is behind, and still
-    -- gets it. rt-undo's limits, rt-edits)
-    local old_merge = ev ~= plain and kev == plain.id and mirror.split_merge(ev.id) ~= nil
-      and os.time() - (select(2, id_span(ev.id)) or math.huge) > mirror.MERGE_NEWS_SECS
-    -- (and a part recorded gone here whose newest change isn't a deletion, its track here: a track that came back bare. Round 1 review, 0.59.45)
-    -- (and an item recorded gone with its track (W.gone: "the band deleted its track, and the item went with it"), the track back and the
-    -- item's own newest change still not a deletion: it comes back with the track, as it does where its change was skipped. rt-converge)
-    local bare = kev == ev.id and kh == "" and not ev.gone and (mirror.PART[ev.obj] or ev.obj == "item") and ev.track and mirror.find(proj, "track", ev.track)
-    -- (never back to an older version: what this computer holds is newer than the newest read, and wasn't among what was read, so nothing
-    -- here weighed it: it came over the direct link and its copies aren't readable now, or its file is half-synced. It's judged once it reads.
-    -- One that was read and still isn't the settled one is a race the settled one won, a deletion over an edit: that lands. F5, rt-undo)
-    -- (nor over a version held here that wasn't read and that the settled one doesn't build on, whichever is the newer by revision and
-    -- clock: unread, nothing weighed it, and a deletion beats an edit made without seeing it however late the edit is (mirror.gone_race).
-    -- A deletion that had come over the link, its file not here yet, was undone by heal on one computer: the item back there alone. The
-    -- soak's seed 8059. Where what the settled one builds on can't all be read (history trimmed), by revision and clock, as before.
-    -- rt-converge)
-    local ahead = krev and (kev or "") ~= "" and kev ~= ev.id
-    if ahead then
-      local ids = {}
-      for _, x in ipairs(all[oid]) do ids[x.id] = true end
-      local function read(id) local w, l = mirror.split_merge(id); if w then return read(w) and read(l) end; return ids[id] == true end
-      ahead = not read(kev) and (mirror.newer({ rev = krev, time = kord }, { rev = ev.rev, time = mirror.order_of(ev) })
-        or mirror.descends(room_dir, ev, kev) == false)
-    end
-    if mirror.unsent[tostring(proj) .. oid] or ahead or old_merge then -- a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76
-    elseif (kev ~= ev.id or bare) and not mirror.edited_here(proj, oid, kh, kev and kev ~= "" and event_file(room_dir, kev) or nil, room_dir .. "/media", local_mix) then
-      -- (not over an edit of yours a look hasn't sent yet: the next look sends it, or puts it back. Round 1 review, 0.59.45) -- (exactly: merge ids are the same everywhere, and "held inside a merge" hid two different ones for good. Review, 0.58.47)
+    local s = answer(oid)
+    local ev = s.complete and s.v
+    local krev, kh, kev = mirror.known(proj, oid)
+    if not ev or ev.stub or mirror.unsent[tostring(proj) .. oid] then -- (a change of yours not sent yet (held, settling): it goes out, or is put back, by mirror.watch. Sync engine review, 0.58.76)
+    elseif kev ~= ev.id and krev and grandfathered(s, kev, evindex.versions(room_dir, oid)) then
+    elseif mirror.lands(proj, s) and not mirror.edited_here(proj, oid, kh, kev and kev ~= "" and event_file(room_dir, kev) or nil, room_dir .. "/media", local_mix) then
+      -- (not over an edit of yours a look hasn't sent yet: the next look sends it, or puts it back. Round 1 review, 0.59.45)
       local order = mirror.order_of(ev)
       if ev.gone then
         -- (a part of a track that isn't here: only its record. Applied, it changed nothing and still counted, a "caught up" line for nothing. round 6)
@@ -6770,16 +6778,15 @@ function mirror.heal(proj, room_dir, local_mix)
           remember(proj, oid, ev.rev, "", ev.id, order)
         elseif kh and kh ~= "" then
           -- (a part that can't change now, playing or its tab behind: next time, not recorded as gone with its chain still here. 0.59.14)
-          if apply(proj, { obj = ev.obj, oid = oid, gone = true, track = ev.track }, room_dir .. "/media", local_mix) then
+          -- (and a track's deletion with what it says went with it, and who made it: apply keeps only work of yours it never saw. rt-sync2b)
+          if apply(proj, { obj = ev.obj, oid = oid, gone = true, track = ev.track, items = ev.items, user = ev.user }, room_dir .. "/media", local_mix) then
             remember(proj, oid, ev.rev, "", ev.id, order)
             n = n + 1
           end
-        end
-      else
+        else remember(proj, oid, ev.rev, "", ev.id, order) end -- (not here, and gone: the record says so)
+      elseif not on_gone_track(proj, ev) then
         -- (a track stays where it is unless its place is what this version changes, against the one held here: a track's newest change
-        -- keeps the "sits under" of the day it was made, and one that only sits elsewhere since isn't sent again. The settled version of
-        -- XT Rec A was a merge of its newest change with the same change as three computers had each sent it a day before, another id and
-        -- the same content, and each computer's heal, whenever it ran, moved the track back under the track it once sat under. F5, rt-undo)
+        -- keeps the "sits under" of the day it was made, and one that only sits elsewhere since isn't sent again. F5, rt-undo)
         -- (and only where a move was made on purpose between the version held and this one, as mirror.receive lands one: mirror.says_move.
         -- rt-converge)
         local held, put = ev.obj == "track" and (kev or "") ~= "" and event_file(room_dir, kev), ev
@@ -6791,7 +6798,7 @@ function mirror.heal(proj, room_dir, local_mix)
           remember(proj, oid, ev.rev, h or "", ev.id, order)
           n = n + 1
         end
-      end
+      else remember(proj, oid, ev.rev, "", ev.id, order) end -- (on a track that's gone: recorded gone with it, under this version)
     end
   end
   end)

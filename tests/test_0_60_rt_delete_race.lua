@@ -203,6 +203,41 @@ do
   assert(mirror.named_items({ items = big }) == nil and mirror.named_items({ items = { "i-a" } })["I-A"], "past ITEMS_MAX: ignored; ids upper-cased")
 end
 
+-- rt-sync2b: heal lands a track's deletion as receive does, with what it names: a deletion whose file a receive never applied here (a skipped
+-- change) reaches heal, and an item of yours it never saw, ten minutes old, is kept on "(yours, not sent)". Heal passed only the deletion's
+-- object and track to apply, so the two-minute guess lost it.
+do
+  local T2, I9 = "T-AL-9-9", "I-XA-9"
+  local V0b = ev({ id = "Al-20261119-171303Z-00001-0009", obj = "track", oid = T2, rev = 1, base = 0, state = { name = "Keys", after = "" }, user = "Al", hlc = H0 - 9000 })
+  local OLD9 = ev({ id = "Xa-20261119-170001Z-00001-0009", obj = "item", oid = I9, track = T2, rev = 1, base = 0, state = OLD:gsub('NAME "d"', 'NAME "mine, old"'), user = "Xa", hlc = H0 - 600000 })
+  ev({ id = "Al-20261119-172601Z-00009-0009", obj = "track", oid = T2, rev = 2, base = 1, base_ev = V0b.id, gone = true, user = "Al", hlc = H0 + 400, name = "Keys", items = {} })
+  local p = "PHEAL"
+  gext[band.SECTION .. "\0user"] = "Xa"
+  local tr = new_track(p, "Keys")
+  tr.ext = { ["P_EXT:band_oid"] = T2 }
+  remember(p, V0b, "t")
+  table.insert(tr.items, { track = tr, state = OLD9.state, ext = { ["P_EXT:band_oid"] = I9 } })
+  remember(p, OLD9, "h:" .. OLD9.id)
+  local real_files = proxy.files
+  proxy.files = function(dir, ext)
+    local out = {}
+    for path in pairs(files) do
+      local d, f = path:match("^(.*)/([^/]+)$")
+      if d == dir and (not ext or f:sub(-#ext) == ext) then out[#out + 1] = f end
+    end
+    table.sort(out)
+    return out
+  end
+  require("evindex").forget(R)
+  mirror.heal(p, R, false)
+  proxy.files = real_files
+  require("evindex").forget(R)
+  local names = {}
+  for _, t in ipairs(P(p).tracks) do for _, it in ipairs(t.items) do names[#names + 1] = it.state:match('NAME "([^"]+)"') .. " on " .. t.name end end
+  assert(table.concat(names, "; ") == "mine, old on Keys (yours, not sent)", "heal's deletion keeps what it never saw: " .. table.concat(names, "; "))
+  assert(select(2, mirror.known(p, T2)) == "", "and the track is recorded gone")
+end
+
 -- the tempo map that came with the delete-all stays: deleting the first track isn't a file opened again, so the timeline's "opened behind the song"
 -- look (which takes session.json's tempo, still the old one while Syncthing brings the new) doesn't run again. Live run 20261119-174839Z: B and
 -- C both had 130 back after A's 120, and step 1 was never seen. A file opened again in the same tab (a new master track) still gets the look.

@@ -128,6 +128,7 @@ band.log_error = function(where, err) ERRORS[#ERRORS + 1] = string.format("%.1f 
 rawset(reaper, "MB", function(text) ERRORS[#ERRORS + 1] = "a modal box opened: " .. tostring(text):sub(1, 120); return 7 end)
 local mirror, sync, direct, undo = require("mirror"), require("sync"), require("direct"), require("undo")
 local recall, claimask = require("recall"), require("claimask")
+mirror.JUDGE_SINCE = "19700101-000000" -- (the soak models life after the judge: no history of its is grandfathered from heal. rt-sync2b)
 direct.available = function() return true end -- (the extension is mandatory: its inbox is read)
 -- (and the link is started for this studio, as Live sync's direct.ensure leaves it: mirror reads a version that has only come over the link
 -- from the inbox of the studios in direct.started (direct.path with no cfg). Left empty, every such version was "not readable on this
