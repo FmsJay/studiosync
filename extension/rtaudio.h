@@ -77,6 +77,13 @@ std::string rt_status(RtLink *l); // JSON: the link, and per peer latency, jitte
 // or with peer "" and "play" its own Play as it goes out, written to path (a .wav: 32-bit float stereo) for seconds (0..60) by a worker; the
 // audio thread only copies into a ring. One at a time, while running. -> 1 started. rt_status's "ears" says how it goes.
 int rt_ears(RtLink *l, const char *peer, const char *stream, const char *path, double seconds);
+// The relay (rt-audio4, docs/rt/rt-audio4.md): in place of rt_hub's mix, the hub forwards each sender's packets and every listener mixes
+// them itself; the role is a lease one computer holds and renews. json: {"on":1,"all":1,"order":["name:port",...,""]}: on 0 turns it off
+// (as before it existed); all 1: everyone hears everyone through the relay (a large room: each sends one copy to it), 0: the relay only
+// carries senders a listener gets nothing from directly; order: who should hold it, first to last ("" is this computer; one not listed
+// never claims it). Lua turns it on only when every computer in the room has it (the version gate). rt_status's "relay" says how it goes.
+// -> 1 on, 0 off, -1 when the JSON isn't that.
+int rt_relay(RtLink *l, const char *json);
 // The audio thread (REAPER's hook, or the test's clock): capture before REAPER's processing, mix after. No lock, allocation or REAPER call.
 void rt_capture(RtLink *l, const double *const *in, int nin, int len, double srate);
 // A browser guest heard here, added to the Talk sent (extension/webui.cpp webui_guest_talk; null: nothing). Called in rt_capture on the audio

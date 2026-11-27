@@ -633,7 +633,11 @@ function liveaudio.hub_tick(cfg, b, list, users, st)
     running = st.running ~= false, hub_la = hub and (S.las or {})[hub] or nil,
     senders = liveaudio.hub_n(S.hub_mem.send, liveaudio.senders(S.las, users, liveaudio.my_la()), 2, reaper.time_precise()) })
   if okx and wait and not hub and why then why = wait end
+  -- (the relay, rt-audio4: when every computer here has it, the hub forwards each one's stream in place of mixing; lib/liverelay.lua)
+  local okr, relay = pcall(require("liverelay").tick, cfg, b, users, { all = peer ~= "" or serve or why ~= nil, hub = hub, me = cfg.user }, S)
+  if okr and relay then peer, serve, why = "", false, "the room's relay forwards each one's stream instead" end
   S.hub = { peer = peer, serve = serve, why = why, user = hub, pick = okx and (peer ~= "" or serve) and pick or nil }
+  S.hub.relay = okr and relay or nil
   local key = peer .. "|" .. tostring(serve)
   if key == S.hub_asked then return end
   reaper.StudioSync_LiveAudioHub(peer, serve and 1 or 0)
@@ -992,6 +996,7 @@ function liveaudio.health_text(st, names, theirs, s, src, sending, hubp)
   if #heard > 0 then text = text .. "; hearing " .. table.concat(heard, ", ") end
   local hub = liveaudio.hub_text(st.hub, names, hubp)
   if hub then text = text .. hub end
+  do local okr, r = pcall(require("liverelay").text, st.relay, names); if okr and r then text = text .. r end end -- (the room's relay: rt-audio4)
   if bursty then text = text .. " (a buffer that grew means packets come in bursts, as over Wi-Fi: a wired network lowers it)" end
   if #each > 0 then text = text .. "; " .. table.concat(each, ", ") end
   if #heard + #each == 0 then text = text .. "; nobody else here yet" end

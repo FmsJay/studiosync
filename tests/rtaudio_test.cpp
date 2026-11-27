@@ -1556,6 +1556,209 @@ static void sim_test()
   check(lb < 0 && pk < 1e-6, "sim: a blocked path carries nothing");
 }
 
+// ---- the relay (rt-audio4, docs/rt/rt-audio4.md): the hub forwards each sender's packets, every listener mixes, the role is a lease ----
+// A room of n computers on ports port0.., everyone listing everyone; freq[i]: the tone computer i sends on Talk (0: silence); heard[i]: what
+// it plays out; a stopped one (down[i]) neither captures nor mixes. relay(i, ...): rt_relay with the order as indices (i's own: "").
+struct RRoom {
+  static const int SR = 48000, LEN = 256;
+  int n, port0;
+  std::vector<RtLink *> L;
+  std::vector<std::string> nm;
+  std::vector<double> freq;
+  std::vector<bool> down;
+  std::vector<std::vector<double>> heard;
+  long long blk = 0;
+  tclock::time_point t0;
+  RRoom(int n_, int p0) : n(n_), port0(p0), freq((size_t)n_, 0.0), down((size_t)n_, false), heard((size_t)n_)
+  {
+    for (int i = 0; i < n; ++i) { nm.push_back("127.0.0.1:" + std::to_string(port0 + i)); L.push_back(rt_new()); }
+    for (int i = 0; i < n; ++i) { peers(i); rt_start(L[i], 0, 1, 128, 0, "127.0.0.1"); }
+    t0 = tclock::now();
+  }
+  ~RRoom() { for (RtLink *x : L) rt_free(x); }
+  void peers(int i)
+  {
+    std::string list;
+    for (int j = 0; j < n; ++j) if (j != i) list += std::string(list.empty() ? "" : ",") + "\"" + nm[j] + "\"";
+    rt_peers(L[i], ("{\"peers\":[" + list + "],\"port\":" + std::to_string(port0 + i) + ",\"secret\":\"studio\"}").c_str());
+  }
+  int relay(int i, bool on, bool all, std::vector<int> order)
+  {
+    std::string o;
+    for (int j : order) o += std::string(o.empty() ? "" : ",") + "\"" + (j == i ? std::string() : nm[(size_t)j]) + "\"";
+    return rt_relay(L[i], ("{\"on\":" + std::string(on ? "1" : "0") + ",\"all\":" + (all ? "true" : "false") + ",\"order\":[" + o + "]}").c_str());
+  }
+  void buffers(double floor_ms) { for (int i = 0; i < n; ++i) for (int j = 0; j < n; ++j) if (j != i) rt_peer_buffer(L[i], nm[j].c_str(), floor_ms, 400); }
+  double t() const { return (double)blk * LEN / SR; }
+  void run(double secs)
+  {
+    std::vector<double> in(LEN), o1(LEN), o2(LEN);
+    for (const long long end = blk + (long long)(secs * SR / LEN); blk < end; ++blk) {
+      wait_until(t0 + ::secs((double)blk * LEN / SR));
+      for (int i = 0; i < n; ++i) {
+        std::fill(o1.begin(), o1.end(), 0.0);
+        if (!down[i]) {
+          for (int k = 0; k < LEN; ++k) in[k] = freq[i] > 0 ? 0.5 * sin(2 * 3.14159265358979 * freq[i] * ((double)blk * LEN + k) / SR) : 0.0;
+          const double *ii[1] = { in.data() };
+          double *oo[2] = { o1.data(), o2.data() };
+          rt_capture(L[i], ii, 1, LEN, SR);
+          rt_mix(L[i], oo, 2, LEN, SR);
+        }
+        heard[i].insert(heard[i].end(), o1.begin(), o1.end());
+      }
+    }
+  }
+  std::string st(int i) { return rt_status(L[i]); }
+  double num(int i, int peer, const char *key) { return atof(field(st(i), peer < 0 ? "" : nm[(size_t)peer], key).c_str()); }
+  std::string str(int i, int peer, const char *key) { return field(st(i), peer < 0 ? "" : nm[(size_t)peer], key); }
+  double rms(int i, double s0, double s1) const
+  {
+    double e = 0;
+    size_t c = 0;
+    for (size_t k = (size_t)(s0 * SR); k < (size_t)(s1 * SR) && k < heard[i].size(); ++k, ++c) e += heard[i][k] * heard[i][k];
+    return c ? sqrt(e / (double)c) : 0;
+  }
+  int holders() { int h = 0; for (int i = 0; i < n; ++i) if (!down[i] && str(i, -1, "holder") == "\"me\"") ++h; return h; }
+  // the longest stretch of [s0, s1) whose 10 ms RMS (every 5 ms) is under half a 0.5 tone's, ms
+  double gap_ms(int i, double s0, double s1) const
+  {
+    const size_t w = SR / 100, h = w / 2;
+    double run = 0, worst = 0;
+    for (size_t a = (size_t)(s0 * SR); a + w <= (size_t)(s1 * SR) && a + w <= heard[i].size(); a += h) {
+      double e = 0;
+      for (size_t k = a; k < a + w; ++k) e += heard[i][k] * heard[i][k];
+      run = sqrt(e / (double)w) < 0.17 ? run + 5 : 0;
+      worst = std::max(worst, run);
+    }
+    return worst;
+  }
+};
+
+static void relay_test()
+{
+  if (g_real) { printf("     relay: skipped (SS_RT_REAL=1: it runs on the simulated network)\n"); return; }
+  // 1. H, A, B, C: everyone through the relay, H first in everyone's order. Only B sounds (440 Hz), so what A plays is B alone.
+  {
+    RRoom r(4, 47731);
+    const int H = 0, A = 1, B = 2, C = 3;
+    r.freq[B] = 440;
+    r.run(1.0);
+    r.buffers(60);
+    for (int i = 0; i < 4; ++i) r.relay(i, true, true, { H, A, B, C });
+    r.run(4.0); // (to 5 s)
+    const long long sent0 = (long long)r.num(B, -1, "sent");
+    const double t_sent = r.t();
+    r.run(2.0); // (to 7 s)
+    const long long sent1 = (long long)r.num(B, -1, "sent");
+    const std::string sa = r.st(A), sb = r.st(B), sh = r.st(H);
+    printf("     relay: holders %d (H: %s, term %s); A's holder %s, B relayed there %s, B's own stream to A direct %s; H forwards %s packets/s (%s kbit/s) to %s asking; B sent %.0f datagrams/s; A hears B at %.3f rms (5-7 s), quietest 10 ms %.3f\n",
+           r.holders(), field(sh, "", "holder").c_str(), field(sh, "", "term").c_str(), field(sa, "", "holder").c_str(), field(sa, r.nm[B], "relayed").c_str(),
+           field(sb, r.nm[A], "direct").c_str(), field(sh, "", "fwd_pps").c_str(), field(sh, "", "fwd_kbps").c_str(), field(sh, "", "asking").c_str(),
+           (sent1 - sent0) / (r.t() - t_sent), r.rms(A, 5, 7), min_rms(r.heard[A], 5, 7));
+    printf("     relay: A took %s forwarded copies, refused %s; B at A: streaming %s, level %s, underruns %s, buffer %s, rejected %s (%s)\n", field(sa, "", "fwd_in").c_str(), field(sa, "", "fwd_refused").c_str(),
+           field(sa, r.nm[B], "streaming").c_str(), field(sa, r.nm[B], "level").c_str(), field(sa, r.nm[B], "underruns").c_str(), field(sa, r.nm[B], "fill_ms").c_str(), field(sa, "", "rejected").c_str(), field(sa, "", "last_reject").c_str());
+    check(r.holders() == 1 && field(sh, "", "holder") == "\"me\"" && field(sa, "", "holder") == "\"" + r.nm[H] + "\"", "relay: one holder, the first in the order, and the others follow it");
+    check(field(sa, r.nm[B], "relayed") == "true" && field(sa, r.nm[C], "relayed") == "true" && field(sa, r.nm[H], "relayed") == "false", "relay: A gets B and C through it (H itself directly)");
+    check(field(sb, r.nm[A], "direct") == "false" && field(sb, r.nm[H], "direct") == "true", "relay: B sends A nothing directly (A said so), only to the relay");
+    check(r.rms(A, 5, 7) > 0.3 && min_rms(r.heard[A], 5, 7) > 0.25, "relay: A hears B whole through it, at the level B sent");
+    check((sent1 - sent0) / (r.t() - t_sent) < 300, "relay: B sends one copy, not three (a 5 ms stream is 200 datagrams a second)");
+    check(atof(field(sh, "", "fwd_pps").c_str()) > 300 && field(sh, "", "asking") == "3", "relay: H forwards to the three that ask");
+    // 2. The relay stalls (H's threads held 150 ms, three times): A's buffer for B (60 ms) covers the moment before B sends directly again.
+    const long long u0 = (long long)r.num(A, B, "underruns");
+    const double s0 = r.t();
+    for (int k = 0; k < 3; ++k) { rt_test_hold(r.L[H], 150); rt_test_hold_tx(r.L[H], 150); r.run(1.5); }
+    r.run(1.5);
+    const std::string sa2 = r.st(A);
+    printf("     relay: H held 150 ms three times: A's longest gap in B %.0f ms, A's underruns for B %+.0f, B relayed at A after %s, B's stream to A direct %s\n",
+           r.gap_ms(A, s0, r.t()), r.num(A, B, "underruns") - u0, field(sa2, r.nm[B], "relayed").c_str(), r.str(B, A, "direct").c_str());
+    // (what B sent the relay before A noticed is stuck there: the rescue line's worth, concealed. Through the hub's mix the same stall was a
+    // fallback: everyone's streams anew, each a re-buffer, and 3.3 s before the mix was asked for again)
+    check(r.gap_ms(A, s0, r.t()) <= 60 && r.num(A, B, "underruns") - u0 == 0, "relay: a 150 ms relay stall costs at most the rescue line (60 ms), no re-buffer: B's direct copy takes over and merges");
+    check(field(sa2, r.nm[B], "relayed") == "true" && r.str(B, A, "direct") == "false", "relay: and once the relay is steady again everything goes through it again");
+    // 3. The holder goes: the next in the order holds within the lease's time, and A hears B throughout.
+    const double s1 = r.t();
+    rt_stop(r.L[H]); r.down[H] = true;
+    r.run(4.0);
+    const std::string sa3 = r.st(A), sc3 = r.st(C);
+    printf("     relay: H gone: holders %d (A: %s, term %s), C's holder %s; A's longest gap in B %.0f ms (re-buffers %+.0f)\n", r.holders(), field(sa3, "", "holder").c_str(),
+           field(sa3, "", "term").c_str(), field(sc3, "", "holder").c_str(), r.gap_ms(A, s1, r.t()), r.num(A, B, "underruns") - u0);
+    check(r.holders() == 1 && field(sa3, "", "holder") == "\"me\"" && field(sc3, "", "holder") == "\"" + r.nm[A] + "\"" && field(sa3, "", "term") == "2",
+          "relay: with the holder gone the next in the order takes the lease (term 2), once");
+    check(r.gap_ms(A, s1, r.t()) <= 60 && r.num(A, B, "underruns") - u0 == 0, "relay: A hears B through the change, no re-buffer, at most the rescue line lost");
+    check(r.str(C, B, "relayed") == "true", "relay: and C now gets B through A");
+    // 4. H comes back: A hands the lease back to it once H has been heard 5 s.
+    rt_start(r.L[H], 0, 1, 128, 0, "127.0.0.1"); r.down[H] = false;
+    r.run(1.0);
+    r.buffers(60);
+    r.relay(H, true, true, { H, A, B, C });
+    r.run(8.0);
+    printf("     relay: H back: holders %d, H %s (term %s), A's handovers %s\n", r.holders(), r.str(H, -1, "holder").c_str(), r.str(H, -1, "term").c_str(), r.str(A, -1, "handovers").c_str());
+    check(r.holders() == 1 && r.str(H, -1, "holder") == "\"me\"" && r.str(A, -1, "handovers") == "1", "relay: the preferred computer back, the holder hands it the lease once");
+    // 5. Talkback: B to C only. A hears nothing of B (neither way), H doesn't play it, C still hears it through the relay.
+    rt_send(r.L[B], r.nm[A].c_str(), 0); rt_send(r.L[B], r.nm[H].c_str(), 0);
+    r.run(1.0);
+    r.st(A); r.st(C); r.st(H); // (the peaks from here)
+    r.run(1.0);
+    const double la = r.num(A, B, "level"), lc = r.num(C, B, "level");
+    printf("     relay: B's talkback to C only: A hears B at peak %.3f, C at %.3f, H plays it at rms %.4f\n", la, lc, r.rms(H, r.t() - 1, r.t()));
+    check(la < 0.01 && lc > 0.3 && r.rms(H, r.t() - 1, r.t()) < 0.01, "relay: talkback holds through the relay: only C hears B");
+    rt_send(r.L[B], r.nm[A].c_str(), 1); rt_send(r.L[B], r.nm[H].c_str(), 1);
+    // 6. A mutes B in its cue mix: the relay stops forwarding B to A (bandwidth).
+    r.run(2.5);
+    const double pps0 = r.num(H, -1, "fwd_pps");
+    rt_peer_set(r.L[A], r.nm[B].c_str(), 1.0, 1);
+    r.run(2.0);
+    const double pps1 = r.num(H, -1, "fwd_pps");
+    printf("     relay: A mutes B: H forwards %.0f -> %.0f packets/s\n", pps0, pps1);
+    check(pps1 < pps0 - 150, "relay: a bandmate a listener has muted isn't forwarded to it");
+  }
+  // 7. Only the missing path: B can't reach A directly. A asks the relay for B alone, and goes back to B's own stream when the path is back.
+  {
+    RRoom r(3, 47741);
+    const int H = 0, A = 1, B = 2;
+    r.freq[B] = 440;
+    rt_sim_net(r.port0 + B, r.port0 + A, -1, 0, 0);
+    r.run(1.0);
+    r.buffers(60);
+    for (int i = 0; i < 3; ++i) r.relay(i, true, false, { H, A, B });
+    r.run(5.0);
+    const std::string sa = r.st(A);
+    printf("     relay: B -> A blocked: A relays B %s, H %s; A hears B at %.3f rms (4-6 s)\n", field(sa, r.nm[B], "relayed").c_str(), field(sa, r.nm[H], "relayed").c_str(), r.rms(A, 4, 6));
+    check(field(sa, r.nm[B], "relayed") == "true" && r.rms(A, 4, 6) > 0.3, "relay: a missing direct path is filled through the relay");
+    rt_sim_net(r.port0 + B, r.port0 + A, 0, 0, 0);
+    const double s0 = r.t();
+    r.run(4.0);
+    printf("     relay: path back: A relays B %s; A's longest gap in B %.0f ms, quietest 10 ms %.3f\n", r.str(A, B, "relayed").c_str(), r.gap_ms(A, s0, r.t()), min_rms(r.heard[A], s0, r.t()));
+    check(r.str(A, B, "relayed") == "false" && min_rms(r.heard[A], s0, r.t()) > 0.25, "relay: the path back, B's own stream again, with no gap (the copies merge)");
+    rt_sim_net(r.port0 + B, r.port0 + A, 0, 0, 0);
+  }
+  // 8. Two that each put themselves first, and can't hear each other at first: both hold; heard again, one yields at once.
+  {
+    RRoom r(2, 47751);
+    rt_sim_net(r.port0, r.port0 + 1, -1, 0, 0); rt_sim_net(r.port0 + 1, r.port0, -1, 0, 0);
+    r.run(1.0);
+    r.relay(0, true, true, { 0, 1 }); r.relay(1, true, true, { 1, 0 });
+    r.run(3.0);
+    const int both = r.holders();
+    rt_sim_net(r.port0, r.port0 + 1, 0, 0, 0); rt_sim_net(r.port0 + 1, r.port0, 0, 0, 0);
+    r.run(2.0);
+    printf("     relay: apart: %d holders; together again: %d (the lower address: %s, yields %s)\n", both, r.holders(), r.str(0, -1, "holder").c_str(), r.str(1, -1, "yields").c_str());
+    check(both == 2 && r.holders() == 1 && r.str(0, -1, "holder") == "\"me\"" && r.str(1, -1, "yields") == "1", "relay: a partition heals to one holder, whatever each one's order");
+  }
+  // 9. The gate's other side: a computer with the relay off (as a 1.0.40 one) hears everyone directly while the others relay.
+  {
+    RRoom r(4, 47761);
+    const int H = 0, A = 1, B = 2, O = 3;
+    r.freq[B] = 440;
+    r.run(1.0);
+    for (int i = 0; i < 3; ++i) r.relay(i, true, true, { H, A, B });
+    r.run(4.0);
+    const std::string so = r.st(O);
+    printf("     relay: O with it off: hears B at %.3f rms, B's stream to O direct %s, O took %s forwarded copies\n", r.rms(O, 3, 5), r.str(B, O, "direct").c_str(), field(so, "", "fwd_in").c_str());
+    check(r.rms(O, 3, 5) > 0.3 && r.str(B, O, "direct") == "true" && field(so, "", "fwd_in") == "0", "relay: one with it off is sent everything directly, as today");
+  }
+}
+
 int main(int argc, char **argv)
 {
   g_real = getenv("SS_RT_REAL") && atoi(getenv("SS_RT_REAL")) != 0;
@@ -1576,6 +1779,7 @@ int main(int argc, char **argv)
   if (argc > 1 && strcmp(argv[1], "nothere") == 0) { not_here_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "sim") == 0) { sim_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "relay") == 0) { relay_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
   const double PI = 3.14159265358979;
@@ -1942,6 +2146,7 @@ int main(int argc, char **argv)
     for (int i = 0; i < 4; ++i) rt_free(L[i]);
   }
   sim_test(); // (the simulated clock and network themselves: rt-audio4)
+  relay_test(); // (the relay: forwarding instead of mixing, the lease. rt-audio4)
   not_here_test();
   start_order_test(); // (the four-computer test's start order: a hub whose list leaves a computer out)
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)

@@ -307,6 +307,17 @@ const double WATCH_LATE = 0.02;
 // OWN_MAX s, when someone else was heard in the OWN_BEFORE s before the mix stopped (the listeners' 'M' every MODE_EVERY; a room of two falls
 // back as before). Someone else heard since, with no mix in OWN_GRACE s after: the hub is gone (own_outage). rt-p9
 const double OWN_MAX = 2.0, OWN_BEFORE = 2 * MODE_EVERY, OWN_GRACE = 0.02;
+// The relay (rt_relay; rt-audio4, docs/rt/rt-audio4.md): the hub forwards each sender's packets instead of mixing. FWD: a forwarded
+// datagram (relay -> listener: the sender's address + its AOO message), or a listener's sink-to-source message for a relayed sender (listener
+// -> relay). The lease: said every LEASE_EVERY, good for LEASE_TTL; claimed LEASE_WAIT after the relay is turned on and LEASE_STEP apart by
+// rank once none is valid; handed to one ranked before the holder heard LEASE_HANDBACK (not back to the one it came from for LEASE_BACK);
+// a peer counts as heard with a datagram in the last ALIVE_S. A listener asks the relay for a sender it got nothing from directly for
+// DIRECT_STALE; a forwarded copy that pauses past FWD_GAP starts its run again. The merge: a /start within MERGE_SEQ blocks of what plays is
+// the same stream; a /stop passes only when no other copy came in MERGE_STOP.
+const char FWD[4] = { 'S', 'S', 'F', '1' };
+const double LEASE_EVERY = 0.5, LEASE_TTL = 2.0, LEASE_STEP = 0.3, LEASE_WAIT = 1.0, LEASE_HANDBACK = 5.0, LEASE_BACK = 60.0, ALIVE_S = 1.0;
+const double DIRECT_STALE = 1.5, FWD_GAP = 0.04, MERGE_STOP = 0.2;
+const int MERGE_SEQ = 800;
 
 struct Slot {
   std::string peer, addr_s, err;
@@ -400,6 +411,26 @@ struct Slot {
   std::atomic<bool> in_mix{ true };
   float dw = 1.f;
   std::atomic<double> rx_at{ -1e9 }; // (the receive thread's: its last datagram with the studio's tag, so it lists this computer. rt-roomlist)
+  // The relay (rt_relay; rt-audio4). As a listener: whether this sender comes through the relay (the send thread's; msaid: the last 'M'
+  // said to it was 1), when its newest forwarded copy came and since when without a break (the receive thread's), and the merge of its
+  // direct and forwarded copies per stream (Talk, Play; the receive thread's, under cfg_mx: relay_merge).
+  std::atomic<bool> relayed{ false };
+  bool msaid = false;
+  std::atomic<double> fwd_at{ -1e9 }, fwd_first{ -1e9 };
+  struct Merge { AooId acc = 0, alias[4] = { 0, 0, 0, 0 }, pend_sid = 0; double alias_at[4] = { 0, 0, 0, 0 }; int fmt = 0, seq = 0; bool live = false; std::vector<unsigned char> pend; } mg[2];
+  // As the holder: what this listener asked for ('F': a bit per sender slot, for Talk and for Play), when, which listeners its own Talk
+  // leaves out (a bit per slot: its talkback), and whether it leaves this computer out (its Talk then not heard here, only forwarded); the
+  // last /start of each of its streams to this computer (the receive thread's), sent to a listener when it first asks for that stream.
+  std::atomic<unsigned> fwd_bits[2]{ { 0u }, { 0u } }, rdeny_bits{ 0u };
+  std::atomic<double> fwd_asked{ -1e9 };
+  std::atomic<bool> deny_me{ false };
+  std::vector<unsigned char> start_msg[2];
+  // Every computer: the lease this peer says it holds ('L', the receive thread's: term, when it came, for how long), and since when it has
+  // been heard without a break (the send thread's: the holder's handover to one ranked before it).
+  std::atomic<unsigned> l_term{ 0u };
+  std::atomic<double> l_at{ -1e9 };
+  std::atomic<float> l_ttl{ 0.f };
+  double alive_since = 0;
 };
 // The ears tap (rt_ears; docs/rt/rt-ears.md "Left", docs/rt/rt-p11.md): one stream as this computer hears it, or its own Play as it goes out,
 // copied by the audio thread into a lock-free ring (stereo, interleaved) that a worker writes as a 32-bit float WAV. The audio thread only
@@ -518,6 +549,29 @@ struct RtLink {
   double hub_cpu = 0, hub_tick0 = 0; // (stats_mx: the send thread's own CPU time in hub_serve this window, in thread_ticks; ticks_now at its start)
   int hub_serving = 0;
   bool sim_wake = false; double sim_pass = -1e9; // (rt_sim: woken since its last send pass; when that pass ran. rt-audio4)
+  // The relay (rt_relay; rt-audio4). want_*: rt_relay's (pend_mx). The send thread's: on, everything through it or only the missing paths,
+  // the order ("" is this computer), the lease (holding, its term, the highest seen, when the last one seen runs out), the holder it follows
+  // (null: itself or nobody). For the receive thread: on, holding, and the holder's address (akey; 0 none). fwdbuf: the receive thread's.
+  bool want_relay = false, want_rall = false, rdirty = false;
+  std::vector<std::string> want_rorder;
+  bool relay_on = false, relay_all = false, holding = false;
+  std::vector<std::string> rorder;
+  unsigned my_term = 0, max_term = 0;
+  double relay_since = 0, held_since = 0, next_lease = 0, lease_end = -1e9, next_fctl = 0, next_rh = 0, next_m = 0;
+  std::string fsig;
+  Slot *holder = nullptr;
+  std::atomic<bool> relay_flag{ false }, hold_flag{ false }, hand_to_me{ false };
+  std::atomic<unsigned long long> holder_key{ 0 };
+  std::atomic<long long> fwd_n{ 0 }, fwd_bytes{ 0 }, fwd_in{ 0 }, fwd_refused{ 0 };
+  double fwd_win = 0, fwd_kbps = 0, fwd_pps = 0; // (stats_mx: the last second's forwarding out)
+  long long fwd_n0 = 0, fwd_b0 = 0;
+  std::atomic<long long> claims{ 0 }, yields{ 0 }, handovers{ 0 };
+  std::atomic<unsigned> term_now{ 0 };
+  std::atomic<bool> rall_flag{ false };
+  std::atomic<unsigned long long> hand_from{ 0 }; // (the receive thread's: who handed the role to this computer)
+  unsigned long long handed_from = 0;            // (and the send thread's: not handed back to it for LEASE_BACK)
+  double handed_at = -1e9;
+  unsigned char fwdbuf[MAX_DGRAM + 64];
 };
 
 namespace {
@@ -724,6 +778,7 @@ void json_str(std::string &o, const std::string &s)
   o += '"';
 }
 
+int relay_redirect(RtLink *l, const AooByte *data, AooInt32 size, const sockaddr_in &to);
 // AOO's outgoing packets (the send thread only): tagged and sent to a peer's address.
 AooInt32 AOO_CALL send_fn(void *user, const AooByte *data, AooInt32 size, const void *address, AooAddrSize addrlen, AooFlag)
 {
@@ -731,6 +786,7 @@ AooInt32 AOO_CALL send_fn(void *user, const AooByte *data, AooInt32 size, const 
   if (l->key.empty() || size <= 0 || size + 4 + TAG > MAX_DGRAM || addrlen < (AooAddrSize)sizeof(sockaddr_in)) return -1; // (no secret yet: nothing goes out)
   const sockaddr_in &to = *(const sockaddr_in *)address;
   if (!peer_ok(l, to)) return -1;
+  if (int r = relay_redirect(l, data, size, to)) return r; // (a sink here answering a sender that comes through the relay: rt-audio4)
   memcpy(l->txbuf, MAGIC, 4);
   memcpy(l->txbuf + 4, data, (size_t)size);
   unsigned char t[32];
@@ -1044,6 +1100,8 @@ void reconfigure(RtLink *l)
       AooEndpoint mep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.mremote_id };
       if (!p.madded && p.msrc) p.madded = p.msrc->addSink(mep, kAooTrue) == kAooOk;
     }
+    for (int i = 0; i < l->nslots; ++i) { l->slots[i]->fwd_bits[0].store(0); l->slots[i]->fwd_bits[1].store(0); l->slots[i]->rdeny_bits.store(0); } // (by slot: asked again within MODE_EVERY. rt-audio4)
+    l->holder = nullptr;
     Slot *h = l->hub_peer.load(); // (my hub left the list: back to everyone's own streams; hub_watch finds it again by name)
     bool kept = false;
     for (int i = 0; i < l->nslots; ++i) kept = kept || l->slots[i].get() == h;
@@ -1084,7 +1142,9 @@ void apply_sends(RtLink *l)
   const double now = now_s();
   for (int i = 0; i < l->nslots; ++i) {
     Slot &p = *l->slots[i];
-    const bool direct = hears_direct(p, now), want = p.want_send.load() && direct;
+    const bool direct = hears_direct(p, now);
+    bool want = p.want_send.load() && direct;
+    if (l->relay_on && &p == l->holder) for (int j = 0; j < l->nslots; ++j) want = want || (direct && l->slots[j]->want_send.load()); // (the relay takes my Talk on to those it goes to; it keeps my talkback: 'F')
     if (p.added && want != p.sending) {
       AooEndpoint ep = { &p.addr, (AooAddrSize)sizeof(p.addr), p.remote_sink_id };
       if (l->src->activate(ep, want ? kAooTrue : kAooFalse) == kAooOk) p.sending = want;
@@ -1337,6 +1397,8 @@ void hub_serve(RtLink *l, double now)
   }
 }
 
+void relay_ctl_f(RtLink *l, Slot &L, const unsigned char *d, int n, double now);
+void relay_ctl_l(RtLink *l, Slot &h, const unsigned char *d, int n, double now);
 // A control datagram from a peer (the receive thread, cfg_mx held, its tag checked): 'M' how it hears, 'R' its mix (to me as its hub),
 // 'I' its numbers as my hub. Anything malformed is dropped.
 void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
@@ -1345,6 +1407,8 @@ void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
   const char kind = (char)d[0];
   ++d; --n;
   if (kind == 'M' && n == 1) { p.via_hub.store(d[0] == 1); p.mode_at.store(now); wake_up(l); return; }
+  if (kind == 'L') { relay_ctl_l(l, p, d, n, now); return; } // (the relay's lease, and what a listener asks of it: rt-audio4)
+  if (kind == 'F') { relay_ctl_f(l, p, d, n, now); return; }
   if (kind == 'I' && n == 8) { float a, b; memcpy(&a, d, 4); memcpy(&b, d + 4, 4); if (std::isfinite(a) && std::isfinite(b)) { p.hin_ms.store(a); p.hload.store(b); } return; }
   if (kind == 'H') { // (whom its mix has, as my hub: a count, then each address and port)
     if (n < 1 || d[0] > RT_MAX_PEERS || n != 1 + d[0] * 6) return;
@@ -1581,11 +1645,13 @@ void adapt(RtLink *l, Slot &p, double now)
   for (int k = 0; k < 3; ++k) { settle(k); if (p.wsince[k] >= 0) p.wsince[k] = now; } // (and the read-rate control settles again)
 }
 
+void relay_apply(RtLink *l, double now);
 // One pass of the send thread (tx_loop; rt_sim_run calls it as the thread would: every 5 ms and when woken).
 void tx_pass(RtLink *l)
 {
   {
     reconfigure(l);
+    relay_apply(l, now_s()); // (the relay: its settings, the lease, a listener's and the holder's parts. rt-audio4)
     apply_sends(l);
     if (!l->live.load()) return;
     // AOO's source (v2.0-pre4, source.cpp process) reblocks REAPER's blocks into Opus frames through its resampler, and when the
@@ -1658,6 +1724,414 @@ void not_here(RtLink *l, const sockaddr_in &from)
   e->at = now;
   ++e->n;
 }
+// ---- the relay (rt_relay; rt-audio4, docs/rt/rt-audio4.md sections 2-3) ----------------------------------------------------------------
+// The hub forwards instead of mixing: each listener keeps one sink per sender and stream, as peer to peer, and gets a sender's packets
+// directly, forwarded by the relay, or both (relay_merge makes them one stream). The relay role is a lease (lease_tick).
+unsigned long long akey(const sockaddr_in &a) { return ((unsigned long long)ntohl(a.sin_addr.s_addr) << 16) | ntohs(a.sin_port); }
+void get_addr(const unsigned char *d, sockaddr_in &a) { a = sockaddr_in{}; a.sin_family = AF_INET; memcpy(&a.sin_addr.s_addr, d, 4); memcpy(&a.sin_port, d + 4, 2); }
+int slot_index(RtLink *l, const Slot *p) { for (int i = 0; i < l->nslots; ++i) if (l->slots[i].get() == p) return i; return -1; }
+// AOO's OSC messages: the address (a padded string), the type tags (",iisi..."), then the arguments, ints big-endian. osc_int: the int
+// argument at idx (its tag must be 'i'); osc_verb: whether the address ends with this part ("/start", "/stop", "/data").
+size_t osc_pad(size_t n) { return (n + 4) & ~(size_t)3; } // (a string with its NUL, padded to 4)
+bool osc_int(const unsigned char *m, int n, int idx, int32_t &out)
+{
+  const unsigned char *z = n > 0 ? (const unsigned char *)memchr(m, 0, (size_t)n) : nullptr;
+  if (!z) return false;
+  const size_t at = osc_pad((size_t)(z - m));
+  if (at >= (size_t)n || m[at] != ',') return false;
+  const unsigned char *tz = (const unsigned char *)memchr(m + at, 0, (size_t)n - at);
+  if (!tz) return false;
+  const size_t nt = (size_t)(tz - (m + at));
+  size_t a = at + osc_pad(nt);
+  for (size_t t = 1; t < nt; ++t) {
+    const char c = (char)m[at + t];
+    if ((int)t - 1 == idx) {
+      if (c != 'i' || a + 4 > (size_t)n) return false;
+      out = (int32_t)((uint32_t)m[a] << 24 | (uint32_t)m[a + 1] << 16 | (uint32_t)m[a + 2] << 8 | (uint32_t)m[a + 3]);
+      return true;
+    }
+    if (c == 'i' || c == 'f') a += 4;
+    else if (c == 'h' || c == 'd' || c == 't') a += 8;
+    else if (c == 's') { const unsigned char *s = a < (size_t)n ? (const unsigned char *)memchr(m + a, 0, (size_t)n - a) : nullptr; if (!s) return false; a += osc_pad((size_t)(s - (m + a))); }
+    else if (c == 'b') { if (a + 4 > (size_t)n) return false; const uint32_t bl = (uint32_t)m[a] << 24 | (uint32_t)m[a + 1] << 16 | (uint32_t)m[a + 2] << 8 | m[a + 3]; a += 4 + ((bl + 3) & ~3u); }
+    else return false;
+  }
+  return false;
+}
+bool osc_verb(const unsigned char *m, int n, const char *verb)
+{
+  const unsigned char *z = n > 0 ? (const unsigned char *)memchr(m, 0, (size_t)n) : nullptr;
+  const size_t vl = strlen(verb);
+  return z && (size_t)(z - m) >= vl && memcmp(z - vl, verb, vl) == 0;
+}
+bool is_bin(const unsigned char *m, int n) { return n >= 4 && (m[0] & kAooBinMsgDomainBit); }
+// A sender's data, /start or /stop to a sink: what the relay forwards (never pings, pongs or the rest).
+bool fwd_kind(const unsigned char *m, int n) { return is_bin(m, n) ? (m[1] & ~kAooBinMsgSizeBit) == kAooBinMsgCmdData : osc_verb(m, n, kAooMsgData) || osc_verb(m, n, kAooMsgStart) || osc_verb(m, n, kAooMsgStop); }
+
+// The merge (the receive thread's, cfg_mx held): AOO gives each (source, sink) pair its own stream id, but the sequence numbers are the
+// source's (one encode per block), so the copy a sender sends the relay and the one it sends here carry the same seq for the same frame.
+// Per sender and stream: acc, the stream id this sink knows (learnt from a /start, or from the data it plays); aliases, other ids whose
+// data carries on from acc's seq (within MERGE_SEQ blocks): the same stream by another way. Their data gets acc written in, so the sink
+// sees one stream whichever way each packet came (AOO's jitter buffer drops the second copy of a frame). A /start for another id while acc
+// plays is held (pend) and decided on that id's first data: carrying on, an alias (dropped: nothing restarts); not, a new stream (a
+// restart: the held /start goes in first, then its data). An alias's /stop is dropped; acc's passes only when no alias came in MERGE_STOP.
+// -> MERGE_DROP, MERGE_PASS, or MERGE_START (hand the sink g.pend first, then this). off: the binary header's size.
+enum { MERGE_DROP = 0, MERGE_PASS = 1, MERGE_START = 2 };
+int32_t be32(const unsigned char *b) { return (int32_t)((uint32_t)b[0] << 24 | (uint32_t)b[1] << 16 | (uint32_t)b[2] << 8 | (uint32_t)b[3]); }
+int relay_merge(Slot::Merge &g, unsigned char *m, int n, int off, double now)
+{
+  auto drop_aliases = [&] { for (int i = 0; i < 4; ++i) { g.alias[i] = 0; g.alias_at[i] = 0; } };
+  if (is_bin(m, n)) {
+    if ((m[1] & ~kAooBinMsgSizeBit) != kAooBinMsgCmdData || off <= 0 || off + 8 > n) return MERGE_PASS;
+    const int32_t sid = be32(m + off), seq = be32(m + off + 4);
+    if (g.acc == 0) { g.acc = sid; g.seq = seq; g.live = true; return MERGE_PASS; } // (what the sink plays now)
+    if (sid == g.acc) { g.seq = std::max(g.seq, seq); return MERGE_PASS; }
+    int k = -1;
+    for (int i = 0; i < 4 && k < 0; ++i) if (g.alias[i] == sid) k = i;
+    if (k < 0 && g.live && std::abs(seq - g.seq) < MERGE_SEQ) { // (an id not seen, carrying on from what plays: an alias)
+      k = 0;
+      for (int i = 1; i < 4; ++i) if (g.alias_at[i] < g.alias_at[k]) k = i;
+      g.alias[k] = sid;
+      if (g.pend_sid == sid) { g.pend_sid = 0; g.pend.clear(); }
+    }
+    if (k >= 0) {
+      g.alias_at[k] = now;
+      g.seq = std::max(g.seq, seq);
+      m[off] = (unsigned char)((uint32_t)g.acc >> 24); m[off + 1] = (unsigned char)((uint32_t)g.acc >> 16);
+      m[off + 2] = (unsigned char)((uint32_t)g.acc >> 8); m[off + 3] = (unsigned char)(uint32_t)g.acc;
+      return MERGE_PASS;
+    }
+    if (sid == g.pend_sid && !g.pend.empty()) { g.acc = sid; g.seq = seq; g.live = true; drop_aliases(); return MERGE_START; } // (a new stream)
+    return MERGE_PASS; // (a stream not seen: AOO asks for its /start)
+  }
+  int32_t sid = 0, seq0 = 0, fmt = 0;
+  if (osc_verb(m, n, kAooMsgStart) && osc_int(m, n, 2, sid) && osc_int(m, n, 3, seq0) && osc_int(m, n, 4, fmt)) {
+    if (sid == g.acc) { g.live = true; return MERGE_PASS; }
+    for (int i = 0; i < 4; ++i) if (g.alias[i] == sid) return MERGE_DROP;
+    if (g.acc != 0 && g.live) { g.pend_sid = sid; g.pend.assign(m, m + n); return MERGE_DROP; } // (decided on its first data)
+    g.acc = sid; g.fmt = fmt; g.seq = seq0; g.live = true; drop_aliases(); // (nothing plays: this one)
+    return MERGE_PASS;
+  }
+  if (osc_verb(m, n, kAooMsgStop) && osc_int(m, n, 1, sid)) {
+    if (sid == g.pend_sid) { g.pend_sid = 0; g.pend.clear(); return MERGE_DROP; }
+    for (int i = 0; i < 4; ++i) if (g.alias[i] == sid) { g.alias[i] = 0; return MERGE_DROP; }
+    if (sid != g.acc) return MERGE_PASS;
+    for (int i = 0; i < 4; ++i) if (g.alias[i] && now - g.alias_at[i] < MERGE_STOP) return MERGE_DROP; // (another copy still comes: acc goes on)
+    g.live = false;
+    return MERGE_PASS;
+  }
+  return MERGE_PASS;
+}
+// The merge's answer carried out: a held /start first when it was a new stream, then the message (unless dropped).
+void merge_hand(AooSink *s, Slot::Merge &g, int r, const unsigned char *m, int n, const sockaddr_in &from)
+{
+  if (r == MERGE_START) { s->handleMessage(g.pend.data(), (AooInt32)g.pend.size(), &from, (AooAddrSize)sizeof(from)); g.pend_sid = 0; g.pend.clear(); }
+  if (r != MERGE_DROP) s->handleMessage(m, n, &from, (AooAddrSize)sizeof(from));
+}
+
+// The relay's envelope in the receive thread's buffer: FWD + the sender's address + the AOO message + the tag. -> its size, 0 when too big.
+int fwd_wrap(RtLink *l, unsigned char *buf, const sockaddr_in &who, const unsigned char *m, int n)
+{
+  if (l->key.empty() || n <= 0 || 4 + 6 + n + TAG > MAX_DGRAM) return 0;
+  memcpy(buf, FWD, 4);
+  memcpy(buf + 4, &who.sin_addr.s_addr, 4);
+  memcpy(buf + 8, &who.sin_port, 2);
+  memcpy(buf + 10, m, (size_t)n);
+  unsigned char t[32];
+  tag_of(l->key, buf, 10 + (size_t)n, t);
+  memcpy(buf + 10 + n, t, TAG);
+  return 10 + n + TAG;
+}
+// A sink here answering a sender that comes through the relay (the send thread's, from send_fn): what it says to that sender's source goes
+// to the holder in an envelope (the holder answers a start request from what it kept and drops the rest), never directly. -> what send_fn
+// returns; 0: not one of those.
+int relay_redirect(RtLink *l, const AooByte *data, AooInt32 size, const sockaddr_in &to)
+{
+  if (!l->relay_on || !l->holder) return 0;
+  Slot *x = slot_of(l, to);
+  AooMsgType type;
+  AooId id;
+  AooInt32 off;
+  if (!x || !x->relayed || aoo_parsePattern(data, size, &type, &id, &off) != kAooOk || type != kAooMsgTypeSource) return 0;
+  const int len = fwd_wrap(l, l->txbuf, x->addr, data, size);
+  const int n = len ? send_to(l, l->txbuf, len, l->holder->addr) : -1;
+  if (n > 0) l->sent.fetch_add(1, std::memory_order_relaxed);
+  return n > 0 ? n : -1;
+}
+// The holder: a sender's packet to its own sink here (k: 0 Talk, 1 Play) goes on to every listener that asked for that stream of it,
+// wrapped once (the envelope names no listener) and sent to each. Its Talk only while its own 'F' (its talkback) is fresh here, and not to
+// those it leaves out (receive thread, cfg_mx held). Its last /start is kept by rx_one, holding or not, for listeners that ask later.
+void relay_forward(RtLink *l, Slot &x, int k, const unsigned char *m, int n, double now)
+{
+  if (!fwd_kind(m, n)) return;
+  const int si = slot_index(l, &x);
+  if (si < 0) return;
+  const bool talk_ok = k != 0 || now - x.fwd_asked.load(std::memory_order_relaxed) < MODE_FRESH;
+  const unsigned deny = x.rdeny_bits.load(std::memory_order_relaxed);
+  int len = 0;
+  for (int j = 0; j < l->nslots; ++j) {
+    Slot &L = *l->slots[j];
+    if (&L == &x || !L.resolved || !talk_ok || (k == 0 && (deny >> j & 1u)) || now - L.fwd_asked.load(std::memory_order_relaxed) >= MODE_FRESH ||
+        !(L.fwd_bits[k].load(std::memory_order_relaxed) >> si & 1u))
+      continue;
+    if (!len && !(len = fwd_wrap(l, l->fwdbuf, x.addr, m, n))) return;
+    if (send_to(l, l->fwdbuf, len, L.addr) > 0) { l->fwd_n.fetch_add(1, std::memory_order_relaxed); l->fwd_bytes.fetch_add(len, std::memory_order_relaxed); }
+  }
+}
+// A sender's kept /start to one listener (when it first asks for that stream, or its sink asks: receive thread, cfg_mx held).
+void relay_start_to(RtLink *l, Slot &x, int k, Slot &L)
+{
+  const std::vector<unsigned char> &s = x.start_msg[k];
+  const int len = s.empty() ? 0 : fwd_wrap(l, l->fwdbuf, x.addr, s.data(), (int)s.size());
+  if (len && send_to(l, l->fwdbuf, len, L.addr) > 0) l->fwd_n.fetch_add(1, std::memory_order_relaxed);
+}
+// 'F' from a listener (receive thread, cfg_mx held): n, n x (address + bits: 1 Talk, 2 Play), m, m x address (whom its own Talk leaves out).
+void relay_ctl_f(RtLink *l, Slot &L, const unsigned char *d, int n, double now)
+{
+  if (n < 2 || d[0] > RT_MAX_PEERS || n < 1 + d[0] * 7 + 1) return;
+  const int nw = d[0], nd = d[1 + nw * 7];
+  if (nd > RT_MAX_PEERS || n != 1 + nw * 7 + 1 + nd * 6) return;
+  unsigned t = 0, p = 0, deny = 0;
+  bool me = false;
+  for (int i = 0; i < nw; ++i) {
+    sockaddr_in a;
+    get_addr(d + 1 + i * 7, a);
+    for (int j = 0; j < l->nslots; ++j)
+      if (l->slots[j]->resolved && same_addr(l->slots[j]->addr, a)) { if (d[1 + i * 7 + 6] & 1) t |= 1u << j; if (d[1 + i * 7 + 6] & 2) p |= 1u << j; }
+  }
+  for (int i = 0; i < nd; ++i) {
+    sockaddr_in a;
+    get_addr(d + 1 + nw * 7 + 1 + i * 6, a);
+    me = me || same_addr(a, l->me);
+    for (int j = 0; j < l->nslots; ++j) if (l->slots[j]->resolved && same_addr(l->slots[j]->addr, a)) deny |= 1u << j;
+  }
+  const bool was = now - L.fwd_asked.load() < MODE_FRESH;
+  const unsigned t0 = was ? L.fwd_bits[0].load() : 0u, p0 = was ? L.fwd_bits[1].load() : 0u;
+  L.fwd_bits[0].store(t); L.fwd_bits[1].store(p);
+  L.rdeny_bits.store(deny);
+  L.deny_me.store(me);
+  L.fwd_asked.store(now);
+  if (!l->hold_flag.load()) return;
+  for (int j = 0; j < l->nslots; ++j) { // (a stream it asks for now and didn't before: its /start first, so it plays at once)
+    if ((t & ~t0) >> j & 1u) relay_start_to(l, *l->slots[j], 0, L);
+    if ((p & ~p0) >> j & 1u) relay_start_to(l, *l->slots[j], 1, L);
+  }
+}
+// 'L' (receive thread): term (u32), ttl ms (u16), flags (1: handing over), [the next holder's address].
+void relay_ctl_l(RtLink *l, Slot &h, const unsigned char *d, int n, double now)
+{
+  if (n != 7 && n != 13) return;
+  unsigned term;
+  unsigned short ttl;
+  memcpy(&term, d, 4);
+  memcpy(&ttl, d + 4, 2);
+  const bool hand = (d[6] & 1) != 0 && n == 13;
+  h.l_term.store(term);
+  h.l_ttl.store(hand ? 0.f : std::min(10.f, ttl / 1000.f)); // (handed over: its lease ends now)
+  h.l_at.store(now);
+  if (hand) { sockaddr_in a; get_addr(d + 7, a); if (same_addr(a, l->me)) { l->hand_from.store(akey(h.addr)); l->hand_to_me.store(true); } }
+  wake_up(l);
+}
+// A forwarded datagram (FWD): to this computer as a listener (its inner message is for a sink here: the sender's copy, through the relay
+// it follows), or to it as the holder (for a source: a listener's sink asking for a sender's /start, answered from what's kept; the rest is
+// dropped, so nothing is resent through the relay). Tagged with the studio's key, from a peer on the list.
+void relay_rx(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
+{
+  std::lock_guard<std::mutex> g(l->cfg_mx);
+  if (l->key.empty()) { reject(l, "no studio secret here yet", from); return; }
+  unsigned char t[32];
+  tag_of(l->key, d, (size_t)n - TAG, t);
+  if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
+  Slot *r = slot_of(l, from);
+  if (!r) { not_here(l, from); return; }
+  r->rx_at.store(now_s(), std::memory_order_relaxed);
+  sockaddr_in who;
+  get_addr(d + 4, who);
+  Slot *x = slot_of(l, who);
+  const unsigned char *msg = d + 10;
+  const AooInt32 size = n - 10 - TAG;
+  AooMsgType type;
+  AooId id;
+  AooInt32 off = 0;
+  if (!x || x == r || aoo_parsePattern(msg, size, &type, &id, &off) != kAooOk) { l->fwd_refused.fetch_add(1, std::memory_order_relaxed); return; }
+  const double now = now_s();
+  if (type == kAooMsgTypeSource) { // (to me as the holder: a listener's sink for x asks for x's /start)
+    if (!l->hold_flag.load() || is_bin(msg, size) || !osc_verb(msg, size, kAooMsgStart) || (id != SRC_ID && id != PLAY_ID)) return;
+    relay_start_to(l, *x, id == SRC_ID ? 0 : 1, *r);
+    return;
+  }
+  // (to me as a listener: only from the holder I follow, and only for x's Talk or Play sink here)
+  if (type != kAooMsgTypeSink || !l->relay_flag.load() || akey(from) != l->holder_key.load() || (id != x->sink_id && id != x->psink_id)) {
+    l->fwd_refused.fetch_add(1, std::memory_order_relaxed);
+    return;
+  }
+  const int k = id == x->sink_id ? 0 : 1;
+  AooSink *s = k == 0 ? x->sink : x->psink;
+  if (!s) return;
+  unsigned char copy[MAX_DGRAM];
+  memcpy(copy, msg, (size_t)size);
+  l->fwd_in.fetch_add(1, std::memory_order_relaxed);
+  if (now - x->fwd_at.exchange(now) > FWD_GAP) x->fwd_first.store(now);
+  const int mr = relay_merge(x->mg[k], copy, size, off, now);
+  if (mr == MERGE_DROP) return;
+  const double gap = now - x->arr_at[k].exchange(now, std::memory_order_relaxed); // (the level's newest packet, as rx_one's came)
+  if (gap < PAUSE_S && gap > x->gapmax[k].load(std::memory_order_relaxed)) x->gapmax[k].store(gap, std::memory_order_relaxed);
+  merge_hand(s, x->mg[k], mr, copy, size, x->addr);
+  wake_up(l);
+}
+
+void lease_tick(RtLink *l, double now);
+void relay_watch(RtLink *l, double now);
+// rt_relay's settings taken up (the send thread's, each pass), then the lease and the listener's and holder's parts. A relay turned on or
+// off: its merges start again (cfg_mx: the receive thread's), the lease waits LEASE_WAIT for any already held to be heard.
+void relay_apply(RtLink *l, double now)
+{
+  bool dirty, on = false, all = false;
+  std::vector<std::string> order;
+  {
+    std::lock_guard<std::mutex> g(l->pend_mx);
+    dirty = l->rdirty;
+    l->rdirty = false;
+    if (dirty) { on = l->want_relay; all = l->want_rall; order = l->want_rorder; }
+  }
+  if (dirty) {
+    if (on != l->relay_on) {
+      l->relay_on = on;
+      l->relay_since = now;
+      l->lease_end = -1e9;
+      std::lock_guard<std::mutex> c(l->cfg_mx);
+      for (int i = 0; i < l->nslots; ++i) { l->slots[i]->mg[0] = Slot::Merge(); l->slots[i]->mg[1] = Slot::Merge(); }
+      l->relay_flag.store(on);
+    }
+    l->relay_all = all;
+    l->rall_flag.store(all);
+    l->rorder.swap(order);
+  }
+  lease_tick(l, now);
+  relay_watch(l, now);
+}
+// The lease (the send thread's, each pass; docs/rt/rt-audio4.md 3.4). The holder says 'L' to everyone every LEASE_EVERY, good for
+// LEASE_TTL. With none valid here, the computer ranked r among those it hears in its order claims r x LEASE_STEP after the last one ran
+// out (term + 1). A higher term wins, equal terms the lower address: the same answer on every computer, whatever its order. Only the holder
+// moves the role: to one ranked before it, heard for LEASE_HANDBACK.
+void lease_say(RtLink *l, const Slot *next)
+{
+  unsigned char b[13];
+  const unsigned short ttl = (unsigned short)(LEASE_TTL * 1000);
+  memcpy(b, &l->my_term, 4);
+  memcpy(b + 4, &ttl, 2);
+  b[6] = next ? 1 : 0;
+  if (next) { memcpy(b + 7, &next->addr.sin_addr.s_addr, 4); memcpy(b + 11, &next->addr.sin_port, 2); }
+  for (int i = 0; i < l->nslots; ++i) if (l->slots[i]->resolved) send_ctl(l, *l->slots[i], 'L', b, next ? 13 : 7);
+}
+Slot *slot_named(RtLink *l, const std::string &peer) { for (int i = 0; i < l->nslots; ++i) if (l->slots[i]->resolved && l->slots[i]->peer == peer) return l->slots[i].get(); return nullptr; }
+void lease_tick(RtLink *l, double now)
+{
+  l->holder = nullptr;
+  if (!l->relay_on) {
+    if (l->holding) { l->holding = false; l->hold_flag.store(false); }
+    l->holder_key.store(0);
+    return;
+  }
+  for (int i = 0; i < l->nslots; ++i) { Slot &p = *l->slots[i]; p.alive_since = now - p.rx_at.load() < ALIVE_S ? (p.alive_since > 0 ? p.alive_since : now) : 0; }
+  Slot *best = nullptr;
+  unsigned bt = 0;
+  for (int i = 0; i < l->nslots; ++i) {
+    Slot &p = *l->slots[i];
+    const double until = p.l_at.load() + p.l_ttl.load();
+    if (!p.resolved || p.l_at.load() < l->relay_since) continue;
+    l->max_term = std::max(l->max_term, p.l_term.load());
+    l->lease_end = std::max(l->lease_end, until);
+    if (now >= until) continue;
+    const unsigned t = p.l_term.load();
+    if (!best || t > bt || (t == bt && akey(p.addr) < akey(best->addr))) { best = &p; bt = t; }
+  }
+  const unsigned long long me = akey(l->me);
+  if (l->holding && best && (bt > l->my_term || (bt == l->my_term && akey(best->addr) < me))) { l->holding = false; ++l->yields; } // (a winning lease)
+  if (!l->holding) {
+    bool claim = l->hand_to_me.exchange(false) && !best; // (handed to me)
+    if (claim) { l->handed_from = l->hand_from.load(); l->handed_at = now; }
+    if (!best && !claim) { // (none valid: my turn by rank among those I hear, after the last lease ran out)
+      int r = -1, n = 0;
+      for (const std::string &e : l->rorder) {
+        if (e.empty()) { r = n; break; }
+        if (Slot *p = slot_named(l, e)) n += p->alive_since > 0 ? 1 : 0;
+      }
+      claim = r >= 0 && now >= std::max(l->lease_end, l->relay_since + LEASE_WAIT) + r * LEASE_STEP;
+    }
+    if (claim) { l->my_term = ++l->max_term; l->holding = true; l->held_since = now; l->next_lease = 0; ++l->claims; best = nullptr; }
+  }
+  if (l->holding) {
+    Slot *pref = nullptr; // (the first in my order before me that has been heard LEASE_HANDBACK s)
+    for (const std::string &e : l->rorder) {
+      if (e.empty()) break;
+      Slot *p = slot_named(l, e);
+      if (p && p->alive_since > 0 && now - p->alive_since >= LEASE_HANDBACK && !(akey(p->addr) == l->handed_from && now - l->handed_at < LEASE_BACK)) { pref = p; break; }
+    }
+    if (pref && now - l->held_since >= LEASE_HANDBACK) { lease_say(l, pref); l->holding = false; l->lease_end = now; ++l->handovers; }
+    else if (now >= l->next_lease) { lease_say(l, nullptr); l->next_lease = now + LEASE_EVERY; }
+  }
+  l->hold_flag.store(l->holding);
+  l->term_now.store(l->holding ? l->my_term : best ? bt : 0u);
+  l->holder = l->holding ? nullptr : best;
+  l->holder_key.store(l->holding ? me : best ? akey(best->addr) : 0);
+}
+// A listener's part (the send thread's, each pass): who comes through the relay, what to ask it ('F': also with nothing relayed, for this
+// computer's talkback), and 'M' to each sender (1: don't send to me directly) only where everything goes through the relay and that
+// sender's forwarded copy has flowed ENTER_S without a gap past the rescue line. A relay that pauses: 'M' 0 at once, the senders send
+// directly again, the two copies overlap harmlessly (relay_merge) until it's steady again. The holder's part: 'H' to its listeners.
+void relay_watch(RtLink *l, double now)
+{
+  Slot *h = l->holder;
+  std::vector<sockaddr_in> heard;
+  bool heard_ever = false;
+  if (h) { std::lock_guard<std::mutex> g(l->mix_mx); heard = h->heard; heard_ever = h->heard_ever; }
+  for (int i = 0; i < l->nslots; ++i) {
+    Slot &x = *l->slots[i];
+    bool in = false;
+    for (size_t k = 0; heard_ever && k < heard.size() && !in; ++k) in = same_addr(heard[k], x.addr);
+    x.relayed = l->relay_on && h && &x != h && x.resolved && in && (l->relay_all || now - x.rx_at.load() > DIRECT_STALE);
+  }
+  if (l->relay_on && h) { // ('F')
+    std::vector<unsigned char> f(1, 0);
+    for (int i = 0; i < l->nslots; ++i) {
+      const Slot &x = *l->slots[i];
+      if (!x.relayed) continue;
+      const bool m = x.mute.load();
+      put_addr(f, x.addr);
+      f.push_back((unsigned char)((!m && x.gain.load() > 0 ? 1 : 0) | (!m && x.pgain.load() > 0 ? 2 : 0)));
+      ++f[0];
+    }
+    const size_t nd = f.size();
+    f.push_back(0);
+    for (int i = 0; i < l->nslots; ++i) if (!l->slots[i]->want_send.load()) { put_addr(f, l->slots[i]->addr); ++f[nd]; }
+    const std::string sig(f.begin(), f.end());
+    if (now >= l->next_fctl || sig != l->fsig) { send_ctl(l, *h, 'F', f.data(), (int)f.size()); l->next_fctl = now + MODE_EVERY; l->fsig = sig; }
+  }
+  const bool again = now >= l->next_m;
+  if (again) l->next_m = now + MODE_EVERY;
+  for (int i = 0; i < l->nslots; ++i) { // ('M': said every MODE_EVERY while 1, once when it goes back to 0)
+    Slot &x = *l->slots[i];
+    const double line = std::max(FWD_GAP, (x.target_ms - RESCUE_LEAD) / 1000.0);
+    const bool m = l->relay_on && l->relay_all && x.relayed && now - x.fwd_first.load() >= ENTER_S && now - x.fwd_at.load() < line;
+    if (m != x.msaid || (m && again)) { const unsigned char v = m ? 1 : 0; send_ctl(l, x, 'M', &v, 1); x.msaid = m; for (int j = 0; j < l->nslots; ++j) l->slots[j]->switch_at = now; }
+  }
+  if (l->holding && now >= l->next_rh) { // ('H' to those that ask: whom this computer hears now, so each asks only for them)
+    l->next_rh = now + MODE_EVERY;
+    std::vector<unsigned char> hd(1, 0);
+    for (int i = 0; i < l->nslots; ++i) if (l->slots[i]->streaming || l->slots[i]->pstreaming) { put_addr(hd, l->slots[i]->addr); ++hd[0]; }
+    for (int i = 0; i < l->nslots; ++i) if (now - l->slots[i]->fwd_asked.load() < MODE_FRESH) send_ctl(l, *l->slots[i], 'H', hd.data(), (int)hd.size());
+  }
+  if (now - l->fwd_win >= 1.0) { // (what it forwards, the last second)
+    const long long nn = l->fwd_n.load(), bb = l->fwd_bytes.load();
+    std::lock_guard<std::mutex> st(l->stats_mx);
+    const double dt = l->fwd_win > 0 ? now - l->fwd_win : 0;
+    l->fwd_pps = dt > 0 ? (nn - l->fwd_n0) / dt : 0;
+    l->fwd_kbps = dt > 0 ? (bb - l->fwd_b0) * 8 / dt / 1000 : 0;
+    l->fwd_n0 = nn; l->fwd_b0 = bb; l->fwd_win = now;
+  }
+}
+
 // One datagram from a peer: from the socket (rx_loop) or opened by the connection without Tailscale (rt_nat_rx, libjuice's thread). The
 // AOO calls happen under cfg_mx either way, so the two never run them at once.
 // The mix's widest spacing lately (GAP_SPAN), the rescue line's floor. The part of a gap this computer's own stall covers (the send thread's
@@ -1705,6 +2179,7 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     handle_ctl(l, *p, d + 4, n - 4 - TAG, now_s());
     return;
   }
+  if (n >= 10 + 4 + TAG && memcmp(d, FWD, 4) == 0) { relay_rx(l, d, n, from); return; } // (the relay: rt-audio4)
   if (n < 4 + TAG + 4 || memcmp(d, MAGIC, 4) != 0) { reject(l, "not StudioSync audio", from); return; }
   const AooByte *msg = d + 4;
   const AooInt32 size = n - 4 - TAG;
@@ -1728,8 +2203,20 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
       const double t = now_s(), gap = t - p->arr_at[k].exchange(t, std::memory_order_relaxed);
       if (gap < PAUSE_S && gap > p->gapmax[k].load(std::memory_order_relaxed)) p->gapmax[k].store(gap, std::memory_order_relaxed);
     };
-    if (type == kAooMsgTypeSink && id == p->sink_id && p->sink) { came(0); p->sink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from)); }
-    else if (type == kAooMsgTypeSink && id == p->psink_id && p->psink) { came(1); p->psink->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from)); }
+    // (Talk or Play from it to its sink here. With the relay on, its direct copy goes through the merge first (relay_merge: the same
+    // stream whichever way it comes), and as the holder it then goes on to the listeners that asked for it: rt-audio4)
+    const int k = type != kAooMsgTypeSink ? -1 : id == p->sink_id && p->sink ? 0 : id == p->psink_id && p->psink ? 1 : -1;
+    if (k >= 0) {
+      came(k);
+      AooSink *s = k == 0 ? p->sink : p->psink;
+      if (!is_bin(msg, size) && osc_verb(msg, size, kAooMsgStart)) p->start_msg[k].assign(msg, msg + size); // (kept: a relay later sends it to a listener that asks)
+      if (l->relay_flag.load(std::memory_order_relaxed)) {
+        unsigned char copy[MAX_DGRAM];
+        memcpy(copy, msg, (size_t)size);
+        merge_hand(s, p->mg[k], relay_merge(p->mg[k], copy, size, onset, now_s()), copy, size, from);
+        if (l->hold_flag.load(std::memory_order_relaxed)) relay_forward(l, *p, k, msg, size, now_s());
+      } else s->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
+    }
     else if (type == kAooMsgTypeSource && id == SRC_ID && l->src) l->src->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSource && id == PLAY_ID && l->psrc) l->psrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else if (type == kAooMsgTypeSink && id == p->msink_id && p->msink) { // (my hub's mix for me: when it last came, and since when unbroken)
@@ -2111,6 +2598,60 @@ int rt_hub(RtLink *l, const char *peer, int serve)
   wake_up(l);
   return 1;
 }
+// {"on":1,"all":0,"order":["name:port",...,""]} (rtaudio.h). Only those keys; anything else, or anything malformed, does nothing (-1).
+int rt_relay(RtLink *l, const char *json)
+{
+  if (!l || !json) return -1;
+  const std::string j = json;
+  bool on = false, all = false;
+  std::vector<std::string> order;
+  size_t i = 0;
+  json_ws(j, i);
+  if (i >= j.size() || j[i++] != '{') return -1;
+  for (;;) {
+    json_ws(j, i);
+    if (i < j.size() && j[i] == '}') break;
+    std::string key, s;
+    if (!json_str_at(j, i, key)) return -1;
+    json_ws(j, i);
+    if (i >= j.size() || j[i++] != ':') return -1;
+    json_ws(j, i);
+    if (i >= j.size()) return -1;
+    if (j[i] == '[') {
+      ++i;
+      for (;;) {
+        json_ws(j, i);
+        if (i < j.size() && j[i] == ']') { ++i; break; }
+        if (!json_str_at(j, i, s)) return -1;
+        if (key == "order" && order.size() <= RT_MAX_PEERS) order.push_back(s);
+        json_ws(j, i);
+        if (i < j.size() && j[i] == ',') ++i;
+      }
+    } else if (j[i] == '"') {
+      if (!json_str_at(j, i, s)) return -1;
+    } else { // (a number, true or false)
+      const size_t e = j.find_first_of(",}", i);
+      if (e == std::string::npos) return -1;
+      std::string v = j.substr(i, e - i);
+      while (!v.empty() && isspace((unsigned char)v.back())) v.pop_back();
+      const bool yes = v == "true" || atoi(v.c_str()) != 0;
+      if (key == "on") on = yes;
+      else if (key == "all") all = yes;
+      i = e;
+    }
+    json_ws(j, i);
+    if (i < j.size() && j[i] == ',') { ++i; continue; }
+    if (i < j.size() && j[i] == '}') break;
+    return -1;
+  }
+  std::lock_guard<std::mutex> g(l->pend_mx);
+  l->want_relay = on;
+  l->want_rall = all;
+  l->want_rorder = order;
+  l->rdirty = true;
+  wake_up(l);
+  return on ? 1 : 0;
+}
 void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 1000.0); }
 void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
 void rt_test_hold_mix(RtLink *l, double ms) { l->hold_mix.store(now_s() + ms / 1000.0); }
@@ -2219,6 +2760,22 @@ std::string rt_status(RtLink *l)
     o.insert(o.size() - 9, hj + ","); // (before "peers":{, as Play's)
     l->hub_max_us = 0;
   }
+  { // (the relay, rt-audio4: on, everything through it, who holds the lease (its peer name as the list gave it, "me" or "") and its term, this computer's
+    // claims, yields and handovers, how many senders come here through it, how many listeners ask this computer (as the holder), what it
+    // forwarded the last second, the forwarded copies taken in here and those refused)
+    const unsigned long long hk = l->holder_key.load();
+    std::string hn;
+    if (l->hold_flag.load()) hn = "me";
+    else for (int i = 0; i < l->nslots; ++i) if (hk && l->slots[i]->resolved && akey(l->slots[i]->addr) == hk) hn = l->slots[i]->peer;
+    int relayed = 0, asking = 0;
+    for (int i = 0; i < l->nslots; ++i) { relayed += l->slots[i]->relayed.load() ? 1 : 0; asking += now - l->slots[i]->fwd_asked.load() < MODE_FRESH ? 1 : 0; }
+    std::string rj = "\"relay\":{\"holder\":";
+    json_str(rj, hn);
+    snprintf(b, sizeof(b), ",\"on\":%s,\"all\":%s,\"term\":%u,\"claims\":%lld,\"yields\":%lld,\"handovers\":%lld,\"relayed\":%d,\"asking\":%d,\"fwd_pps\":%.0f,\"fwd_kbps\":%.0f,\"fwd_in\":%lld,\"fwd_refused\":%lld},",
+             l->relay_flag.load() ? "true" : "false", l->rall_flag.load() ? "true" : "false", l->term_now.load(), l->claims.load(), l->yields.load(), l->handovers.load(),
+             relayed, l->hold_flag.load() ? asking : 0, l->fwd_pps, l->fwd_kbps, l->fwd_in.load(), l->fwd_refused.load());
+    o.insert(o.size() - 9, rj + b);
+  }
   for (int i = 0; i < l->nslots; ++i) {
     Slot &p = *l->slots[i];
     if (i) o += ',';
@@ -2239,6 +2796,8 @@ std::string rt_status(RtLink *l)
     snprintf(b, sizeof(b), ",\"fill_ms\":%.1f,\"jitter\":%lld,\"switched\":%lld,\"trims\":%lld,\"lone\":%lld", p.fill_ms, p.jitter + p.pjitter + p.mjitter, p.switched, p.trims, p.lone);
     o.insert(o.size() - 1, b);
     snprintf(b, sizeof(b), ",\"heard_ago\":%.2f", std::min(1e6, now - p.rx_at.load(std::memory_order_relaxed))); // (its last tagged datagram: it lists this computer. rt-roomlist)
+    o.insert(o.size() - 1, b);
+    snprintf(b, sizeof(b), ",\"relayed\":%s,\"fwd_ago\":%.2f", p.relayed.load() ? "true" : "false", std::min(1e6, now - p.fwd_at.load())); // (it comes through the relay; its newest forwarded copy. rt-audio4)
     o.insert(o.size() - 1, b);
     // (overruns: AOO's resets of Talk's buffer for a burst that didn't fit (CAP_HEAD). Play's own: its underruns, overruns, resyncs (both: each a
     // re-buffer, a gap), trims (sheds), its buffer as measured and its latency from that (half the round trip + that buffer + AOO's codec and
@@ -2420,7 +2979,8 @@ void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
       float *to = rec ? rec + (size_t)i * 4 * len : nullptr;
       const float d0 = p.dw, d1 = p.in_mix.load(std::memory_order_relaxed) ? 1 - w1 : 1.f; // (one the hub's mix hasn't: its own streams, always)
       p.dw = d1;
-      hear(p, p.sink, p.mono, p.peak, p.was_quiet, m ? 0.f : p.gain.load(std::memory_order_relaxed), d0, d1, to, p.shed[0], 2);
+      const bool denied = p.deny_me.load(std::memory_order_relaxed) && l->hold_flag.load(std::memory_order_relaxed); // (its talkback leaves this relay out: forwarded, not heard. rt-audio4)
+      hear(p, p.sink, p.mono, p.peak, p.was_quiet, m || denied ? 0.f : p.gain.load(std::memory_order_relaxed), d0, d1, to, p.shed[0], 2);
       hear(p, p.psink, p.pmono, p.ppeak, p.pwas_quiet, m ? 0.f : p.pgain.load(std::memory_order_relaxed), d0, d1, to ? to + 2 * len : nullptr, p.shed[1], 3);
     }
     if (hp) { // (my hub's mix, already at my levels: decoded while asked for, so it's ready the moment it's heard)
@@ -2538,6 +3098,8 @@ static void *vla_out_pair(void **a, int n) { return n < 1 ? nullptr : (void *)(I
 static int api_ears(const char *peer, const char *stream, const char *path, double secs) { return g_rt ? rt_ears(g_rt, peer, stream, path, secs) : 0; }
 static void *vla_ears(void **a, int n) { return n < 4 || !a[3] ? nullptr : (void *)(INT_PTR)api_ears((const char *)a[0], (const char *)a[1], (const char *)a[2], *(double *)a[3]); } // (a double comes as a pointer)
 static void *vla_hub(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_hub((const char *)a[0], (int)(INT_PTR)a[1]); }
+static int api_relay(const char *json) { return g_rt ? rt_relay(g_rt, json) : -1; } // (rt-audio4)
+static void *vla_relay(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_relay((const char *)a[0]); }
 
 void rtaudio_shutdown()
 {
@@ -2575,6 +3137,8 @@ void rtaudio_register(reaper_plugin_info_t *rec)
       "int\0const char*,const char*,const char*,double\0peer,stream,path,seconds\0The ears tap (tools/ears, docs/rt/rt-p11.md): writes what this computer actually hears of a bandmate's stream to path, a 32-bit float stereo WAV (path must end .wav; seconds 0-60): peer (in the list) and stream \"talk\", \"play\" or \"hub\" (its live mix for this computer), as decoded and before any level; or peer \"\" and stream \"play\" for this computer's own Play as it goes out (after Mute me). One at a time, while live audio runs. StudioSync_LiveAudioStatus's ears says what, state (writing/done/failed), frames, lost and first_age_s (StudioSync_DirectNow() less it: when its first frame was heard, on the link clock). Returns 1 when started." },
     { "StudioSync_LiveAudioHub", (void *)api_hub, (void *)vla_hub,
       "int\0const char*,int\0peer,serve\0The hub's live mix: peer (in the list) mixes for this computer, which then sends its streams to it alone and hears the one stream it mixes at this computer's own levels, back to everyone's own streams at once when that mix stops; \"\": peer to peer. serve 1: this computer mixes for every listener that asks. StudioSync_LiveAudioStatus's hub (peer, state direct/joining/hub, serve, serving, load, max_us, skipped, fallbacks, join_fails (asks no mix answered in 5 s: asked again 10 s later), latency_ms, in_ms, direct_ms, hub_load) and per peer via_hub (heard in the hub's mix; one the hub doesn't hear is heard directly), direct say how it goes. Returns 1." },
+    { "StudioSync_LiveAudioRelay", (void *)api_relay, (void *)vla_relay,
+      "int\0const char*\0json\0The relay (docs/rt/rt-audio4.md), in place of the hub's mix: the hub forwards each bandmate's packets and every listener mixes them itself; the role is a lease one computer holds and renews. json: {\"on\":1,\"all\":1,\"order\":[\"name:port\",...,\"\"]}: on 0 turns it off; all 1: everyone hears everyone through it, 0: it carries only bandmates a listener gets nothing from directly; order: who should hold it, first to last (\"\" is this computer). Only when every computer in the room has it. StudioSync_LiveAudioStatus's relay (holder, on, all, term, claims, yields, handovers, relayed, asking, fwd_pps, fwd_kbps, fwd_in, fwd_refused) and per peer relayed, fwd_ago say how it goes. Returns 1 on, 0 off, -1 when the JSON isn't that." },
   };
   char key[96];
   for (const auto &f : fns) {
