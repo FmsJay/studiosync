@@ -227,12 +227,14 @@ ok(await ev('!!window.ssDaw && !!window.ssDaw.head && window.ssDaw.head.tracks.l
   ok((await text('.esel')).includes('Bass'), 'selected in View');
   await key('Delete', 'Delete', 46);
   ok(edits().length === n, 'and nothing is sent then');
-  // an edit keeps it awake
+  // an edit keeps it awake: 4 s idle, an edit 2.5 s after Edit, looked at 3 s after that (5.5 s after Edit: past the idle and its 1 s check)
+  await ev('window.ssDaw.EDIT_IDLE_MS = 4000; 1');
   await ev('document.querySelector(".song .dmode .dme").click(); 1');
-  await sleep(900);
-  await click(x, y);
+  await sleep(2500);
+  const n2 = edits().length;
   await key('Delete', 'Delete', 46);
-  await sleep(900);
+  ok(edits().length === n2 + 1 && edits()[n2].edit.edit === true, 'an edit goes, with the flag');
+  await sleep(3000);
   ok(await editing(), 'an edit restarts the idle time');
   await ev('window.ssDaw.EDIT_IDLE_MS = 5 * 60 * 1000; 1');
   // leaving the Project tab and coming back
