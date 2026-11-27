@@ -5,9 +5,11 @@
 --            selection go there (their own selection back when they stop following); a scroll or zoom of theirs pauses it, with Resume on the
 --            panel's Following and the web Play page. The status file's view and cursor stay the fallback (presence.follow) for a bandmate the
 --            link doesn't reach.
---   editing  what you're editing right now: the item in the MIDI editor, the track or take whose plug-in window has focus (an editor left open
---            counts for IDLE s after it opened or you last changed something), or what's selected while a change is in progress (the project
---            changed in the last CHANGED s, or the mouse is held down: a drag). Everyone shows "<name> is editing" on it within ~100 ms: a
+--   editing  what you're editing right now: the item in the MIDI editor, the track or take whose plug-in window has focus (an editor counts
+--            for IDLE s after you last changed something: opening it or moving its window isn't an edit), or what's selected while a change is
+--            in progress (the project changed in the last CHANGED s, or the mouse is held down after pressing on the arrange or a track's
+--            panel: a drag. A window moved or resized isn't one: James, findings 2026-11-27, rt-guard). Everyone shows "<name> is editing"
+--            on it within ~100 ms: a
 --            "[editing: <name>]" region over an item (any colour setting), the track tinted like an edit hold (lib/people.lua, Colour parity
 --            off), a line on their card in the panel and on the web Project page. Shown only: it never reaches sync.authority or
 --            presence.holder, so it blocks nobody; claims and edit holds do what they did. (James, rt)
@@ -62,11 +64,24 @@ end
 -- What you're editing, from what's looked at: s = { editor = { o, w } or nil, editor_age (s since it opened), changed_ago (s since your last
 -- change), held (s the mouse has been down), items, tracks (selected oids) }. -> "editor" | "items" | "tracks", the oids; or nil.
 function follow.claim_of(s)
-  if s.editor and s.editor.o ~= "" and math.min(s.editor_age, s.changed_ago) < follow.IDLE then return "editor", { s.editor.o } end
+  -- (not since it opened: a plug-in window opened and moved about read as "is editing" for two minutes. rt-guard)
+  if s.editor and s.editor.o ~= "" and s.changed_ago < follow.IDLE then return "editor", { s.editor.o } end
   if s.changed_ago < follow.CHANGED or s.held >= follow.HELD then
     if #s.items > 0 then return "items", s.items end
     if #s.tracks > 0 then return "tracks", s.tracks end
   end
+end
+-- Does a press on this spot (GetThingFromPoint's words) start a drag of what's selected? The arrange view or a track's panel only: a window's
+-- title bar or edge, a docker's splitter, another program's window aren't editing (JS_Mouse_GetState is the whole screen's). Pure. rt-guard
+function follow.drag_spot(info)
+  return type(info) == "string" and (info == "arrange" or info:match("^[tm]cp") ~= nil)
+end
+-- Is the mouse on such a spot now? (false where REAPER can't say: GetThingFromPoint is REAPER 6.24 on)
+function follow.down_on_project()
+  if not (reaper.GetMousePosition and reaper.GetThingFromPoint) then return false end
+  local x, y = reaper.GetMousePosition()
+  local _, info = reaper.GetThingFromPoint(x, y)
+  return follow.drag_spot(info)
 end
 -- The editing regions wanted: edits = user -> { o }, span(oid) -> pos, len (nil: no such item here). -> sorted { "name|pos|end" }, and the
 -- regions themselves { { user, pos, rend } }.
@@ -221,8 +236,9 @@ local function send_editing(proj, cfg, b, now, changed_at)
   local efp = ed and ed.o or ""
   if efp ~= S.editor_fp then S.editor_fp, S.editor_at = efp, now end
   local down = reaper.JS_Mouse_GetState ~= nil and reaper.JS_Mouse_GetState(1) & 1 == 1
+  if down and not S.held_since then S.held_on = follow.down_on_project() end -- (where it was pressed: a window moved isn't a drag. rt-guard)
   S.held_since = down and (S.held_since or now) or nil
-  local changed_ago, held = now - (changed_at or -math.huge), S.held_since and now - S.held_since or 0
+  local changed_ago, held = now - (changed_at or -math.huge), S.held_since and S.held_on and now - S.held_since or 0
   local tr, it = {}, {}
   if changed_ago < follow.CHANGED or held >= follow.HELD then tr, it = selection(proj) end -- (only when it could count)
   local kind, oids = follow.claim_of({ editor = ed, editor_age = now - S.editor_at, changed_ago = changed_ago, held = held, items = it, tracks = tr })

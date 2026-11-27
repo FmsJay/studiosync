@@ -2985,9 +2985,10 @@ end
 -- through this look as any change of yours. The only place "hold" is read (tests/test_0_60_rt_nohold.lua checks). And a colour look REAPER
 -- stopped during is put back, nothing sent (lib/colours.lua). rt-nohold
 mirror.opened = {} -- tostring(proj) -> the master track it was opened with (a test forgets one to open it again)
+-- -> true on a new opening: this script's first look at the project, or a file opened again in its tab (rt-guard, mirror.watch)
 function mirror.on_open(proj)
   local key, master = tostring(proj), reaper.GetMasterTrack(proj) or false
-  if mirror.opened[key] == master then return end
+  if mirror.opened[key] == master then return false end
   mirror.opened[key] = master
   local B = require("band")
   if select(2, reaper.GetProjExtState(proj, B.SECTION, "hold")) ~= "" then
@@ -2996,6 +2997,7 @@ function mirror.on_open(proj)
   end
   local ok, err = pcall(require("colours").put_back_stale, proj)
   if not ok then B.log("colours: " .. tostring(err)) end
+  return true
 end
 function mirror.drop_stash(proj)
   local path = stash_path(idc[proj])
@@ -6128,6 +6130,13 @@ function W.prints(w)
     prints.end_look()
   end
 end
+mirror.gone_why = mirror.gone_why or {} -- tostring(proj) .. oid -> "user" (a deletion of this person's) or "not": W.gone's judgement, until seen again
+mirror.empty_since = mirror.empty_since or {} -- tostring(proj) -> when a look first found it with no tracks and the studio's records (W.gone)
+mirror.EMPTY_SECS = 10 -- seconds an emptied project is left as it is before the studio's tracks are put back (W.gone, rt-guard)
+mirror.guard_said = mirror.guard_said or {}
+function mirror.guard_say(pk, now, text) -- (once a minute a project at most: a put-back that waits would say it every pass)
+  if now - (mirror.guard_said[pk] or -math.huge) >= 60 then mirror.guard_said[pk] = now; require("band").log(text) end
+end
 function W.gone(w)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
   local room_dir, media, objs, by_oid, holds, playing = w.room_dir, w.media, w.objs, w.by_oid, w.holds, w.playing
@@ -6173,7 +6182,34 @@ function W.gone(w)
     if gone_rank(a) ~= gone_rank(b) then return gone_rank(a) < gone_rank(b) end
     return a.oid < b.oid
   end)
+  -- (rt-guard: a deletion goes out only with something to show this person made it here, this session: not a new opening, and an edit of
+  -- theirs behind the look (mirror.user_edited, as auto-claims judge). A project with no tracks at all needs a new undo point of someone's on
+  -- top, whatever the edit count says (a project read while closing or loading moves it). Each absence is judged once, on the look that
+  -- first misses it (mirror.gone_why), so a burst's rest and a deletion held for a claimer's answer go as judged. Without it the band's last
+  -- version is put back and nothing is sent; an emptied project is left alone for EMPTY_SECS first. On 11-23 a look sent deletions of
+  -- Cross Test's 3 tracks and 10 items for a project it read with its records and none of its objects: docs/rt/rt-reopen.md)
+  local pk, now = tostring(proj), reaper.time_precise()
+  for k in pairs(mirror.gone_why) do if k:sub(1, #pk) == pk and seen[k:sub(#pk + 1)] then mirror.gone_why[k] = nil end end
+  local hold_empty, guarded = false, 0
+  if #gone == 0 then mirror.empty_since[pk] = nil
+  else
+    local tracks_here = false
+    for t = 0, reaper.CountTracks(proj) - 1 do if not local_track(reaper.GetTrack(proj, t)) then tracks_here = true; break end end
+    local evidence = not w.opened_now and w.edited ~= false and (tracks_here or w.new_point == true)
+    if tracks_here or evidence then mirror.empty_since[pk] = nil
+    else
+      mirror.empty_since[pk] = mirror.empty_since[pk] or now
+      hold_empty = now - mirror.empty_since[pk] < mirror.EMPTY_SECS
+      if hold_empty then mirror.guard_say(pk .. " empty", now, "this project has no tracks but still holds the studio's: nothing is sent to the others for it, and if it stays empty the studio's tracks come back") end
+    end
+    for _, g in ipairs(gone) do
+      local k = pk .. g.oid
+      mirror.gone_why[k] = mirror.gone_why[k] or (evidence and "user") or (not hold_empty and "not") or nil
+    end
+  end
   for _, g in ipairs(gone) do
+    local gk = pk .. g.oid
+    if hold_empty and mirror.gone_why[gk] == nil then goto next_gone end -- (an emptied project, waiting: nothing judged or changed)
     if w.sent + w.back > 0 and reaper.time_precise() - t_send > 0.25 then mirror.more = true; break end -- (the rest next pass, as above)
     -- (gone here, whatever happens to it below: nothing of ours waits on it. A flag left on a deleted track's plug-ins held a bandmate's
     -- restored chain back for good, and an empty chain won. 0.59.14, review)
@@ -6217,6 +6253,12 @@ function W.gone(w)
         -- (and the same order: recorded without it, an earlier version of the same rev that arrived after (one session's first change, a
         -- bandmate's made at once) beat the record and brought the item back, on this computer alone. rt-converge)
         remember(proj, g.oid, g.rev or 0, "", g.evid, g.order)
+      elseif mirror.gone_why[gk] ~= "user" then -- (no deletion of this person's behind it: the band's version back, nothing sent. rt-guard, above)
+        if o.kind == "track" then w.back_tracks[g.oid] = true end -- (its items and parts come back with it)
+        guarded = guarded + 1
+        local was_back = w.back
+        put_back(o, g.rev, g.evid, { name = name })
+        if w.back > was_back then mirror.gone_why[gk] = nil end -- (it's back: if it goes again, that's judged afresh)
       elseif allowed(o, name, last.pos) or ask_once() == false then
         -- (the clock past what it deletes, and an owner's step, as W.send does: a restart behind the version's clock read as made apart, and
         -- a non-owner's later edit brought an owner's deletion back. Round 1 review, 0.59.45)
@@ -6269,6 +6311,12 @@ function W.gone(w)
       end
     end)
     if not ok then held_back_set(proj, g.oid); say_once("err" .. g.oid, "mirror sync skipped " .. g.oid .. ": " .. tostring(err)) end
+    if select(2, mirror.known(proj, g.oid)) == "" then mirror.gone_why[gk] = nil end -- (settled gone: sent, or the band's already)
+    ::next_gone::
+  end
+  if guarded > 0 then
+    mirror.guard_say(pk, now, string.format("%d track(s) or item(s) of the studio's weren't in this project, with no deletion of yours behind it (a file older " ..
+      "than the studio, or a project read while closing or loading): they're back as the studio has them, and nothing was sent to the others", guarded))
   end
   for name, n in pairs(undeleted) do
     sync.put_back(string.format("%s on %s %s yours to delete: %s back", n == 1 and "that item" or (n .. " items"), name ~= "" and name or "an unnamed track", n == 1 and "isn't" or "aren't", n == 1 and "it's" or "they're"))
@@ -6592,13 +6640,19 @@ end
 function mirror.watch(proj, cfg, song, room, opts)
   local band, sync = require("band"), require("sync")
   if reaper.JS_Mouse_GetState and reaper.JS_Mouse_GetState(1) & 1 == 1 then return 0, 0 end -- mid-drag: wait for the drop
-  mirror.on_open(proj)
+  local pk, now = tostring(proj), reaper.time_precise()
+  -- (a new opening: nothing from before it is this person's edit, and the last look's record is another project's. A file opened again in
+  -- the tab kept the old project's edit count as "you edited", and W.gone took what the file lacked for a deletion. rt-guard)
+  local opened_now = mirror.on_open(proj)
+  if opened_now then
+    mirror.edit_seen[pk], mirror.looks[pk] = nil, nil
+    for k in pairs(mirror.gone_why) do if k:sub(1, #pk) == pk then mirror.gone_why[k] = nil end end
+  end
   mirror.hold_colours()
   local room_dir = sync.room_dir(cfg, song, room)
   local media = room_dir .. "/media"
   -- (a quick look when it can build on the last one: opts.quick (Live sync's looks), not an undo or redo, and a full one each QUICK_FULL_SECS,
   -- which also says if the quick one would have missed anything. See "Quick looks" by mirror.quick_scan. rt-look)
-  local pk, now = tostring(proj), reaper.time_precise()
   mirror.settle_due = nil
   local L = mirror.looks[pk]
   local remembered = mirror.remembered[pk] or {}
@@ -6626,7 +6680,12 @@ function mirror.watch(proj, cfg, song, room, opts)
     back_tracks = {}, held_tracks = {}, clean = {}, unasked = {},
     -- (the last look's record, with each item's reading and the map then, and this look's map: W.send. rt-fix9)
     look_was = L, map_now = band.capture_tempo(proj) }
-  w.edited = mirror.user_edited(pk, opts.edited_at, now, reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil) -- (auto-claims: rt-fix6a)
+  local top = reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil
+  local es = mirror.edit_seen[pk]
+  -- (a new undo point of someone's on top since the last look: what a project emptied of tracks needs before its deletions go. W.gone, rt-guard)
+  w.new_point = es ~= nil and es.top ~= nil and (top or "") ~= es.top and mirror.user_point(top)
+  w.edited = mirror.user_edited(pk, opts.edited_at, now, top) -- (auto-claims: rt-fix6a)
+  w.opened_now = opened_now
   w.pending = function() -- (how many of the band's changes wait here: once a look)
     if w.n_pending == nil then w.n_pending = sync.pending_events(proj, cfg, song, room) end
     return w.n_pending

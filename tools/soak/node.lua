@@ -700,10 +700,37 @@ EDITS.restore = function(r) -- the whole song back to an older point, as the Res
   if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f mirror.revert: %s", now, tostring(res)) end
   return "restored the song to change " .. upto .. " of " .. #entries .. ": " .. tostring(res)
 end
+-- REAPER opening (again, in the tab Live sync runs in) a file that lacks tracks whose records it holds: the project as it is, one or two of its
+-- tracks left out, a new opening (REAPER gives the file a new master track; here mirror.opened forgets it). Live sync's count moves with the
+-- load, as it would. Until this computer's next edit, no deletion may go out from it (`reopened`, checked in sync.post below): before rt-guard
+-- W.gone sent each left-out track and its items as deleted, for everyone (Cross Test, 11-23: docs/rt/rt-reopen.md).
+local reopened = false
+EDITS.reopen = function(r)
+  local snap = F.save()
+  if #snap.tracks < 2 then return end
+  local drop = 1 + math.floor(r[1] * #snap.tracks)
+  local names = { snap.tracks[drop].name }
+  table.remove(snap.tracks, drop)
+  if r[2] < 0.4 and #snap.tracks > 1 then local d2 = 1 + math.floor(r[3] * #snap.tracks); names[2] = snap.tracks[d2].name; table.remove(snap.tracks, d2) end
+  F.load(snap)
+  mirror.opened[tostring(F.proj)] = nil
+  reopened = true
+  return "reopened the song from a file without " .. table.concat(names, ", ")
+end
+do
+  local post = sync.post
+  sync.post = function(c, song, room, ev)
+    if reopened and type(ev) == "table" and ev.gone then
+      ERRORS[#ERRORS + 1] = string.format("%.1f a deletion of %s went out after a reopen, with no edit since (rt-guard)", now, tostring(ev.oid))
+    end
+    return post(c, song, room, ev)
+  end
+end
 -- -> what was done, or "" when the edit had nothing to act on here.
 function N.edit(kind, rtext)
   local r = band.json_decode(rtext)
   local fn = EDITS[kind]
+  reopened = false
   local ok, what = pcall(fn, r)
   if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f edit %s: %s", now, kind, tostring(what)); return "edit raised" end
   if what then changed_at = F.clock end

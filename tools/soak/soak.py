@@ -34,7 +34,8 @@ FIRST_EDIT = DEFAULT_FIRST = 20.0  # simulated seconds after the song is shared 
 # The edits the driver makes, and how often (weights).
 EDITS = [("item_move", 14), ("item_resize", 6), ("item_mute", 4), ("item_delete", 5), ("item_new", 5), ("item_copy", 4), ("item_to_track", 3),
          ("track_add", 2), ("track_rename", 3), ("track_delete", 1), ("track_volume", 3), ("track_move", 2), ("tempo", 2), ("marker", 4),
-         ("notes", 6), ("cc", 3), ("fx", 5), ("envelope", 3), ("claim", 2), ("undo", 6), ("redo", 3), ("restore", 1)]
+         ("notes", 6), ("cc", 3), ("fx", 5), ("envelope", 3), ("claim", 2), ("undo", 6), ("redo", 3), ("restore", 1),
+         ("reopen", 1)]  # (a file without some of its tracks opened in the tab: no deletion may go out for them. rt-guard)
 
 
 class Faults:

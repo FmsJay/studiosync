@@ -111,3 +111,26 @@ Close REAPER on the desktop without saving Cross Test, start it, let the 11-19 `
 shows no "change(s) went to the others" for deletions, the events folder gets no `gone` event from this computer, and tracks the
 file lacks come back from the events. Then delete a track by hand: it goes to the others. Then Ctrl+Z: it comes back for
 everyone.
+
+## rt-guard: REAPER re-checks (2026-11-27)
+
+The guard is built (docs/rt/rt-guard.md): `W.gone` sends a deletion only with an edit of this person's behind the look and not on a new
+opening; a project with no tracks needs REAPER's own undo point fresh on top; otherwise the band's version is put back and nothing is sent.
+Run these on the real computers (I ran nothing there). Before each, keep a copy of the project folder.
+
+1. **Older file after a restart (B).** Close REAPER on the desktop without saving Cross Test (or any test song). Start REAPER, open an
+   older saved `.rpp` of it (one that lacks a track the studio has), start Live sync. Expected: no "N change(s) went to the others" from the
+   opening; no new `gone` event from this computer in `rooms/main/events`; the tracks the file lacks come back from the studio (the log may
+   say "... weren't in this project, with no deletion of yours behind it ..."). The other computers keep every track.
+2. **Older file in the same tab.** With Live sync running, File > Open the same older `.rpp` into the tab (or File > Revert). Expected: as 1.
+3. **Closing or loading (A).** With Live sync running, close the project tab, and separately open a different project into the tab Live
+   sync runs in. Expected: no deletions sent (Health and the events folder), the other computers unchanged.
+4. **Real deletions still go.** Delete a track by hand: it goes to the others. Ctrl+Z: it comes back for everyone. Ctrl+Shift+Z: gone again
+   everywhere. Delete the top track: it goes. Select every track and delete: it goes to the others (REAPER's "Remove tracks" undo point).
+5. **Tab behind.** Delete an item, switch to another project tab at once: the deletion still reaches the others.
+6. **Window moves aren't "editing".** On computer A, select a track, then drag REAPER's window, a floating plug-in window, the mixer's
+   docker splitter and another program's window around for a few seconds each. On computer B (Project page and the track's tint): no
+   "A is editing". Open a plug-in window on A without touching a knob: no "editing" on B. Turn a knob: "A is editing plug-in ..." on B.
+   Drag an item on A: "A is editing" on B during the drag. Also check (ReaScript console or the dev-eval hook, read only) whether
+   `reaper.GetProjectStateChangeCount(0)` moves when a window is moved or docked: if it does, the 2 s "editing" after it is the change count's,
+   and that needs a second fix.
