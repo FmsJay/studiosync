@@ -73,6 +73,12 @@ int rt_peer_play(RtLink *l, const char *peer, double gain);
 // this computer mixes for every listener that asks (its own Talk and Play in it), on the send thread. -> 1. (James, rt)
 int rt_hub(RtLink *l, const char *peer, int serve);
 std::string rt_status(RtLink *l); // JSON: the link, and per peer latency, jitter buffer, loss, level (see rtaudio.cpp)
+// The read-rate control's last minute for one bandmate (rt-audio4, rt-audio3's recommendation 19): per stream ("talk", "play", "mix"), each
+// window and event oldest first as [s ago, level ms, held at ms, error ms, R ppm, P ppm, events: 1 window, 2 jump, 4 re-buffer, 8 underrun,
+// 16 fast loop, 32 rough, 64 settling]. "{}" when that peer isn't in the list.
+std::string rt_trace(RtLink *l, const char *peer);
+// tests only: each name lookup (the resolver thread's; rt_sim: finished when due) takes this long first (rt-audio4)
+void rt_test_resolve_delay(RtLink *l, double ms);
 // The ears tap (tools/ears; docs/rt/rt-p11.md): what this computer hears of peer's stream ("talk", "play", "hub": decoded, before any level),
 // or with peer "" and "play" its own Play as it goes out, written to path (a .wav: 32-bit float stereo) for seconds (0..60) by a worker; the
 // audio thread only copies into a ring. One at a time, while running. -> 1 started. rt_status's "ears" says how it goes.

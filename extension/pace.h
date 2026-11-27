@@ -85,6 +85,19 @@ struct Pace {
   int wn = 0, wh = 0;
   bool learning = true, dry_p = false;
   long long rebuf_seen = 0, under_seen = 0;
+  // The control's last minute (rt-audio4, rt-audio3's recommendation 19): each window (the level, where it's held, the error in ms, R and
+  // P in ppm) and each event, newest last, for rtaudio.cpp's rt_trace (StudioSync_LiveAudioTrace). Finding D took five lab models from
+  // status reads a minute apart; one dump during the walk says which term moved R. Written here only, read under the caller's lock.
+  struct Note { double t; float level, held, err, r, p; unsigned char ev; };
+  enum { NOTE_WINDOW = 1, NOTE_JUMP = 2, NOTE_REBUF = 4, NOTE_UNDER = 8, NOTE_FAST = 16, NOTE_ROUGH = 32, NOTE_SETTLING = 64 };
+  static const int NOTES = 160; // (a minute of windows, two a second, and the events among them)
+  Note notes[NOTES] = {};
+  unsigned nn = 0;
+  void note(double now, double level, double e, unsigned char ev)
+  {
+    Note &x = notes[nn++ % NOTES];
+    x.t = now; x.level = (float)level; x.held = (float)wset; x.err = (float)(e * 1000); x.r = (float)(rint * 1e6); x.p = (float)(part(now) * 1e6); x.ev = ev;
+  }
   // the gains now: g 1 in the fast loop, 0 in the slow one, fading between; P's share, inside its bound
   void gains(double now, double &kp, double &pmax) const
   {
@@ -112,8 +125,9 @@ struct Pace {
       under_seen = under;
       if (rint > RATE_SANE) rint = RATE_SANE;
       else if (dry_p) rint = std::max(-RATE_CAP, rint - RATE_WIDE);
+      note(now, -1, werr, NOTE_UNDER);
     }
-    if (rebuf != rebuf_seen) { rebuf_seen = rebuf; resettle(now); }
+    if (rebuf != rebuf_seen) { rebuf_seen = rebuf; resettle(now); note(now, -1, 0, NOTE_REBUF); }
   }
   // A look: f, its buffer as measured (ms; < 0: not playing now); age, how old its newest packet was at the last read (s); target, the
   // buffer's size (ms); rng, the reservoir's generator.
@@ -141,7 +155,8 @@ struct Pace {
     if (first) { wset = med; wh = 0; werr = 0; }
     double e = (med - wset) / 1000.0;
     const double dt = std::min(now - wt0, 2 * RATE_WIN); // (a window stretched by a stall counts as two at most)
-    if (!first && std::fabs(e - werr) * 1000 > RATE_JUMP) { // (not a rate: the held level goes with it, and the loop is slow for a while)
+    const bool jumped = !first && std::fabs(e - werr) * 1000 > RATE_JUMP;
+    if (jumped) { // (not a rate: the held level goes with it, and the loop is slow for a while)
       wset += (e - werr) * 1000;
       e = werr;
       wh = 0;
@@ -165,6 +180,7 @@ struct Pace {
     whp[wh++] = moved;
     werr = e;
     wn = 0;
+    note(now, med, e, (unsigned char)(NOTE_WINDOW | (jumped ? NOTE_JUMP : 0) | (fast(now) ? NOTE_FAST : 0) | (rough(now) ? NOTE_ROUGH : 0) | (now < settle_until ? NOTE_SETTLING : 0)));
   }
   // What it's read at now (1 + R + P). playing: it was measured this look. The fast loop fading to the slow one: what P gives up as its gain
   // falls goes into R, so the rate doesn't move and the level stays where it settled.

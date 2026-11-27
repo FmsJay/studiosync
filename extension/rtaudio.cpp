@@ -65,6 +65,9 @@ typedef int sock_t;
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <condition_variable>
+#include <deque>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -495,6 +498,19 @@ struct RtLink {
   unsigned long long handed_from = 0;            // (and the send thread's: not handed back to it for LEASE_BACK)
   double handed_at = -1e9;
   unsigned char fwdbuf[MAX_DGRAM + 64];
+  // Name lookups off the send thread (rt-audio4, rt-audio3's recommendation 5): what each name resolved to and when (res_mx), the names
+  // waiting for the resolver thread; res_dirty: one finished, the send thread looks at its list again. In rt_sim no thread: rt_sim_run
+  // finishes each lookup when it's due. res_delay: rt_test_resolve_delay (s).
+  struct Res { bool done = false, ok = false; sockaddr_in addr{}; std::string why; double at = 0, due = 0; };
+  std::mutex res_mx;
+  std::condition_variable res_cv;
+  std::map<std::string, Res> res;
+  std::deque<std::string> res_q;
+  std::thread res_thr;
+  bool res_stop = false;
+  std::atomic<bool> res_dirty{ false };
+  double res_delay = 0;
+  std::shared_ptr<const std::string> keyp; // (the key, for the receive thread's tag check before it takes cfg_mx: std::atomic_load. rt-audio4)
 };
 
 namespace {
@@ -687,6 +703,58 @@ bool resolve(const std::string &peer, bool loopback, sockaddr_in &out, std::stri
   if (!addr_ok(out, loopback)) { why = "not a Tailscale address"; return false; }
   return true;
 }
+// A peer's address without blocking the send thread (make_slot): a literal address at once; a name from what the resolver thread found,
+// looked up again RES_RETRY s after it failed; one not looked up yet is asked for, and its slot waits ("looking up its name": the next
+// reconfigure after the answer makes it). The send thread looked names up itself: a name that didn't resolve stopped Talk, Play and every
+// listener's mix for the lookup (over a second on Windows), every 5 s. rt-audio4
+const double RES_RETRY = 5;
+bool lookup(RtLink *l, const std::string &peer, sockaddr_in &out, std::string &why)
+{
+  const size_t c = peer.rfind(':');
+  if (c == std::string::npos || c == 0) { why = "not name:port"; return false; }
+  sockaddr_in a{};
+  a.sin_family = AF_INET;
+  const int port = atoi(peer.substr(c + 1).c_str());
+  if (port > 0 && port < 65536 && inet_pton(AF_INET, peer.substr(0, c).c_str(), &a.sin_addr) == 1) {
+    a.sin_port = htons((unsigned short)port);
+    if (!addr_ok(a, l->loopback)) { why = "not a Tailscale address"; return false; }
+    out = a;
+    return true;
+  }
+  const double now = now_s();
+  std::lock_guard<std::mutex> g(l->res_mx);
+  RtLink::Res &r = l->res[peer];
+  if (r.done && (r.ok || now - r.at < RES_RETRY)) { if (r.ok) out = r.addr; else why = r.why; return r.ok; }
+  if (r.due == 0 || r.done) { r.done = false; r.due = now + l->res_delay; l->res_q.push_back(peer); l->res_cv.notify_one(); }
+  why = "looking up its name";
+  return false;
+}
+// One looked up (the resolver thread, or rt_sim_run), its answer kept, and the send thread told.
+void res_one(RtLink *l, const std::string &name)
+{
+  sockaddr_in a{};
+  std::string why;
+  const bool ok = resolve(name, l->loopback, a, why);
+  std::lock_guard<std::mutex> g(l->res_mx);
+  RtLink::Res &r = l->res[name];
+  r.done = true; r.ok = ok; r.addr = a; r.why = why; r.at = now_s();
+  l->res_dirty.store(true);
+  wake_up(l);
+}
+void res_loop(RtLink *l)
+{
+  std::unique_lock<std::mutex> g(l->res_mx);
+  while (!l->res_stop) {
+    if (l->res_q.empty()) { l->res_cv.wait_for(g, std::chrono::milliseconds(200)); continue; }
+    const std::string name = l->res_q.front();
+    l->res_q.pop_front();
+    const double due = l->res[name].due;
+    g.unlock();
+    while (now_s() < due && !l->res_stop) std::this_thread::sleep_for(std::chrono::milliseconds(1)); // (rt_test_resolve_delay)
+    if (!l->res_stop) res_one(l, name);
+    g.lock();
+  }
+}
 void tag_of(const std::string &key, const unsigned char *p, size_t n, unsigned char out[32]) { direct_hmac_sha256((const unsigned char *)key.data(), key.size(), p, n, out); }
 bool same_tag(const unsigned char *a, const unsigned char *b) { unsigned char d = 0; for (int i = 0; i < TAG; ++i) d |= a[i] ^ b[i]; return d == 0; } // (constant time)
 double ntp_ms(AooNtpTime a, AooNtpTime b) { return aoo_ntpTimeDuration(a, b) * 1000.0; }
@@ -859,7 +927,7 @@ std::unique_ptr<Slot> make_slot(RtLink *l, const std::string &peer)
   const RtNat *nat = l->nat.load();
   const bool via_nat = peer.compare(0, 4, "nat:") == 0;
   if (via_nat) { p->resolved = nat && nat->resolve(nat->h, peer.c_str(), &p->addr); if (!p->resolved) p->err = "not set up for the connection without Tailscale yet"; }
-  else p->resolved = resolve(peer, l->loopback, p->addr, p->err);
+  else p->resolved = lookup(l, peer, p->addr, p->err); // (never a name lookup here: the resolver thread's. rt-audio4)
   if (!p->resolved) return p;
   const std::string me_s = via_nat ? nat->self(nat->h) : l->bind_s; // (what that peer calls this computer: its sinks for me are named from it)
   p->addr_s = addr_str(p->addr);
@@ -942,7 +1010,9 @@ void reconfigure(RtLink *l)
     std::lock_guard<std::mutex> g(l->cfg_mx);
     l->have_secret = secret;
     l->key = key_of(secret);
+    std::atomic_store(&l->keyp, std::make_shared<const std::string>(l->key)); // (the receive thread checks tags with this, before cfg_mx)
   }
+  if (l->res_dirty.exchange(false)) peers = true; // (a name looked up meanwhile: its slot can be made now)
   if (!peers && now_s() > l->next_resolve) {
     for (int i = 0; i < l->nslots; ++i) peers = peers || !l->slots[i]->resolved;
     l->next_resolve = now_s() + 5;
@@ -974,6 +1044,7 @@ void reconfigure(RtLink *l)
   if (!audio && !peers && !play && !serving) return;
   pause_audio(l);
   std::lock_guard<std::mutex> g(l->cfg_mx);
+  std::lock_guard<std::mutex> stg(l->stats_mx); // (rt_status reads the slots under stats_mx alone, so the receive thread never waits for it. rt-audio4)
   if (play) {
     if (l->pshm) { hop_shm_close(&l->pmap); l->pshm = nullptr; }
     l->phop = phop;
@@ -1563,6 +1634,17 @@ void not_here(RtLink *l, const sockaddr_in &from)
   e->at = now;
   ++e->n;
 }
+// A datagram's tag, checked with the studio's key before anything takes cfg_mx (the receive thread held it for the HMAC of every datagram,
+// and waited on every status read meanwhile: rt-audio4, rt-audio3's recommendation 5). -> false: refused (and said so).
+bool tag_ok(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
+{
+  const std::shared_ptr<const std::string> k = std::atomic_load(&l->keyp);
+  if (!k || k->empty()) { reject(l, "no studio secret here yet", from); return false; }
+  unsigned char t[32];
+  tag_of(*k, d, (size_t)n - TAG, t);
+  if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return false; }
+  return true;
+}
 // ---- the relay (rt_relay; rt-audio4, docs/rt/rt-audio4.md sections 2-3) ----------------------------------------------------------------
 // The hub forwards instead of mixing: each listener keeps one sink per sender and stream, as peer to peer, and gets a sender's packets
 // directly, forwarded by the relay, or both (relay_merge makes them one stream). The relay role is a lease (lease_tick).
@@ -1776,11 +1858,8 @@ void relay_ctl_l(RtLink *l, Slot &h, const unsigned char *d, int n, double now)
 // dropped, so nothing is resent through the relay). Tagged with the studio's key, from a peer on the list.
 void relay_rx(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
 {
+  if (!tag_ok(l, d, n, from)) return;
   std::lock_guard<std::mutex> g(l->cfg_mx);
-  if (l->key.empty()) { reject(l, "no studio secret here yet", from); return; }
-  unsigned char t[32];
-  tag_of(l->key, d, (size_t)n - TAG, t);
-  if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
   Slot *r = slot_of(l, from);
   if (!r) { not_here(l, from); return; }
   r->rx_at.store(now_s(), std::memory_order_relaxed);
@@ -2007,11 +2086,8 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     return;
   }
   if (n >= 5 + TAG && memcmp(d, CTL, 4) == 0) { // (the hub's live mix: a control datagram, tagged as the rest)
+    if (!tag_ok(l, d, n, from)) return;
     std::lock_guard<std::mutex> g(l->cfg_mx);
-    if (l->key.empty()) { reject(l, "no studio secret here yet", from); return; }
-    unsigned char t[32];
-    tag_of(l->key, d, (size_t)n - TAG, t);
-    if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
     Slot *p = slot_of(l, from);
     if (!p) { not_here(l, from); return; }
     p->rx_at.store(now_s(), std::memory_order_relaxed);
@@ -2022,12 +2098,9 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
   if (n < 4 + TAG + 4 || memcmp(d, MAGIC, 4) != 0) { reject(l, "not StudioSync audio", from); return; }
   const AooByte *msg = d + 4;
   const AooInt32 size = n - 4 - TAG;
+  if (!tag_ok(l, d, n, from)) return;
   {
     std::lock_guard<std::mutex> g(l->cfg_mx);
-    if (l->key.empty()) { reject(l, "no studio secret here yet", from); return; }
-    unsigned char t[32];
-    tag_of(l->key, d, (size_t)n - TAG, t);
-    if (!same_tag(t, d + n - TAG)) { reject(l, "wrong studio secret", from); return; }
     AooMsgType type;
     AooId id;
     AooInt32 onset;
@@ -2161,6 +2234,14 @@ void rt_sim_run(double until_s)
       rx_one(l, g.d.data(), (int)g.d.size(), g.from);
       did = true;
     }
+    for (RtLink *l : g_sim_links) { // (a name lookup due: as the resolver thread would finish it. rt-audio4)
+      std::string name;
+      {
+        std::lock_guard<std::mutex> g(l->res_mx);
+        if (!l->res_q.empty() && l->res[l->res_q.front()].due <= g_sim_t) { name = l->res_q.front(); l->res_q.pop_front(); }
+      }
+      if (!name.empty()) { res_one(l, name); did = true; }
+    }
     for (size_t i = 0; i < g_sim_links.size(); ++i) {
       RtLink *l = g_sim_links[i];
       if (!l->run.load() || sim_due(l) > g_sim_t) continue;
@@ -2172,7 +2253,11 @@ void rt_sim_run(double until_s)
     if (did) continue;
     double t = until_s; // (nothing more now: on to the next thing due)
     if (!g_sim_q.empty()) t = std::min(t, g_sim_q.front().at);
-    for (RtLink *l : g_sim_links) if (l->run.load()) t = std::min(t, sim_due(l));
+    for (RtLink *l : g_sim_links) {
+      if (l->run.load()) t = std::min(t, sim_due(l));
+      std::lock_guard<std::mutex> g(l->res_mx);
+      if (!l->res_q.empty()) t = std::min(t, std::max(g_sim_t, l->res[l->res_q.front()].due));
+    }
     if (t >= until_s) { g_sim_t = std::max(g_sim_t, until_s); return; }
     g_sim_t = std::max(g_sim_t, t);
   }
@@ -2253,8 +2338,12 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   l->watch_at = -1e9; // (a new send thread: the time stopped isn't a stall of it. The hub's stall_max_ms read 1613.8 from one restart, rt-r3)
   l->phop = 0; l->pstream = false;  // (rt_play's choice is kept: the send thread opens its mapping again)
   { std::lock_guard<std::mutex> p(l->pend_mx); l->peers_dirty = true; } // (the list given before start, if any)
+  { std::lock_guard<std::mutex> r(l->res_mx); l->res.clear(); l->res_q.clear(); l->res_stop = false; } // (names looked up again: rt-audio4)
+  l->res_dirty.store(false);
+  std::atomic_store(&l->keyp, std::shared_ptr<const std::string>());
   l->run.store(true);
   if (sim) { l->sim_wake = true; l->sim_pass = -1e9; g_sim_links.push_back(l); return 1; }
+  l->res_thr = std::thread(res_loop, l);
   l->rx = std::thread(rx_loop, l);
   l->tx = std::thread(tx_loop, l);
   return 1;
@@ -2271,7 +2360,10 @@ void rt_stop(RtLink *l)
   wake_up(l);
   if (l->tx.joinable()) l->tx.join();
   if (l->rx.joinable()) l->rx.join();
+  { std::lock_guard<std::mutex> r(l->res_mx); l->res_stop = true; l->res_cv.notify_all(); }
+  if (l->res_thr.joinable()) l->res_thr.join(); // (a lookup in flight finishes first: getaddrinfo can't be cut short)
   std::lock_guard<std::mutex> c(l->cfg_mx);
+  std::lock_guard<std::mutex> stg(l->stats_mx);
   for (int i = 0; i < l->nslots; ++i) { drop_slot(l, *l->slots[i]); l->slots[i].reset(); }
   l->nslots = 0;
   l->hub_peer.store(nullptr); l->hub_state.store(0); l->mixw = 0; // (rt_hub's choice is kept: the ring is made again when it starts)
@@ -2498,6 +2590,36 @@ void rt_test_hold_tx(RtLink *l, double ms) { l->hold_tx.store(now_s() + ms / 100
 void rt_test_drop(RtLink *l, double ms) { l->drop_until.store(now_s() + ms / 1000.0); }
 void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; } // (before rt_start. 0: AOO's resampling off, and the read-rate control with it)
 void rt_test_clock_bias(RtLink *l, double ppm) { l->clk.bias.store(ppm * 1e-6); }
+void rt_test_resolve_delay(RtLink *l, double ms) { std::lock_guard<std::mutex> g(l->res_mx); l->res_delay = std::max(0.0, ms / 1000.0); }
+// The read-rate control's last minute for one bandmate (pace.h Pace::notes), oldest first, each [s ago, level ms, held at ms, error ms,
+// R ppm, P ppm, events] per stream. stats_mx: adapt writes them under it, and the slots don't change while it's held.
+std::string rt_trace(RtLink *l, const char *peer)
+{
+  if (!l || !peer) return "{}";
+  std::lock_guard<std::mutex> st(l->stats_mx);
+  const double now = now_s();
+  for (int i = 0; i < l->nslots; ++i) {
+    Slot &p = *l->slots[i];
+    if (p.peer != peer) continue;
+    std::string o = "{\"peer\":";
+    json_str(o, p.peer);
+    static const char *const names[3] = { "talk", "play", "mix" };
+    for (int k = 0; k < 3; ++k) {
+      const Pace &c = p.pc[k];
+      o += std::string(",\"") + names[k] + "\":[";
+      const unsigned n = std::min<unsigned>(c.nn, Pace::NOTES);
+      for (unsigned j = 0; j < n; ++j) {
+        const Pace::Note &x = c.notes[(c.nn - n + j) % Pace::NOTES];
+        char b[160];
+        snprintf(b, sizeof b, "%s[%.2f,%.1f,%.1f,%.2f,%.0f,%.0f,%u]", j ? "," : "", now - x.t, x.level, x.held, x.err, x.r, x.p, (unsigned)x.ev);
+        o += b;
+      }
+      o += "]";
+    }
+    return o + "}";
+  }
+  return "{}";
+}
 void rt_test_ratio(RtLink *l, const char *peer, double ppm)
 {
   std::lock_guard<std::mutex> g(l->cfg_mx);
@@ -2531,8 +2653,10 @@ int rt_send_raw(RtLink *l, const void *d, int n, const void *addr, int addrlen)
 
 std::string rt_status(RtLink *l)
 {
-  std::lock_guard<std::mutex> g(l->cfg_mx);
+  // (stats_mx alone: the slots change only under it too (reconfigure, rt_stop), and the receive thread, which takes cfg_mx for every
+  // datagram, no longer waits while this formats. rt-audio4)
   std::lock_guard<std::mutex> st(l->stats_mx);
+  const std::shared_ptr<const std::string> kp = std::atomic_load(&l->keyp);
   char b[768];
   std::string o = "{\"running\":";
   o += l->run.load() ? "true" : "false";
@@ -2542,7 +2666,7 @@ std::string rt_status(RtLink *l)
   o += ",\"last_reject_from\":"; json_str(o, l->last_reject_from);
   o += ",\"not_here\":" + std::to_string(l->not_here.load()) + ",\"not_here_from\":"; json_str(o, l->not_here_from); // (not_here above)
   snprintf(b, sizeof(b), ",\"secret\":%s,\"srate\":%d,\"block\":%d,\"first\":%d,\"nch\":%d,\"kbps\":%d,\"level\":%.5f,\"callbacks\":%lld,\"max_us\":%.1f,\"sent\":%lld,\"received\":%lld,\"rejected\":%lld,\"peers\":{",
-           l->key.empty() ? "false" : "true", l->cfg_sr, l->cfg_len, l->first, l->nch, l->kbps, l->in_peak.exchange(0.f), l->callbacks.load(), l->max_ns.load() / 1000.0,
+           !kp || kp->empty() ? "false" : "true", l->cfg_sr, l->cfg_len, l->first, l->nch, l->kbps, l->in_peak.exchange(0.f), l->callbacks.load(), l->max_ns.load() / 1000.0,
            l->sent.load(), l->received.load(), l->rejected.load());
   o += b;
   // (Play: the live out Hop read, whether its track ran lately (a full block in the last ~50 callbacks), and what goes out, peak since the last ask)
@@ -2939,6 +3063,9 @@ static void *vla_ears(void **a, int n) { return n < 4 || !a[3] ? nullptr : (void
 static void *vla_hub(void **a, int n) { return n < 2 ? nullptr : (void *)(INT_PTR)api_hub((const char *)a[0], (int)(INT_PTR)a[1]); }
 static int api_relay(const char *json) { return g_rt ? rt_relay(g_rt, json) : -1; } // (rt-audio4)
 static void *vla_relay(void **a, int n) { return n < 1 ? nullptr : (void *)(INT_PTR)api_relay((const char *)a[0]); }
+static std::string g_trace; // (rt-audio4: StudioSync_LiveAudioTrace's answer, kept until the next call, as g_status)
+static const char *api_trace(const char *peer) { g_trace = g_rt ? rt_trace(g_rt, peer) : "{}"; return g_trace.c_str(); }
+static void *vla_trace(void **a, int n) { return n < 1 ? nullptr : (void *)api_trace((const char *)a[0]); }
 
 void rtaudio_shutdown()
 {
@@ -2978,6 +3105,8 @@ void rtaudio_register(reaper_plugin_info_t *rec)
       "int\0const char*,int\0peer,serve\0The hub's live mix: peer (in the list) mixes for this computer, which then sends its streams to it alone and hears the one stream it mixes at this computer's own levels, back to everyone's own streams at once when that mix stops; \"\": peer to peer. serve 1: this computer mixes for every listener that asks. StudioSync_LiveAudioStatus's hub (peer, state direct/joining/hub, serve, serving, load, max_us, skipped, fallbacks, join_fails (asks no mix answered in 5 s: asked again 10 s later), latency_ms, in_ms, direct_ms, hub_load) and per peer via_hub (heard in the hub's mix; one the hub doesn't hear is heard directly), direct say how it goes. Returns 1." },
     { "StudioSync_LiveAudioRelay", (void *)api_relay, (void *)vla_relay,
       "int\0const char*\0json\0The relay (docs/rt/rt-audio4.md), in place of the hub's mix: the hub forwards each bandmate's packets and every listener mixes them itself; the role is a lease one computer holds and renews. json: {\"on\":1,\"all\":1,\"order\":[\"name:port\",...,\"\"]}: on 0 turns it off; all 1: everyone hears everyone through it, 0: it carries only bandmates a listener gets nothing from directly; order: who should hold it, first to last (\"\" is this computer). Only when every computer in the room has it. StudioSync_LiveAudioStatus's relay (holder, on, all, term, claims, yields, handovers, relayed, asking, fwd_pps, fwd_kbps, fwd_in, fwd_refused) and per peer relayed, fwd_ago say how it goes. Returns 1 on, 0 off, -1 when the JSON isn't that." },
+    { "StudioSync_LiveAudioTrace", (void *)api_trace, (void *)vla_trace,
+      "const char*\0const char*\0peer\0The read-rate control's last minute for one bandmate (docs/rt/rt-audio4.md), as JSON: per stream (talk, play, mix) each window and event, oldest first, as [seconds ago, level ms, held at ms, error ms, R ppm, P ppm, events (1 window, 2 jump, 4 re-buffer, 8 underrun, 16 fast loop, 32 rough, 64 settling)]. {} when that peer isn't in the list." },
   };
   char key[96];
   for (const auto &f : fns) {

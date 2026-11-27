@@ -1707,6 +1707,68 @@ static void pace_lite_test()
   check(!j.empty() && worst < 1e-12, "pace: extension/pace.h's light law gives the golden trace's rates (tests/fixtures/pace_lite.json; run from the repo's root)");
 }
 
+// ---- names looked up off the send thread, and the control's last minute (rt-audio4, rt-audio3's recommendation 5 and 19) ----
+// A lists B by address and C by a name ("localhost") whose lookup takes 2 s here (rt_test_resolve_delay): B hears A whole meanwhile (the
+// send thread looked names up itself: Talk, Play and every listener's mix stopped for the lookup), and C once the name has come.
+static void lookup_test()
+{
+  if (g_real) { printf("     lookup: skipped (SS_RT_REAL=1)\n"); return; }
+  const int SR = 48000, LEN = 256, PA = 47771, PB = 47772, PC = 47773;
+  RtLink *A = rt_new(), *B = rt_new(), *C = rt_new();
+  const std::string a = "127.0.0.1:" + std::to_string(PA), b = "127.0.0.1:" + std::to_string(PB), c = "localhost:" + std::to_string(PC);
+  rt_peers(A, ("{\"peers\":[\"" + b + "\",\"" + c + "\"],\"port\":" + std::to_string(PA) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(B, ("{\"peers\":[\"" + a + "\"],\"port\":" + std::to_string(PB) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(C, ("{\"peers\":[\"" + a + "\"],\"port\":" + std::to_string(PC) + ",\"secret\":\"studio\"}").c_str());
+  rt_test_resolve_delay(A, 2000);
+  rt_start(A, 0, 1, 128, 0, "127.0.0.1"); rt_start(B, 0, 1, 128, 0, "127.0.0.1"); rt_start(C, 0, 1, 128, 0, "127.0.0.1");
+  std::vector<double> in(LEN), z(LEN, 0.0), o1(LEN), o2(LEN), hb, hc;
+  std::string s_mid;
+  const auto t0 = tclock::now();
+  for (int k = 0; k < 4 * SR / LEN; ++k) {
+    wait_until(t0 + secs((double)k * LEN / SR));
+    for (int j = 0; j < LEN; ++j) in[j] = 0.5 * sin(2 * 3.14159265358979 * 440 * ((double)k * LEN + j) / SR);
+    const double *ia[1] = { in.data() }, *iz[1] = { z.data() };
+    double *oo[2] = { o1.data(), o2.data() };
+    rt_capture(A, ia, 1, LEN, SR); rt_mix(A, oo, 2, LEN, SR);
+    std::fill(o1.begin(), o1.end(), 0.0); rt_capture(B, iz, 1, LEN, SR); rt_mix(B, oo, 2, LEN, SR); hb.insert(hb.end(), o1.begin(), o1.end());
+    std::fill(o1.begin(), o1.end(), 0.0); rt_capture(C, iz, 1, LEN, SR); rt_mix(C, oo, 2, LEN, SR); hc.insert(hc.end(), o1.begin(), o1.end());
+    if (k == SR / LEN) s_mid = rt_status(A);
+  }
+  const std::string s_end = rt_status(A);
+  rt_free(A); rt_free(B); rt_free(C);
+  double ec = 0;
+  for (size_t i = (size_t)(3.0 * SR); i < hc.size(); ++i) ec += hc[i] * hc[i];
+  const double rc = sqrt(ec / (double)(hc.size() - (size_t)(3.0 * SR)));
+  printf("     lookup: at 1 s A's C (by name, a 2 s lookup): resolved %s, %s; B's quietest 10 ms of A from 0.5 s %.3f; at 4 s C resolved %s, hears A at %.3f rms\n",
+         field(s_mid, c, "resolved").c_str(), field(s_mid, c, "error").c_str(), min_rms(hb, 0.5, 4), field(s_end, c, "resolved").c_str(), rc);
+  check(field(s_mid, c, "resolved") == "false" && field(s_mid, c, "error") == "\"looking up its name\"", "lookup: a name being looked up waits for the resolver, and the status says so");
+  check(min_rms(hb, 0.5, 4) > 0.25, "lookup: and A keeps sending to everyone else meanwhile (the send thread doesn't look names up)");
+  check(field(s_end, c, "resolved") == "true" && rc > 0.3, "lookup: once the name has come, C is on the list and hears A");
+}
+// P sends Q a tone; Q's receive thread is held 300 ms at 6 s (an underrun). Q's trace for P: the windows of the last minute, the underrun.
+static void trace_test()
+{
+  if (g_real) { printf("     trace: skipped (SS_RT_REAL=1)\n"); return; }
+  RRoom r(2, 47781);
+  r.freq[0] = 440;
+  r.run(6.0);
+  rt_test_hold(r.L[1], 300);
+  r.run(3.0);
+  const std::string t = rt_trace(r.L[1], r.nm[0].c_str()), none = rt_trace(r.L[1], "127.0.0.1:1");
+  const std::vector<double> v = json_nums(t, "talk");
+  int windows = 0, unders = 0, rebufs = 0;
+  double r_last = 0, held = 0;
+  for (size_t i = 0; i + 6 < v.size(); i += 7) {
+    const int ev = (int)v[i + 6];
+    windows += ev & 1 ? 1 : 0; unders += ev & 8 ? 1 : 0; rebufs += ev & 4 ? 1 : 0;
+    if (ev & 1) { r_last = v[i + 4]; held = v[i + 2]; }
+  }
+  printf("     trace: Q's last minute of P's Talk: %d windows, %d underruns, %d re-buffers (the last window held at %.1f ms, R %+.0f ppm); unknown peer: %s\n",
+         windows, unders, rebufs, held, r_last, none.c_str());
+  check(windows >= 12 && unders >= 1 && rebufs >= 1 && held > 0, "trace: the control's windows and the underrun are in the dump");
+  check(none == "{}", "trace: a peer not in the list: {}");
+}
+
 static void relay_test()
 {
   if (g_real) { printf("     relay: skipped (SS_RT_REAL=1: it runs on the simulated network)\n"); return; }
@@ -1834,6 +1896,7 @@ static void relay_test()
 
 int main(int argc, char **argv)
 {
+  setvbuf(stdout, nullptr, _IONBF, 0); // (every line out at once: a crash in a CI log shows where it happened. rt-audio4)
   g_real = getenv("SS_RT_REAL") && atoi(getenv("SS_RT_REAL")) != 0;
   if (!g_real) rt_sim(1);
   printf("     clock: %s\n", g_real ? "real time (SS_RT_REAL=1)" : "simulated (rt_sim; SS_RT_REAL=1 for real time)");
@@ -1854,6 +1917,7 @@ int main(int argc, char **argv)
   if (argc > 1 && strcmp(argv[1], "sim") == 0) { sim_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "relay") == 0) { relay_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "pace") == 0) { pace_lite_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "lookup") == 0) { lookup_test(); trace_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "pacegen") == 0) { pace_gen(); pace_lite_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
@@ -2158,7 +2222,10 @@ int main(int argc, char **argv)
       if (b == at(5.5)) sent_w[1] = atoll(field(rt_status(L[1]), "", "sent").c_str());
       if (b == at(6.5)) sent_w[1] = atoll(field(rt_status(L[1]), "", "sent").c_str()) - sent_w[1];
       if (b == at(6.0)) { s_h = rt_status(L[0]); s_w = rt_status(L[1]); s_x = rt_status(L[2]); s_y = rt_status(L[3]); }
-      if (b == drop) stopper = std::thread([&] { rt_stop(L[0]); }); // (the hub's REAPER gone: no goodbye. Its own thread: rt_stop waits for its receive thread, up to 100 ms, and the others' clock mustn't)
+      if (b == drop) { // (the hub's REAPER gone: no goodbye. Its own thread: rt_stop waits for its receive thread, up to 100 ms, and the others' clock mustn't)
+        if (g_real) stopper = std::thread([&] { rt_stop(L[0]); });
+        else rt_stop(L[0]); // (the model has no threads to wait for: a second thread here raced its one, a crash 1 run in 4. rt-audio4)
+      }
       for (int i = 0; i < 4; ++i) { std::fill(out[i].begin(), out[i].end(), 0.0); std::fill(out2[i].begin(), out2[i].end(), 0.0); }
       for (int i = 0; i < 4; ++i) { const double *ii[1] = { in[i].data() }; rt_capture(L[i], ii, 1, LEN, SR); }
       for (int i = 0; i < 4; ++i) { double *oo[2] = { out[i].data(), out2[i].data() }; rt_mix(L[i], oo, 2, LEN, SR); }
@@ -2223,6 +2290,8 @@ int main(int argc, char **argv)
   sim_test(); // (the simulated clock and network themselves: rt-audio4)
   relay_test(); // (the relay: forwarding instead of mixing, the lease. rt-audio4)
   pace_lite_test(); // (the light pace law against its golden trace: rt-audio4)
+  lookup_test(); // (names looked up off the send thread: rt-audio4)
+  trace_test(); // (the control's last minute: rt-audio4)
   not_here_test();
   start_order_test(); // (the four-computer test's start order: a hub whose list leaves a computer out)
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)
