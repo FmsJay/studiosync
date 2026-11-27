@@ -1,0 +1,435 @@
+<!doctype html>
+<!-- StudioSync: a static mockup of the web UI's new navigation and main pages (docs/rt/ui-web-plan.md). Not the real UI: no data, nothing
+     sent anywhere. Colours copied from lib/webui/style.css so this one file opens anywhere. The top row picks an environment. GPL-3.0-or-later. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>StudioSync UI mockup</title>
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --text: #1c1c1e; --dim: #6b6b70; --line: #e2e2e0; --accent: #d9822b; --me: #fff3e6;
+  --rec: #d23c3c; --play: #2e9b57; --mine: #d9822b; --theirs: #e9e9ec; --warn: #b7860b; --blue: #1e9bff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #161618; --panel: #202023; --text: #ececee; --dim: #9a9aa2; --line: #333338; --accent: #f0a050; --me: #3a2a1a;
+    --rec: #ff6b6b; --play: #5fd38d; --mine: #b8661f; --theirs: #2e2e33; --warn: #f0c25a;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #161618; --panel: #202023; --text: #ececee; --dim: #9a9aa2; --line: #333338; --accent: #f0a050; --me: #3a2a1a;
+  --rec: #ff6b6b; --play: #5fd38d; --mine: #b8661f; --theirs: #2e2e33; --warn: #f0c25a;
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: #77777a; color: var(--text); font: 15px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+button, select, input { font: inherit; color: var(--text); }
+select { background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+button { background: var(--theirs); border: 1px solid var(--line); border-radius: 8px; padding: 5px 11px; cursor: pointer; }
+button.go { background: var(--accent); border-color: var(--accent); color: #fff; }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.dim { color: var(--dim); }
+.small { font-size: 12px; }
+h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); margin: 14px 0 8px; }
+h2:first-child { margin-top: 0; }
+ul { list-style: none; margin: 0; padding: 0; }
+
+/* the mockup's own controls (not part of the design) */
+.mock { background: #2b2b2f; color: #ddd; padding: 8px 16px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 13px; }
+.mock button { background: #3a3a40; color: #ddd; border-color: #4a4a50; padding: 3px 9px; font-size: 13px; }
+.mock button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.mock .note { flex-basis: 100%; color: #aaa; font-size: 12px; }
+
+/* the REAPER stand-in around the view */
+.stage { padding: 16px; min-height: calc(100vh - 80px); }
+.reaper { background: #3b3e44; border-radius: 6px; position: relative; min-height: 640px; overflow: hidden; display: flex; flex-direction: column; }
+.reaper .arrange { flex: 1; background: repeating-linear-gradient(0deg, #34373c 0 38px, #3b3e44 38px 40px); color: #9aa; font-size: 12px; padding: 8px; }
+.reaper.docked { flex-direction: column; }
+.reaper.docked .view { height: 360px; border-top: 3px solid #222; border-radius: 0; width: 100%; }
+.reaper.floating .view { position: absolute; top: 40px; right: 40px; width: min(820px, calc(100% - 80px)); height: 560px; box-shadow: 0 10px 40px #0008; }
+.reaper.full .view { position: absolute; inset: 0; border-radius: 0; }
+.reaper.full .arrange { visibility: hidden; }
+.reaper.strip .view, .reaper.button .view { display: none; }
+.browser { background: #ddd; border-radius: 8px; overflow: hidden; max-width: 1100px; margin: 0 auto; }
+.browser .chrome { background: #cfcfd3; padding: 6px 10px; font-size: 12px; color: #333; }
+.browser .view { height: 640px; border-radius: 0; }
+.phone { width: 390px; max-width: 100%; height: 760px; margin: 0 auto; border: 10px solid #111; border-radius: 34px; overflow: hidden; background: #111; }
+.phone .view { height: 100%; border-radius: 0; }
+
+/* the view (the design) */
+.view { background: var(--bg); border-radius: 8px; display: flex; flex-direction: column; overflow: hidden; }
+.top { display: flex; align-items: center; gap: 8px; padding: 8px 12px; background: var(--panel); border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.logo { width: 26px; height: 26px; flex: none; color: var(--text); }
+.crumbs { display: flex; gap: 4px; align-items: center; min-width: 0; flex: 1 1 290px; overflow: hidden; white-space: nowrap; }
+.crumbs button { background: transparent; border-color: transparent; padding: 2px 6px; font-weight: 600; }
+.crumbs button:hover { border-color: var(--line); }
+.crumbs .sep { color: var(--dim); }
+.pill { font-size: 12px; padding: 2px 9px; border-radius: 10px; background: color-mix(in srgb, var(--play) 20%, transparent); color: var(--play); white-space: nowrap; }
+.pill.off { background: color-mix(in srgb, var(--rec) 18%, transparent); color: var(--rec); }
+.pill.follow { background: color-mix(in srgb, var(--blue) 18%, transparent); color: var(--blue); }
+.ico { padding: 4px 8px; min-width: 32px; }
+.bell { position: relative; }
+.bell b { position: absolute; top: -5px; right: -5px; background: var(--rec); color: #fff; font-size: 10px; border-radius: 8px; padding: 0 5px; }
+.winbtns { display: flex; gap: 4px; }
+.tabs { display: flex; gap: 2px; padding: 4px 8px 0; background: var(--panel); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
+.tabs button { border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; padding: 6px 10px; white-space: nowrap; position: relative; }
+.tabs button[aria-pressed="true"] { border-bottom-color: var(--accent); color: var(--accent); font-weight: 600; }
+.tabs button[disabled] { opacity: .35; cursor: default; }
+.tabs .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); margin-left: 5px; vertical-align: 2px; }
+.body { flex: 1; min-height: 0; display: flex; }
+.page { flex: 1; min-width: 0; overflow-y: auto; padding: 12px 16px; }
+.rail { width: 220px; flex: none; border-left: 1px solid var(--line); padding: 12px; overflow-y: auto; background: var(--panel); }
+.subs { display: flex; gap: 4px; margin-bottom: 10px; flex-wrap: wrap; align-items: center; }
+.subs button { padding: 3px 10px; font-size: 13px; }
+.subs button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.row { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; }
+.badge { display: inline-block; font-size: 11px; padding: 1px 6px; border-radius: 8px; background: var(--theirs); color: var(--dim); }
+.badge.rec { background: var(--rec); color: #fff; } .badge.play { background: var(--play); color: #fff; } .badge.ctl { background: var(--accent); color: #fff; }
+.av { width: 26px; height: 26px; border-radius: 50%; display: inline-grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700; flex: none; }
+.person { display: flex; gap: 8px; align-items: center; }
+.person.me { background: var(--me); }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; }
+.seg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.notice { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); border-radius: 10px; padding: 8px 12px; margin-bottom: 10px; }
+.editing { outline: 3px solid var(--accent); outline-offset: -3px; }
+.arr { position: relative; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.ruler { height: 22px; border-bottom: 1px solid var(--line); font-size: 11px; color: var(--dim); display: flex; padding-left: 110px; }
+.ruler span { flex: 1; border-left: 1px solid var(--line); padding-left: 3px; }
+.trk { display: flex; height: 44px; border-bottom: 1px solid var(--line); }
+.trk .nm { width: 110px; flex: none; padding: 4px 8px; font-size: 13px; border-right: 1px solid var(--line); display: flex; align-items: center; gap: 6px; }
+.trk .lane { flex: 1; position: relative; }
+.it { position: absolute; top: 5px; bottom: 5px; border-radius: 4px; opacity: .85; font-size: 11px; color: #fff; padding: 2px 5px; overflow: hidden; white-space: nowrap; }
+.cur { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--rec); left: 46%; }
+.cur.bo { background: var(--blue); left: 63%; }
+.hrow { display: flex; gap: 8px; align-items: baseline; padding: 7px 10px; margin-bottom: 6px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; flex-wrap: wrap; }
+.hdot { width: 10px; height: 10px; border-radius: 50%; background: var(--play); flex: none; align-self: center; }
+.hrow.red .hdot { background: var(--rec); } .hrow.yellow .hdot { background: var(--warn); } .hrow.other .hdot { background: var(--dim); }
+.hrow .t { flex: 1 1 240px; }
+.msgs li { margin: 6px 0; max-width: 85%; }
+.msgs .bubble { display: inline-block; background: var(--theirs); padding: 6px 10px; border-radius: 12px; }
+.msgs li.mine { margin-left: auto; text-align: right; } .msgs li.mine .bubble { background: var(--mine); color: #fff; }
+.lapse { height: 120px; background: linear-gradient(90deg, color-mix(in srgb, var(--blue) 30%, transparent), color-mix(in srgb, var(--accent) 30%, transparent)); border-radius: 8px; display: grid; place-items: center; color: var(--dim); }
+.strip-w { position: absolute; top: 56px; right: 30px; display: flex; gap: 8px; align-items: center; background: #26292e; color: #e6e8eb; border-radius: 14px; padding: 4px 6px 4px 8px; font-size: 13px; box-shadow: 0 4px 16px #0007; }
+.strip-w .sdot { width: 8px; height: 8px; border-radius: 50%; background: #59cc73; }
+.strip-w button { background: #3a3d44; color: #e6e8eb; border-color: #4a4d54; padding: 1px 8px; font-size: 12px; }
+.button-w { position: absolute; top: 56px; right: 30px; width: 40px; height: 40px; border-radius: 10px; background: #26292e; border: 2px solid #59cc73; display: grid; place-items: center; box-shadow: 0 4px 16px #0007; }
+.button-w b { position: absolute; top: -6px; right: -6px; background: #e0605a; color: #fff; font-size: 10px; border-radius: 8px; padding: 0 5px; }
+.bottombar { display: none; border-top: 1px solid var(--line); background: var(--panel); }
+.bottombar button { flex: 1; border: 0; border-radius: 0; background: transparent; padding: 8px 2px; font-size: 12px; }
+.bottombar button[aria-pressed="true"] { color: var(--accent); font-weight: 600; }
+.view.phoneview .tabs, .view.phoneview .rail, .view.phoneview .winbtns, .view.phoneview .crumbs .room { display: none; }
+.view.phoneview .bottombar { display: flex; }
+.view.phoneview .top .tog { display: none; }
+.view.narrow .rail { display: none; }
+.hidden { display: none !important; }
+.menu { position: absolute; right: 12px; top: 44px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 6px; box-shadow: 0 6px 24px #0004; z-index: 5; min-width: 210px; }
+.menu button { display: block; width: 100%; text-align: left; background: transparent; border-color: transparent; }
+.menu button:hover { background: var(--theirs); }
+.view { position: relative; }
+@media (max-width: 640px) { .rail { display: none; } .stage { padding: 8px; } }
+</style>
+</head>
+<body>
+<div class="mock" role="toolbar" aria-label="Mockup: pick an environment">
+  <strong>Mockup</strong>
+  <button type="button" data-env="docked" aria-pressed="false">In REAPER: docked</button>
+  <button type="button" data-env="floating" aria-pressed="true">In REAPER: floating</button>
+  <button type="button" data-env="full">Full screen</button>
+  <button type="button" data-env="strip">Strip</button>
+  <button type="button" data-env="button">Button</button>
+  <button type="button" data-env="browser">Browser on this computer</button>
+  <button type="button" data-env="phone">Phone on the tailnet</button>
+  <span>|</span>
+  <button type="button" id="noproj" aria-pressed="false">No project open</button>
+  <button type="button" id="themeb">Light / dark</button>
+  <span class="note">Static design mockup for docs/rt/ui-web-plan.md: made-up names and numbers; nothing here talks to StudioSync.</span>
+</div>
+
+<div class="stage" id="stage"></div>
+
+<template id="viewtpl">
+<div class="view">
+  <div class="top">
+    <svg class="logo" viewBox="0 0 64 64" aria-label="StudioSync" role="img"><defs><linearGradient id="g1" gradientUnits="userSpaceOnUse" x1="12" y1="0" x2="52" y2="0"><stop offset="0" stop-color="#1E9BFF"/><stop offset=".5" stop-color="#C26BD6"/><stop offset="1" stop-color="#FF8A1E"/></linearGradient></defs><path d="M18 7A9 25 0 0 1 18 57Z" fill="#1E9BFF" fill-opacity=".45" stroke="#1E9BFF" stroke-width="3.5"/><path d="M46 7A9 25 0 0 0 46 57Z" fill="#FF8A1E" fill-opacity=".45" stroke="#FF8A1E" stroke-width="3.5"/><path d="M18 5V59M46 5V59" stroke="currentColor" stroke-width="4.5" stroke-linecap="round"/><path d="M18 20C32 20 32 44 46 44" fill="none" stroke="url(#g1)" stroke-width="5"/><rect x="6" y="13" width="24" height="14" rx="4" fill="url(#g1)"/><rect x="34" y="37" width="24" height="14" rx="4" fill="url(#g1)"/></svg>
+    <div class="crumbs">
+      <button type="button" title="Switch studio">Chilio ▾</button><span class="sep proj">▸</span>
+      <button type="button" class="proj" title="Switch project">Cross Test ▾</button><span class="sep room proj">▸</span>
+      <button type="button" class="room proj" title="Switch room">main ▾</button>
+    </div>
+    <span class="pill proj">Sync on · 3 here</span>
+    <span class="pill follow proj tog">Following Bo</span>
+    <button type="button" class="ico proj tog" title="Play together">▶</button>
+    <button type="button" class="ico proj tog" title="Stop together">■</button>
+    <button type="button" class="ico proj" title="Mic: on (click to mute)">🎙</button>
+    <button type="button" class="ico bell" title="2 waiting: a join request, 1 edit put back">🔔<b>2</b></button>
+    <span class="winbtns">
+      <button type="button" class="ico" data-win="strip" title="Shrink to the strip">▁</button>
+      <button type="button" class="ico" data-win="button" title="Shrink to the button">▢</button>
+      <button type="button" class="ico" data-win="dock" title="Dock: bottom, left, right; Undock">⇲</button>
+      <button type="button" class="ico" data-win="full" title="Full screen">⛶</button>
+    </span>
+    <button type="button" class="ico menub" title="Menu">⋯</button>
+  </div>
+  <nav class="tabs" aria-label="Pages"></nav>
+  <div class="body">
+    <main class="page"></main>
+    <aside class="rail proj" aria-label="Who's here">
+      <h2>Who’s here</h2>
+      <ul>
+        <li class="card person me"><span class="av" style="background:#d9822b">J</span><div><strong>James</strong> <span class="badge ctl">in control</span><div class="small dim">Desktop · Laptop</div></div></li>
+        <li class="card person"><span class="av" style="background:#1e9bff">B</span><div><strong>Bo</strong> <span class="badge play">playing</span><div class="small dim">armed: Bass</div></div></li>
+        <li class="card person"><span class="av" style="background:#8a5ad6">S</span><div><strong>Sam</strong> <span class="badge">on the call</span></div></li>
+      </ul>
+    </aside>
+  </div>
+  <nav class="bottombar" aria-label="Pages"></nav>
+  <div class="menu hidden" role="menu">
+    <button type="button">Theme and text size…</button>
+    <button type="button" class="reaperonly">Open in the browser</button>
+    <button type="button" class="browseronly">Open in REAPER</button>
+    <button type="button">Send feedback…</button>
+    <button type="button" class="reaperonly proj">Sync and exit…</button>
+  </div>
+</div>
+</template>
+
+<script>
+'use strict';
+const $ = (s, r = document) => r.querySelector(s);
+const PAGES = {}; // name -> html
+const TABS = [
+  ['studio', 'Studio', 'always'], ['session', 'Session', 'proj'], ['project', 'Project', 'proj'], ['chat', 'Chat', 'always'],
+  ['history', 'History', 'proj'], ['plugins', 'Plug-ins', 'proj'], ['ai', 'AI', 'proj'], ['health', 'Health', 'always'], ['settings', 'Settings', 'always'],
+];
+const PHONE = [['session', 'Session'], ['project', 'Project'], ['record', 'Record'], ['chat', 'Chat'], ['more', 'More']];
+
+PAGES.studio = `
+<div class="notice"><strong>Untitled 3</strong> is open in REAPER and isn’t shared. <button type="button" class="go">Share with Chilio</button></div>
+<div class="subs"><button aria-pressed="true">Projects</button><button>What’s new</button><button>People</button><button>Studios</button>
+  <span style="flex:1"></span><input placeholder="Search projects" style="padding:4px 8px;border:1px solid var(--line);border-radius:8px;background:var(--panel)">
+  <span class="seg"><button aria-pressed="true">Recent</button><button>Folders</button><button>Stage</button></span>
+  <button>New project</button></div>
+<div class="grid">
+  <div class="card"><div class="row"><strong>Cross Test</strong><span class="badge">Tracking</span><span class="badge play">3 in it</span></div>
+    <div class="small dim">Bo added 3 takes · 12 min ago · Songs / 2026</div><div class="row" style="margin-top:6px"><button class="go">Open</button><button>Ask…</button><button>Link</button><button>⋯</button></div></div>
+  <div class="card"><div class="row"><strong>Night Drive</strong><span class="badge">Mixing</span></div>
+    <div class="small dim">Sam rendered a mix · yesterday · Songs / 2026</div><div class="row" style="margin-top:6px"><button>Open</button><button>Ask…</button><button>Link</button><button>⋯</button></div></div>
+  <div class="card"><div class="row"><strong>Riff ideas</strong><span class="badge">Idea</span><span class="badge">📌 pinned</span></div>
+    <div class="small dim">James changed the tempo · 3 days ago · Sketches</div><div class="row" style="margin-top:6px"><button>Open</button><button>Ask…</button><button>Link</button><button>⋯</button></div></div>
+</div>
+<h2>For you</h2>
+<div class="card small">Bo mentioned you in Cross Test: “@James can you redo the bridge vocal?” · 1 to-do for you</div>
+<h2>Online now</h2>
+<div class="card small"><span class="badge play">Bo</span> Cross Test · main &nbsp; <span class="badge">Sam</span> Cross Test · main &nbsp; <span class="badge">Kim</span> Night Drive · try-chorus</div>`;
+
+PAGES.lobby = `
+<div class="notice">No studio project is open in REAPER. Pick one to open it there.</div>
+<div class="subs"><button aria-pressed="true">Projects</button><button>Studios</button><button>People</button><span style="flex:1"></span><button>Start a studio</button><button>Paste a join code</button></div>
+<div class="grid">
+  <div class="card"><strong>Cross Test</strong> <span class="badge">Tracking</span><div class="small dim">Bo · 12 min ago</div><div class="row" style="margin-top:6px"><button class="go">Open in REAPER</button></div></div>
+  <div class="card"><strong>Night Drive</strong> <span class="badge">Mixing</span><div class="small dim">Sam · yesterday</div><div class="row" style="margin-top:6px"><button>Open in REAPER</button></div></div>
+</div>`;
+
+PAGES.session = `
+<h2>Play together</h2>
+<div class="card"><div class="row"><span>How we play</span><span class="seg"><button aria-pressed="true">Follow</button><button>Real time</button><button>Time-sync</button><button>Jam</button></span></div>
+  <p class="small dim" style="margin:6px 0 0">Follow: press play, stop or record in REAPER as usual. Everyone following goes with you; each records their own armed tracks.</p>
+  <div class="row" style="margin-top:8px"><label><input type="checkbox" checked> count-in 1 bar</label><label><input type="checkbox" checked> click</label><label><input type="checkbox"> skip the time selection</label></div></div>
+<h2>Who’s here</h2>
+<div class="grid">
+  <div class="card person me"><span class="av" style="background:#d9822b">J</span><div><strong>James (you)</strong> <span class="badge ctl">in control</span><div class="small dim">armed: Vox</div></div></div>
+  <div class="card person"><span class="av" style="background:#1e9bff">B</span><div><strong>Bo</strong> <span class="badge play">playing</span><div class="row small"><button>Following</button><button>⋯</button></div></div></div>
+  <div class="card person"><span class="av" style="background:#8a5ad6">S</span><div><strong>Sam</strong> <span class="badge">on the call</span><div class="row small"><button>Follow</button><button>⋯</button></div></div></div>
+</div>
+<div class="grid" style="margin-top:8px">
+  <div class="card"><h2>Who can edit</h2><div class="row"><select><option>Anyone (claims)</option><option>Whoever is in control</option><option>Admins</option></select><button>Take control</button></div>
+    <p class="small dim">Claims: Bo has Bass · Sam has 1:20 to 1:52</p><div class="row"><button>Claim selected tracks</button><button>Release mine</button></div></div>
+  <div class="card"><h2>How I hear</h2><label><input type="checkbox"> Local mixing (my faders stay mine)</label><p class="small dim">Each person’s volume…</p></div>
+  <div class="card"><h2>Rooms</h2><div class="row"><span class="badge ctl">main</span><span class="badge">try-chorus (Kim)</span></div><div class="row" style="margin-top:6px"><button>New room</button><button>Come see!</button></div></div>
+</div>`;
+
+PAGES.project = `
+<div class="subs"><span class="seg editseg"><button aria-pressed="true" data-edit="0">👁 View</button><button data-edit="1">✎ Edit</button></span>
+  <button aria-pressed="true">Arrange</button><button>Mixer</button><button>Sheet</button><button>Beat</button>
+  <span style="flex:1"></span><select title="Follow"><option>Follow: Bo</option><option>Follow nobody</option><option>Follow: Sam</option></select>
+  <button title="Overlay: changes on the timeline">Show changes</button><button title="Pop out">⇱</button></div>
+<div class="editnote small dim" style="margin-bottom:6px">View: clicks select and scroll; nothing is sent.</div>
+<div class="arr">
+  <div class="ruler"><span>1</span><span>5</span><span>9</span><span>13</span><span>17</span><span>21</span><span>25</span></div>
+  <div class="trk"><div class="nm"><span class="av" style="background:#cc4444;width:10px;height:10px"></span>Drums</div><div class="lane"><div class="it" style="left:2%;width:70%;background:#cc4444">Drums take 2</div></div></div>
+  <div class="trk"><div class="nm"><span class="av" style="background:#4477cc;width:10px;height:10px"></span>Bass <span class="badge">Bo</span></div><div class="lane"><div class="it" style="left:14%;width:30%;background:#4477cc">Bass</div><div class="it" style="left:48%;width:22%;background:#4477cc">Bass 2</div></div></div>
+  <div class="trk"><div class="nm"><span class="av" style="background:#44aa66;width:10px;height:10px"></span>Keys</div><div class="lane"><div class="it" style="left:8%;width:40%;background:#44aa66">Keys (MIDI)</div></div></div>
+  <div class="trk"><div class="nm"><span class="av" style="background:#d9822b;width:10px;height:10px"></span>Vox</div><div class="lane"><div class="it" style="left:30%;width:36%;background:#d9822b">Vox comp</div></div></div>
+  <div class="cur"></div><div class="cur bo" title="Bo’s cursor"></div>
+</div>`;
+
+PAGES.chat = `
+<div class="subs"><button aria-pressed="true">This project</button><button>This room</button><button>Studio</button><button>#ideas</button><button>Bo</button><span style="flex:1"></span>
+  <span class="seg"><button aria-pressed="true">All</button><button>Messages</button><button>To-do</button><button>Links</button></span><button title="Pop out">⇱</button></div>
+<ul class="msgs">
+  <li><div class="small dim">Bo · 14:02</div><span class="bubble">Bass 2 is in, have a listen at bar 17</span></li>
+  <li class="small dim">📝 Note on Vox comp (Sam): “breath at 1:21”</li>
+  <li class="mine"><div class="small dim">You · 14:05</div><span class="bubble">Nice, keeping it</span></li>
+</ul>
+<div class="row" style="margin-top:10px"><input style="flex:1;padding:8px;border:1px solid var(--line);border-radius:8px;background:var(--panel)" placeholder="Message the band"><button class="go">Send</button></div>`;
+
+PAGES.history = `
+<div class="subs"><button>Changes</button><button>Versions</button><button aria-pressed="true">Playback</button><button>Mixes</button></div>
+<div class="lapse">the time lapse: tracks appear, takes land, in each person’s colour</div>
+<div class="row" style="margin:8px 0"><button>▶ Play</button><span class="small dim">speed</span><select><option>x8</option></select><input type="range" style="flex:1"><span class="small">Tue 21 Nov, 20:14</span></div>
+<div class="card"><h2>Hear it as it was</h2><div class="row"><button class="go">Listen to this point</button><button>Compare with now</button><label><input type="checkbox" checked> Play through REAPER</label><button>Open this point in REAPER</button><button>Restore this point…</button></div></div>
+<h2>Changes</h2>
+<div class="card small"><strong>Bo</strong> added an item on Bass · 14:01 <span class="row" style="display:inline-flex;margin-left:8px"><button>Go to it</button><button>Undo this change</button><button>Restore to here…</button></span></div>`;
+
+PAGES.plugins = `
+<div class="subs"><button aria-pressed="true">This project</button><button>Try a bandmate’s</button><button>Find a plug-in</button><button>Plug-in pack</button></div>
+<div class="card"><div class="row"><strong>Pro-Q 3</strong><span class="badge">Vox</span><span class="small dim">Sam doesn’t have it · stand-in: ReaEQ</span><button>Open in REAPER</button><button>Run on James’s computer for Sam</button></div></div>
+<div class="card"><div class="row"><strong>Kontakt 7</strong><span class="badge">Keys</span><span class="small dim">everyone has it</span><button>Open in REAPER</button></div></div>
+<div class="notice small">Bo asks to try <strong>Pro-Q 3</strong> on his Bass. <button class="go">Allow</button> <button>No</button></div>`;
+
+PAGES.ai = `
+<p class="small dim">Every run asks first and shows exactly what goes where.</p>
+<div class="grid"><div class="card"><h2>Split into stems</h2><p class="small dim">demucs · on this computer</p><select><option>Newest mix</option><option>Drums take 2</option></select> <button class="go">Ask</button></div>
+<div class="card"><h2>Audio to MIDI</h2><p class="small dim">Basic Pitch · on this computer</p><select><option>Bass 2</option></select> <button class="go">Ask</button></div></div>`;
+
+PAGES.health = `
+<div class="subs"><button aria-pressed="true">Checks</button><button>Log</button><button>Updates</button><button>Can’t hear?</button><button>Send feedback</button>
+  <span style="flex:1"></span><label class="small"><input type="checkbox"> Show hidden (2)</label><label class="small"><input type="checkbox" checked> Messages about other scripts</label></div>
+<div class="hrow yellow"><span class="hdot"></span><span class="t">Syncthing is behind by 3 files for Cross Test.</span><button>Check again</button><button>Hide</button></div>
+<div class="hrow other"><span class="hdot"></span><span class="t">Other script: “Adaptive grid” changed the grid 4 times in a minute; StudioSync kept yours.</span><button>Hide</button></div>
+<div class="hrow"><span class="hdot"></span><span class="t">Tailscale: connected as james-main.</span></div>
+<div class="hrow"><span class="hdot"></span><span class="t">Direct link: listening on 47281.</span></div>`;
+
+PAGES.settings = `
+<div class="subs"><button>You</button><button aria-pressed="true">This computer</button><button>Studio</button><button>Devices</button><button>Advanced</button></div>
+<div class="grid">
+  <div class="card"><h2>Window</h2><div class="small">When REAPER has the focus</div><select><option>Shrink to the strip</option><option>Shrink to the button</option><option>Stay in front</option><option>Go behind REAPER</option><option>Fade</option></select>
+    <div class="small" style="margin-top:6px">Opens as</div><select><option>Where it was</option><option>Docked</option><option>Floating</option></select>
+    <p><label><input type="checkbox" checked> StudioSync button on REAPER’s toolbar</label></p></div>
+  <div class="card"><h2>Look</h2><select><option>Dark</option><option>Light</option><option>Midnight</option><option>Warm</option><option>Custom</option></select> <span class="small dim">text size</span> <input type="range" min="80" max="160" value="100"></div>
+  <div class="card"><h2>Audio</h2><div class="small">Talk mic</div><select><option>Interface input 2</option></select><p class="small dim">Real time buffer · What you send · Measure my latency</p></div>
+</div>`;
+
+PAGES.record = `<h2>A take from this phone</h2><div class="card"><div class="row"><select><option>Vox</option></select><button class="go" style="background:var(--rec);border-color:var(--rec)">● Record</button></div><p class="small dim">Sings along with James-Main’s REAPER.</p></div>`;
+PAGES.more = `<h2>More</h2><div class="grid"><button>Studio</button><button>History</button><button>Health</button><button>Settings</button></div>`;
+
+let env = 'floating', noProject = false, tab = 'session', editOn = false;
+function frame() {
+  const st = $('#stage');
+  st.replaceChildren();
+  const v = $('#viewtpl').content.firstElementChild.cloneNode(true);
+  const inReaper = ['docked', 'floating', 'full', 'strip', 'button'].includes(env);
+  let host;
+  if (inReaper) {
+    host = document.createElement('div');
+    host.className = 'reaper ' + env;
+    const arr = document.createElement('div');
+    arr.className = 'arrange';
+    arr.textContent = 'REAPER’s arrange view';
+    host.append(arr);
+    if (env === 'docked') host.append(v); else host.insertBefore(v, arr);
+    if (env === 'strip') {
+      const s = document.createElement('div');
+      s.className = 'strip-w';
+      s.innerHTML = '<svg width="16" height="16" viewBox="0 0 64 64"><path d="M18 5V59M46 5V59" stroke="#e6e8eb" stroke-width="6"/><path d="M18 20C32 20 32 44 46 44" fill="none" stroke="#ff8a1e" stroke-width="6"/></svg><span class="sdot"></span>' +
+        '<span>StudioSync · Sync on · Following Bo · 2 new messages · 1 join request</span><button>🎙</button><button>Open</button>';
+      s.querySelector('button:last-child').addEventListener('click', () => pick('floating'));
+      host.append(s);
+    }
+    if (env === 'button') {
+      const b = document.createElement('button');
+      b.className = 'button-w';
+      b.title = 'StudioSync: Sync on · 2 waiting. Click: open';
+      b.innerHTML = '<svg width="24" height="24" viewBox="0 0 64 64"><path d="M18 5V59M46 5V59" stroke="#e6e8eb" stroke-width="6"/><path d="M18 20C32 20 32 44 46 44" fill="none" stroke="#ff8a1e" stroke-width="6"/></svg><b>2</b>';
+      b.addEventListener('click', () => pick('floating'));
+      host.append(b);
+    }
+  } else if (env === 'browser') {
+    host = document.createElement('div');
+    host.className = 'browser';
+    host.innerHTML = '<div class="chrome">http://127.0.0.1:47281/</div>';
+    host.append(v);
+  } else {
+    host = document.createElement('div');
+    host.className = 'phone';
+    host.append(v);
+    v.classList.add('phoneview');
+  }
+  if (env === 'docked') v.classList.add('narrow');
+  if (!inReaper) v.querySelector('.winbtns').classList.add('hidden');
+  v.querySelectorAll('.reaperonly').forEach((e) => e.classList.toggle('hidden', !inReaper));
+  v.querySelectorAll('.browseronly').forEach((e) => e.classList.toggle('hidden', env !== 'browser'));
+  v.querySelectorAll('.proj').forEach((e) => e.classList.toggle('hidden', noProject));
+  v.querySelectorAll('[data-win]').forEach((b) => b.addEventListener('click', () => pick(b.dataset.win === 'dock' ? (env === 'docked' ? 'floating' : 'docked') : b.dataset.win === 'full' && env === 'full' ? 'floating' : b.dataset.win)));
+  const menu = v.querySelector('.menu');
+  v.querySelector('.menub').addEventListener('click', () => menu.classList.toggle('hidden'));
+  st.append(host);
+  draw(v);
+}
+function draw(v) {
+  const nav = v.querySelector('.tabs'), bb = v.querySelector('.bottombar');
+  nav.replaceChildren(); bb.replaceChildren();
+  const phone = env === 'phone';
+  if (noProject && !['studio', 'chat', 'health', 'settings', 'more'].includes(tab)) tab = 'studio';
+  if (phone && !PHONE.some(([n]) => n === tab)) tab = noProject ? 'chat' : 'session';
+  for (const [name, label, need] of TABS) {
+    if (phone && name === 'settings') continue;
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(tab === name));
+    if (need === 'proj' && noProject) b.disabled = true;
+    if (name === 'health') b.insertAdjacentHTML('beforeend', '<span class="dot" title="Something is worth a look"></span>');
+    b.addEventListener('click', () => { tab = name; draw(v); });
+    nav.append(b);
+  }
+  for (const [name, label] of PHONE) {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.textContent = label;
+    b.setAttribute('aria-pressed', String(tab === name));
+    if (noProject && ['session', 'project', 'record'].includes(name)) b.disabled = true;
+    b.addEventListener('click', () => { tab = name; draw(v); });
+    bb.append(b);
+  }
+  const page = v.querySelector('.page');
+  page.innerHTML = tab === 'studio' && noProject ? PAGES.lobby : PAGES[tab];
+  if (phone && tab === 'plugins') page.insertAdjacentHTML('afterbegin', '<div class="notice small">On a phone: what’s missing and stand-ins only. Open plug-in windows on a REAPER computer.</div>');
+  v.querySelector('.rail').classList.toggle('hidden', noProject || tab === 'project' || tab === 'session');
+  if (tab === 'project') {
+    const arr = page.querySelector('.arr'), note = page.querySelector('.editnote');
+    const set = () => {
+      page.querySelectorAll('[data-edit]').forEach((b) => b.setAttribute('aria-pressed', String((b.dataset.edit === '1') === editOn)));
+      arr.classList.toggle('editing', editOn);
+      note.textContent = editOn ? 'Editing: your changes go to everyone. Back to View after 5 minutes without an edit.' : 'View: clicks select and scroll; nothing is sent.';
+      note.style.color = editOn ? 'var(--accent)' : '';
+    };
+    page.querySelectorAll('[data-edit]').forEach((b) => b.addEventListener('click', () => { editOn = b.dataset.edit === '1'; set(); }));
+    set();
+  }
+}
+function pick(e) {
+  env = e;
+  document.querySelectorAll('.mock [data-env]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.env === env)));
+  frame();
+}
+document.querySelectorAll('.mock [data-env]').forEach((b) => b.addEventListener('click', () => pick(b.dataset.env)));
+$('#noproj').addEventListener('click', (e) => { noProject = !noProject; e.target.setAttribute('aria-pressed', String(noProject)); frame(); });
+$('#themeb').addEventListener('click', () => {
+  const r = document.documentElement;
+  const dark = r.dataset.theme ? r.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+  r.dataset.theme = dark ? 'light' : 'dark';
+});
+// (#env=phone, #env=strip, #tab=project, #noproject: open the mockup at a view directly)
+const H = new URLSearchParams(location.hash.slice(1));
+if (H.get('tab')) tab = H.get('tab');
+if (H.has('noproject')) { noProject = true; $('#noproj').setAttribute('aria-pressed', 'true'); }
+if (H.has('edit')) editOn = true;
+pick(H.get('env') || env);
+</script>
+</body>
+</html>
