@@ -14991,6 +14991,265 @@
         <source file="lib/webui/vkeys.css">https://github.com/FmsJay/studiosync/raw/v0.61.0/lib/webui/vkeys.css</source>
         <source file="lib/webui/vkeys.js">https://github.com/FmsJay/studiosync/raw/v0.61.0/lib/webui/vkeys.js</source>
       </version>
+      <version name="0.61.1" author="James" time="2026-11-27T18:19:06Z">
+        <changelog>0.61.1 (test build, Smiley Studios): the web view's Session tab (Who's here with a person menu, who can edit, claims, Rooms), the Project tab's View/Edit switch (back to View on every open and after 5 minutes idle; Live sync refuses unflagged edits), Chat's notes and likes, call controls in the top bar and one call per computer, the Plug-ins tab (this project, find, pack, Try), the Settings tab (You, This computer incl. the window's focus behaviour, Studio, Devices incl. the talk mic, Advanced); Public links and Your computers only from this computer, never a phone; an item moved to another track no longer lost in a merge. Extension 1.0.41.</changelog>
+        <source main="main" file="StudioSync - Autostart.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Autostart.lua</source>
+        <source main="main" file="StudioSync - Claim selected tracks.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Claim%20selected%20tracks.lua</source>
+        <source main="main" file="StudioSync - Draw.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Draw.lua</source>
+        <source main="main" file="StudioSync - Final mix.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Final%20mix.lua</source>
+        <source main="main" file="StudioSync - Keep selected tracks local.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Keep%20selected%20tracks%20local.lua</source>
+        <source main="main" file="StudioSync - Live audio deafen.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Live%20audio%20deafen.lua</source>
+        <source main="main" file="StudioSync - Live audio hold to talk.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Live%20audio%20hold%20to%20talk.lua</source>
+        <source main="main" file="StudioSync - Live audio mute me.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Live%20audio%20mute%20me.lua</source>
+        <source main="main" file="StudioSync - Live audio talkback.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Live%20audio%20talkback.lua</source>
+        <source main="main" file="StudioSync - Live sync.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Live%20sync.lua</source>
+        <source main="main" file="StudioSync - Local mixing.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Local%20mixing.lua</source>
+        <source main="main" file="StudioSync - Measure guest delay.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Measure%20guest%20delay.lua</source>
+        <source main="main" file="StudioSync - Offload track FX.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Offload%20track%20FX.lua</source>
+        <source main="main" file="StudioSync - Open session.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Open%20session.lua</source>
+        <source main="main" file="StudioSync - Panel.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Panel.lua</source>
+        <source main="main" file="StudioSync - Prepare session.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Prepare%20session.lua</source>
+        <source main="main" file="StudioSync - Publish session.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Publish%20session.lua</source>
+        <source main="main" file="StudioSync - Radial menu.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Radial%20menu.lua</source>
+        <source main="main" file="StudioSync - Redo.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Redo.lua</source>
+        <source main="main" file="StudioSync - Run plug-in on a bandmate.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Run%20plug-in%20on%20a%20bandmate.lua</source>
+        <source main="main" file="StudioSync - Settings.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Settings.lua</source>
+        <source main="main" file="StudioSync - Status.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Status.lua</source>
+        <source main="main" file="StudioSync - Take control.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Take%20control.lua</source>
+        <source main="main" file="StudioSync - Try a bandmate's plug-in.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Try%20a%20bandmate%27s%20plug-in.lua</source>
+        <source main="main" file="StudioSync - Undo.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Undo.lua</source>
+        <source main="main" file="StudioSync - Update.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/StudioSync%20-%20Update.lua</source>
+        <source file="lib/ablink.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ablink.lua</source>
+        <source file="lib/access.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/access.lua</source>
+        <source file="lib/ai.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ai.lua</source>
+        <source file="lib/alerts.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/alerts.lua</source>
+        <source file="lib/api.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/api.lua</source>
+        <source file="lib/audience.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/audience.lua</source>
+        <source file="lib/band.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/band.lua</source>
+        <source file="lib/bgrender.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/bgrender.lua</source>
+        <source file="lib/bounces.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/bounces.lua</source>
+        <source file="lib/calibrate.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/calibrate.lua</source>
+        <source file="lib/callapps.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/callapps.lua</source>
+        <source file="lib/callwin.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/callwin.lua</source>
+        <source file="lib/chatfiles.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/chatfiles.lua</source>
+        <source file="lib/chooser.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/chooser.lua</source>
+        <source file="lib/claimask.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/claimask.lua</source>
+        <source file="lib/cloudmodes.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/cloudmodes.lua</source>
+        <source file="lib/colours.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/colours.lua</source>
+        <source file="lib/compat.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/compat.lua</source>
+        <source file="lib/content.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/content.lua</source>
+        <source file="lib/controllers.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/controllers.lua</source>
+        <source file="lib/dawedit.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/dawedit.lua</source>
+        <source file="lib/dawmidi.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/dawmidi.lua</source>
+        <source file="lib/dawview.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/dawview.lua</source>
+        <source file="lib/debugmode.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/debugmode.lua</source>
+        <source file="lib/direct.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/direct.lua</source>
+        <source file="lib/double.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/double.lua</source>
+        <source file="lib/drive.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/drive.lua</source>
+        <source file="lib/drivebg.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/drivebg.lua</source>
+        <source file="lib/drummap.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/drummap.lua</source>
+        <source file="lib/export.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/export.lua</source>
+        <source file="lib/extras.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/extras.lua</source>
+        <source file="lib/feedback.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/feedback.lua</source>
+        <source file="lib/follow.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/follow.lua</source>
+        <source file="lib/forks.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/forks.lua</source>
+        <source file="lib/fromfolder.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/fromfolder.lua</source>
+        <source file="lib/fxfiles.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/fxfiles.lua</source>
+        <source file="lib/fxpick.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/fxpick.lua</source>
+        <source file="lib/grants.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/grants.lua</source>
+        <source file="lib/groups.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/groups.lua</source>
+        <source file="lib/guest.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/guest.lua</source>
+        <source file="lib/guestweb.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/guestweb.lua</source>
+        <source file="lib/hear.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/hear.lua</source>
+        <source file="lib/histhear.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/histhear.lua</source>
+        <source file="lib/hops.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/hops.lua</source>
+        <source file="lib/hoptry.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/hoptry.lua</source>
+        <source file="lib/hub.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/hub.lua</source>
+        <source file="lib/invite.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/invite.lua</source>
+        <source file="lib/jam.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/jam.lua</source>
+        <source file="lib/joinboot.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/joinboot.lua</source>
+        <source file="lib/joins.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/joins.lua</source>
+        <source file="lib/json.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/json.lua</source>
+        <source file="lib/judge.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/judge.lua</source>
+        <source file="lib/latency.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/latency.lua</source>
+        <source file="lib/leave.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/leave.lua</source>
+        <source file="lib/libraries.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/libraries.lua</source>
+        <source file="lib/listen.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/listen.lua</source>
+        <source file="lib/live.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/live.lua</source>
+        <source file="lib/liveaudio.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/liveaudio.lua</source>
+        <source file="lib/livekeys.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/livekeys.lua</source>
+        <source file="lib/livemidi.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/livemidi.lua</source>
+        <source file="lib/liverelay.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/liverelay.lua</source>
+        <source file="lib/livex.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/livex.lua</source>
+        <source file="lib/loadguard.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/loadguard.lua</source>
+        <source file="lib/localcopy.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/localcopy.lua</source>
+        <source file="lib/midiview.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/midiview.lua</source>
+        <source file="lib/mirror.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/mirror.lua</source>
+        <source file="lib/mirror_merge.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/mirror_merge.lua</source>
+        <source file="lib/mixlayer.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/mixlayer.lua</source>
+        <source file="lib/nat.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/nat.lua</source>
+        <source file="lib/needlist.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/needlist.lua</source>
+        <source file="lib/pack.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/pack.lua</source>
+        <source file="lib/page_chat.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_chat.lua</source>
+        <source file="lib/page_groups.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_groups.lua</source>
+        <source file="lib/page_health.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_health.lua</source>
+        <source file="lib/page_hear.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_hear.lua</source>
+        <source file="lib/page_play.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_play.lua</source>
+        <source file="lib/page_plugins.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_plugins.lua</source>
+        <source file="lib/page_restore.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_restore.lua</source>
+        <source file="lib/page_rooms.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/page_rooms.lua</source>
+        <source file="lib/peaks.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/peaks.lua</source>
+        <source file="lib/people.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/people.lua</source>
+        <source file="lib/persons.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/persons.lua</source>
+        <source file="lib/phonedaw.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/phonedaw.lua</source>
+        <source file="lib/phonerec.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/phonerec.lua</source>
+        <source file="lib/plugins.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/plugins.lua</source>
+        <source file="lib/prep.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/prep.lua</source>
+        <source file="lib/presence.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/presence.lua</source>
+        <source file="lib/prints.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/prints.lua</source>
+        <source file="lib/producer.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/producer.lua</source>
+        <source file="lib/profile.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/profile.lua</source>
+        <source file="lib/recall.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/recall.lua</source>
+        <source file="lib/recap.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/recap.lua</source>
+        <source file="lib/recformat.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/recformat.lua</source>
+        <source file="lib/removal.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/removal.lua</source>
+        <source file="lib/review.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/review.lua</source>
+        <source file="lib/rooms.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/rooms.lua</source>
+        <source file="lib/rthealth.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/rthealth.lua</source>
+        <source file="lib/services.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/services.lua</source>
+        <source file="lib/sessionfile.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/sessionfile.lua</source>
+        <source file="lib/setup.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/setup.lua</source>
+        <source file="lib/sharedprefs.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/sharedprefs.lua</source>
+        <source file="lib/signed.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/signed.lua</source>
+        <source file="lib/signedwrites.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/signedwrites.lua</source>
+        <source file="lib/smooth.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/smooth.lua</source>
+        <source file="lib/songsheet.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/songsheet.lua</source>
+        <source file="lib/songsync.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/songsync.lua</source>
+        <source file="lib/sonobus.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/sonobus.lua</source>
+        <source file="lib/stamp.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/stamp.lua</source>
+        <source file="lib/startup.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/startup.lua</source>
+        <source file="lib/status.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/status.lua</source>
+        <source file="lib/streams.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/streams.lua</source>
+        <source file="lib/suggest.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/suggest.lua</source>
+        <source file="lib/sync.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/sync.lua</source>
+        <source file="lib/theme.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/theme.lua</source>
+        <source file="lib/together.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/together.lua</source>
+        <source file="lib/tools.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/tools.lua</source>
+        <source file="lib/trim.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/trim.lua</source>
+        <source file="lib/trust.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/trust.lua</source>
+        <source file="lib/undo.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/undo.lua</source>
+        <source file="lib/urlhandler.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/urlhandler.lua</source>
+        <source file="lib/video.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/video.lua</source>
+        <source file="lib/webcall.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webcall.lua</source>
+        <source file="lib/webdraw.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webdraw.lua</source>
+        <source file="lib/webenv.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webenv.lua</source>
+        <source file="lib/webhistory.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webhistory.lua</source>
+        <source file="lib/webhome.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webhome.lua</source>
+        <source file="lib/weblobby.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/weblobby.lua</source>
+        <source file="lib/weblog.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/weblog.lua</source>
+        <source file="lib/webmixer.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webmixer.lua</source>
+        <source file="lib/webmixes.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webmixes.lua</source>
+        <source file="lib/webpages.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webpages.lua</source>
+        <source file="lib/webplugins.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webplugins.lua</source>
+        <source file="lib/webrestore.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webrestore.lua</source>
+        <source file="lib/webrooms.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webrooms.lua</source>
+        <source file="lib/webroute.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webroute.lua</source>
+        <source file="lib/websession.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/websession.lua</source>
+        <source file="lib/websettings.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/websettings.lua</source>
+        <source file="lib/webui.lua">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui.lua</source>
+        <source file="lib/mac/bandsync-hide.dylib" platform="darwin">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/mac/bandsync-hide.dylib</source>
+        <source file="lib/mac/bandsync-launch" platform="darwin">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/mac/bandsync-launch</source>
+        <source file="lib/ninjam/bandsync.cfg">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/bandsync.cfg</source>
+        <source file="lib/ninjam/linux-aarch64/ninjamsrv" platform="linux-aarch64">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/linux-aarch64/ninjamsrv</source>
+        <source file="lib/ninjam/linux-aarch64/njrelay" platform="linux-aarch64">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/linux-aarch64/njrelay</source>
+        <source file="lib/ninjam/linux-x86_64/ninjamsrv" platform="linux64">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/linux-x86_64/ninjamsrv</source>
+        <source file="lib/ninjam/linux-x86_64/njrelay" platform="linux64">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/linux-x86_64/njrelay</source>
+        <source file="lib/ninjam/ninjamsrv" platform="darwin">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/ninjamsrv</source>
+        <source file="lib/ninjam/ninjamsrv.exe" platform="win64">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/ninjamsrv.exe</source>
+        <source file="lib/ninjam/njrelay" platform="darwin">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/njrelay</source>
+        <source file="lib/ninjam/README.md">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/ninjam/README.md</source>
+        <source file="lib/toolbar_icons/150/toolbar_studiosync.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/150/toolbar_studiosync.png</source>
+        <source file="lib/toolbar_icons/150/toolbar_studiosync_on.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/150/toolbar_studiosync_on.png</source>
+        <source file="lib/toolbar_icons/150/toolbar_studiosync_warn.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/150/toolbar_studiosync_warn.png</source>
+        <source file="lib/toolbar_icons/150/toolbar_studiosync_warn_on.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/150/toolbar_studiosync_warn_on.png</source>
+        <source file="lib/toolbar_icons/200/toolbar_studiosync.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/200/toolbar_studiosync.png</source>
+        <source file="lib/toolbar_icons/200/toolbar_studiosync_on.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/200/toolbar_studiosync_on.png</source>
+        <source file="lib/toolbar_icons/200/toolbar_studiosync_warn.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/200/toolbar_studiosync_warn.png</source>
+        <source file="lib/toolbar_icons/200/toolbar_studiosync_warn_on.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/200/toolbar_studiosync_warn_on.png</source>
+        <source file="lib/toolbar_icons/toolbar_studiosync.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/toolbar_studiosync.png</source>
+        <source file="lib/toolbar_icons/toolbar_studiosync_on.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/toolbar_studiosync_on.png</source>
+        <source file="lib/toolbar_icons/toolbar_studiosync_warn.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/toolbar_studiosync_warn.png</source>
+        <source file="lib/toolbar_icons/toolbar_studiosync_warn_on.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/toolbar_icons/toolbar_studiosync_warn_on.png</source>
+        <source file="lib/listen/listen_server.pl">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/listen/listen_server.pl</source>
+        <source file="lib/listen/listen_server.ps1" platform="windows">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/listen/listen_server.ps1</source>
+        <source file="lib/webui/ai.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/ai.css</source>
+        <source file="lib/webui/ai.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/ai.js</source>
+        <source file="lib/webui/anchor.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/anchor.js</source>
+        <source file="lib/webui/app.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/app.js</source>
+        <source file="lib/webui/audiencehost.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/audiencehost.js</source>
+        <source file="lib/webui/autolanes.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/autolanes.js</source>
+        <source file="lib/webui/beat.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/beat.js</source>
+        <source file="lib/webui/call.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/call.css</source>
+        <source file="lib/webui/call.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/call.js</source>
+        <source file="lib/webui/chat.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/chat.css</source>
+        <source file="lib/webui/chat.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/chat.js</source>
+        <source file="lib/webui/daw.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/daw.css</source>
+        <source file="lib/webui/daw.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/daw.js</source>
+        <source file="lib/webui/draw.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/draw.css</source>
+        <source file="lib/webui/draw.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/draw.js</source>
+        <source file="lib/webui/guest.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/guest.css</source>
+        <source file="lib/webui/guest.html">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/guest.html</source>
+        <source file="lib/webui/guest.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/guest.js</source>
+        <source file="lib/webui/guesthost.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/guesthost.js</source>
+        <source file="lib/webui/guestworklet.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/guestworklet.js</source>
+        <source file="lib/webui/health.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/health.js</source>
+        <source file="lib/webui/histhear.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/histhear.js</source>
+        <source file="lib/webui/history.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/history.css</source>
+        <source file="lib/webui/history.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/history.js</source>
+        <source file="lib/webui/home.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/home.css</source>
+        <source file="lib/webui/home.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/home.js</source>
+        <source file="lib/webui/icon.svg">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/icon.svg</source>
+        <source file="lib/webui/index.html">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/index.html</source>
+        <source file="lib/webui/invite.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/invite.css</source>
+        <source file="lib/webui/invite.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/invite.js</source>
+        <source file="lib/webui/join.html">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/join.html</source>
+        <source file="lib/webui/join.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/join.js</source>
+        <source file="lib/webui/listen.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/listen.css</source>
+        <source file="lib/webui/listen.html">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/listen.html</source>
+        <source file="lib/webui/listen.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/listen.js</source>
+        <source file="lib/webui/mixer.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/mixer.css</source>
+        <source file="lib/webui/mixer.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/mixer.js</source>
+        <source file="lib/webui/pages.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/pages.css</source>
+        <source file="lib/webui/phone-icon-192.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/phone-icon-192.png</source>
+        <source file="lib/webui/phone-icon-512.png">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/phone-icon-512.png</source>
+        <source file="lib/webui/phone-sw.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/phone-sw.js</source>
+        <source file="lib/webui/phone.webmanifest">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/phone.webmanifest</source>
+        <source file="lib/webui/phonedaw.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/phonedaw.css</source>
+        <source file="lib/webui/phonedaw.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/phonedaw.js</source>
+        <source file="lib/webui/phonefile.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/phonefile.js</source>
+        <source file="lib/webui/pianoroll.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/pianoroll.js</source>
+        <source file="lib/webui/play.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/play.js</source>
+        <source file="lib/webui/profile.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/profile.js</source>
+        <source file="lib/webui/record.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/record.css</source>
+        <source file="lib/webui/record.html">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/record.html</source>
+        <source file="lib/webui/record.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/record.js</source>
+        <source file="lib/webui/recworklet.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/recworklet.js</source>
+        <source file="lib/webui/rooms.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/rooms.js</source>
+        <source file="lib/webui/settings.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/settings.js</source>
+        <source file="lib/webui/sharemix.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/sharemix.js</source>
+        <source file="lib/webui/sheet.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/sheet.css</source>
+        <source file="lib/webui/sheet.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/sheet.js</source>
+        <source file="lib/webui/shell.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/shell.css</source>
+        <source file="lib/webui/shell.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/shell.js</source>
+        <source file="lib/webui/style.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/style.css</source>
+        <source file="lib/webui/tabs.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/tabs.js</source>
+        <source file="lib/webui/tryfx.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/tryfx.css</source>
+        <source file="lib/webui/tryfx.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/tryfx.js</source>
+        <source file="lib/webui/video.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/video.js</source>
+        <source file="lib/webui/visuals.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/visuals.js</source>
+        <source file="lib/webui/vkeys.css">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/vkeys.css</source>
+        <source file="lib/webui/vkeys.js">https://github.com/FmsJay/studiosync/raw/v0.61.1/lib/webui/vkeys.js</source>
+      </version>
     </reapack>
     <reapack name="StudioSync menus.ext" type="extension" desc="StudioSync in REAPER's Extensions and View menus">
       <metadata>
