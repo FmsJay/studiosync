@@ -363,6 +363,7 @@ function chat.find(cfg, b, sc, kind, id)
   end
 end
 local conv_want, web_dirty = {}, false -- (a DM or channel a page shows -> until when; something changed: the index goes again)
+local notes_want = -math.huge -- (a page shows All for This room or This project: the room's notes and likes go as "chat_notes" until then. rt-ui9)
 -- a: { scope, and text (a message), todo (a new to-do's text), title + url (a link), done = id + on (ticked or not), delete = { kind, id },
 -- seen (you've read the scope), want (a DM or channel shown), dm = { names } (open a DM), channel = { new | id, name | archive } (admins),
 -- file = { id (POST /api/upload's), name, size }, save / download = a message's id (into = "project": an audio file to the project's folder) }.
@@ -375,6 +376,7 @@ function chat.web_action(cfg, b, a)
     if not id then return "the web page's direct message wasn't opened: " .. why end
   end
   if type(a.channel) == "table" then web_dirty = true; return chat.channel_action(cfg, a.channel) end
+  if a.notes == true then notes_want = reaper.time_precise() + 30; web_dirty = true end -- (All shows the room's notes and likes: rt-ui9)
   local sc = a.scope
   if chat.conv_of(sc) then
     -- (never the project's chat instead: a DM sent there would be read by everyone)
@@ -616,12 +618,34 @@ end
 -- Live sync's web UI tick (lib/webui.lua): files on their way (always), and while a page looks, the index and each DM or channel a page shows,
 -- every 2 s or at once after an action.
 local web_at = -math.huge
+-- The room's notes and likes for the web chat's All (topic "chat_notes"), as the panel's All shows them: newest first, NOTES_MAX at most, only
+-- what a page needs (rt-ui9, docs/rt/ui-web-plan.md 1.3 "Notes and Likes join Chat's All"). notes: recall.notes's. Pure.
+chat.NOTES_MAX, chat.NOTE_TEXT_MAX = 100, 2000
+function chat.notes_model(song, room, notes)
+  local out = {}
+  for _, e in ipairs(type(notes) == "table" and notes or {}) do
+    if #out >= chat.NOTES_MAX then break end
+    if type(e) == "table" and (e.type == "note" or e.type == "like") then
+      out[#out + 1] = { id = type(e.id) == "string" and e.id or nil, type = e.type, user = tostring(e.user or "?"),
+        time = type(e.time) == "string" and e.time or nil, text = e.type == "note" and tostring(e.text or ""):sub(1, chat.NOTE_TEXT_MAX) or nil,
+        track = type(e.track) == "string" and e.track:sub(1, 200) or nil, pos = tonumber(e.pos) }
+    end
+  end
+  return { song = song, room = room or "main", notes = out }
+end
 function chat.web_tick(cfg, b, publish, now, look)
   local ok, e = pcall(require("chatfiles").tick, cfg, now)
   if not ok then band.log("chat files: " .. tostring(e)) end
+  local noting = look and b and b.song and notes_want > reaper.time_precise()
+  -- (a little of the room's changes each tick while All shows, as the panel's Chat page reads them: lib/recall.lua)
+  if noting then pcall(require("recall").warm, cfg, b.song, b.room, 0.004, false) end
   if not look or (now - web_at < 2 and not web_dirty) then return end
   web_at, web_dirty = now, false
   publish("chat_index", chat.index_model(cfg, b))
+  if noting then
+    local okn, m = pcall(function() return chat.notes_model(b.song, b.room, require("recall").notes(cfg, b.song, b.room)) end)
+    if okn then publish("chat_notes", m) end
+  end
   local webui = require("webui")
   for sc, til in pairs(conv_want) do
     if til < now then conv_want[sc] = nil

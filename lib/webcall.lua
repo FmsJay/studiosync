@@ -96,7 +96,7 @@ function webcall.model(me, now, live)
   for token, w in pairs(fxwins) do fw[#fw + 1] = { token = token, track = w.track, fxi = w.fxi, fx = w.fx } end
   table.sort(fw, function(a, z) return a.token < z.token end)
   return { boot = webcall.boot, me = me, open = list, msgs = msgs, live = live and true or nil, ice = webcall.ice(),
-    answers = #answers > 0 and answers or nil, fxwin = #fw > 0 and fw or nil }
+    answers = #answers > 0 and answers or nil, fxwin = #fw > 0 and fw or nil, la = live and webcall.la_model() or nil }
 end
 -- (P13, backlog 3.2 A) The pages' ICE servers: with the studio's connection without Tailscale on, its STUN servers and the studio's relay as
 -- TURN (lib/nat.lua ice), so two browsers that aren't on each other's Tailscale or network still meet; nil otherwise (host candidates only,
@@ -105,6 +105,12 @@ local ice_root
 function webcall.ice()
   local ok, list = pcall(function() return ice_root and require("nat").ice(ice_root) end)
   return ok and list or nil
+end
+-- Live audio's Mute and Deafen for the top bar's call controls (rt-ui9): { mute, deaf, ptt }, flags true or absent; nil without live audio.
+function webcall.la_model()
+  local ok, s = pcall(function() return require("liveaudio").me() end)
+  if not ok or type(s) ~= "table" then return nil end
+  return { mute = s.mute or nil, deaf = s.deaf or nil, ptt = s.ptt or nil }
 end
 function webcall.dirty() return dirty end
 function webcall.reset() q, seq, open, dirty, view_until, view_at, asks, answers, fxwins = {}, 0, {}, true, -math.huge, -math.huge, {}, {}, {} end -- (tests)
@@ -122,6 +128,14 @@ webcall.TRACKS_MAX = 256
 -- -> true when done. clock: reaper.time_precise().
 function webcall.local_msg(a, clock)
   if a.t == "view" then view_until = clock + webcall.VIEW_FOR; return true end
+  if a.t == "la" then -- (the top bar's Mute / Deafen for live audio, as the panel's live audio bar: rt-ui9)
+    if (a.k ~= "mute" and a.k ~= "deaf") or type(a.on) ~= "boolean" then return false end
+    local la = require("liveaudio")
+    if not (la.available and la.available()) then return false end
+    la.set(a.k, a.on)
+    dirty = true
+    return true
+  end
   if a.t == "ctlask" then return webcall.ctl_ask(a, clock) end
   if a.t == "fxwin" then -- (the owner said yes to "Show its window": it opens here, and the page shares it. rt-share)
     local token = math.tointeger(tonumber(a.token))
@@ -265,12 +279,12 @@ end
 -- comes back to the pages as { t = "error", call, why }; what went out is shown to the other pages here (no SDP) as { out = true, ... }, so
 -- a ring on a second window stops when one answers.
 local here_at = -math.huge
-local LOCAL = { duck = true, view = true, ctlask = true, fxwin = true } -- (a page's messages that stay on this computer)
+local LOCAL = { duck = true, view = true, ctlask = true, fxwin = true, la = true } -- (a page's messages that stay on this computer)
 function webcall.page(cfg, b, a, now)
   now = now or os.time()
   if type(a) == "table" and LOCAL[a.t] then
     -- (opening a plug-in's window and asks for control: only from a page on this computer, the one that shares. rt-share)
-    if (a.t == "fxwin" or a.t == "ctlask") and not (reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1) then return false end
+    if (a.t == "fxwin" or a.t == "ctlask" or a.t == "la") and not (reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1) then return false end
     return webcall.local_msg(a, reaper.time_precise()) and false -- (this computer only)
   end
   local m = webcall.from_page(a, webcall.me(cfg))

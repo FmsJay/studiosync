@@ -53,6 +53,22 @@ html.ss-pop-share body { margin: 0; background: #000; }
 .ctl-note:empty, .board-bar button[hidden] { display: none; }
 #sharebar.in-control { background: #b3261e; }
 #sharebar .ctl-who { font-weight: 700; }
+/* the top bar's call controls (rt-ui9): live audio's Mute and Deafen, a ring, the call with its mic, camera and Hang up, and Video */
+.sscall { display: inline-flex; align-items: center; gap: 4px; min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.sscall[hidden], .call-pop[hidden] { display: none; }
+.sscall button { padding: 3px 8px; font-size: 13px; white-space: nowrap; }
+.sscall button.off { background: color-mix(in srgb, var(--rec) 18%, transparent); border-color: transparent; color: var(--rec); }
+.sscall button.go { background: var(--play); border-color: var(--play); color: #fff; }
+.sscall button[aria-expanded="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.sscall-ring, .sscall-live { display: inline-flex; align-items: center; gap: 4px; min-width: 0; }
+.sscall-ring { background: var(--me); border: 1px solid var(--accent); border-radius: 10px; padding: 1px 2px 1px 8px; }
+.sscall-what { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 16em; }
+#call .call-pop { float: right; padding: 3px 10px; font-size: 13px; }
+/* the call in a window of its own (?pop=call): the section alone, the top bar kept */
+html.ss-pop-call .ssbody, html.ss-pop-call #ssbar, html.ss-pop-call .ssloadnote { display: none !important; }
+html.ss-pop-call #call { flex: 1 1 auto; max-height: none; border-bottom: 0; }
+html.ss-pop-call .tile video { max-height: 70vh; }
+@media (max-width: 480px) { .sscall-what { display: none; } }
 @media (max-width: 320px) {
   #sharebar { padding: 6px 8px; font-size: 12px; }
   #call { padding: 8px; }
