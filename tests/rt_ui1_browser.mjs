@@ -158,9 +158,13 @@ await ev('[...document.querySelectorAll(".sstab[data-tab=history] .sssubs button
 await sleep(100);
 ok(await route() === 'history/playback' && await visible('.sspage.history'), 'Playback: the time lapse');
 ok(await ev('location.hash') === '#history/playback', 'the address follows: a deep link to here');
-await ev('location.hash = "#session/rooms"; 1');
-await sleep(150);
-ok(await route() === 'session/rooms' && (await ev('document.querySelector(".sstab[data-tab=session] .sscoming:not([hidden])").textContent')).includes('Coming here'), 'a part not built yet says it’s coming, and where it is meanwhile');
+// (whichever part isn't built yet: they get built one by one. rt-ui6 built Session > Rooms, which this used)
+const soon = await ev('(() => { for (const t of ssTabs.list()) for (const s of t.subs) if (t.ok && s.ok && s.coming) return t.name + "/" + s.name; return ""; })()');
+if (soon) {
+  await ev('location.hash = "#' + soon + '"; 1');
+  await sleep(150);
+  ok(await route() === soon && (await ev('document.querySelector(".sstab[data-tab=' + soon.split('/')[0] + '] .sscoming:not([hidden])").textContent')).includes('Coming here'), 'a part not built yet says it’s coming, and where it is meanwhile (' + soon + ')');
+} else console.log('  (every part is built: no "coming" page left to check)');
 
 // a project closes while you're on it: Studio meanwhile; it opens again: back where you were
 await ev('ssTabs.go("project/mixer"); 1');

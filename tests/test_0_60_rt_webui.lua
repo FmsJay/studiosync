@@ -90,6 +90,7 @@ package.loaded.webcall = { dirty = function() return false end, me = function() 
 package.loaded.webhome = { tick = function() end, action = function() end } -- (Home and profiles: tests/test_0_60_rt_home.lua)
 package.loaded.webdraw = { tick = function() end, action = function() end, from_msg = function() end } -- (the drawing layer: tests/test_0_60_rt_draw.lua)
 package.loaded.invite = { web_tick = function() end, action = function() end, chat_model = function() end } -- (Ask to join: tests/test_0_60_rt_invite.lua)
+package.loaded.websession = { tick = function() end, action = function() end } -- (Session and Rooms: tests/test_0_60_rt_ui6.lua)
 local chat_reads = {}
 package.loaded.page_chat = { -- (its web_action's own checks: tests/test_0_60_rt_webpages.lua)
   web_action = function(_, b, a) posted[#posted + 1] = { b.song, a.text, a.scope } end,

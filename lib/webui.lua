@@ -159,6 +159,7 @@ webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks 
 webui.ACTIONS.grants = true -- (Admins only: let someone edit in this room, or take it back; owner and admins only. lib/grants.lua, rt-claims)
 webui.ACTIONS.draw = true -- (the drawing layer over the Project and Mixer pages and the phone's Project view: add, remove, clear. lib/webdraw.lua, rt-draw)
 webui.ACTIONS.nav = true -- (Open in REAPER / Open in the browser, from a page on this computer only: lib/webenv.lua, rt-ui1)
+webui.ACTIONS.session = true -- (Session: who can edit, claims, the person menu, Local mixing, live ideas, and Rooms': lib/websession.lua, lib/webrooms.lua, rt-ui6)
 webui.ACTIONS.settings = true -- (Settings: This computer, Studio, Devices, Advanced; changes only from a page on this computer. lib/websettings.lua, rt-ui10b)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
@@ -276,6 +277,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("webenv").nav_action(a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1, webui.local_url(webui.status().port))
       if said then band.log(said) end
     end
+    if topic == "session" then -- (lib/websession.lua, rt-ui6)
+      local said = require("websession").action(proj, cfg, b, a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1)
+      if said then band.log(said) end
+    end
   end
   local now = reaper.time_precise()
   do -- a phone that started the band and went quiet mid-take: its start stopped, looking or not (lib/phonerec.lua)
@@ -324,6 +329,7 @@ function webui.tick(proj, cfg, b, handlers)
   end
   -- Health and Play together: only while a page shows them (lib/webpages.lua)
   require("webpages").tick(proj, cfg, b, publish, last_who, now)
+  require("websession").tick(proj, cfg, b, publish, last_who, now) -- (Session: who can edit, claims, the strip's View only, and Rooms: lib/websession.lua, rt-ui6)
   -- (video calls: a message in or out shows at once; who's open is looked at again every second, as their "here"s age out)
   -- (live: call audio starts unticked while StudioSync's live audio runs here, ticked otherwise. James: "fewer things to press")
   if webcall.dirty() or now - rtc_at >= 1 then

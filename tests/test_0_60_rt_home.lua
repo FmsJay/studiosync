@@ -343,5 +343,5 @@ local hjs, cjs = read("lib/webui/home.js"), read("lib/webui/chat.js")
 assert(hjs:find("status: t", 1, true) and hjs:find("since: sinceMap", 1, true) and hjs:find("isSecureContext", 1, true) and hjs:find("hbanner", 1, true) and hjs:find("h.opened", 1, true),
   "home.js: status line, since map, a banner where browsers won't notify, what Open said")
 assert(cjs:find("todofor", 1, true) and cjs:find("'everyone', 'all'", 1, true), "chat.js: a to-do's assignee, mentions of several names")
-assert(read("lib/webui/app.js"):find("li.dataset.avUser = x.user", 1, true), "Who's here rows carry who, for their picture")
+assert(read("lib/webui/play.js"):find("li.dataset.avUser = x.user", 1, true), "Who's here rows carry who, for their picture")
 print("ok")

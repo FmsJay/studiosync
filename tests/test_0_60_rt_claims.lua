@@ -288,7 +288,7 @@ for _, want in ipairs({ 'claim_ask = function(d) require("claimask").on_ask(cfg,
     'require("claimask").tick, proj, cfg, b', 'require("claimask").leave, cfg, b' }) do
   assert(ls:find(want, 1, true), "Live sync wires " .. want)
 end
-src = io.open("lib/webui/app.js", "rb"); local js = src:read("a"); src:close()
+src = io.open("lib/webui/play.js", "rb"); local js = src:read("a"); src:close() -- (Who's here is Session's since rt-ui6)
 assert(js:find("topic: 'claimask', id: q.id, answer", 1, true) and js:find("asks(p.asks || {})", 1, true), "the web page shows asks and answers them")
 assert(js:find("topic: 'grants', user: x.user, on: !granted", 1, true) and require("webui").ACTIONS.grants, "the web page's Let edit / Revoke reach grants.web_action")
 
