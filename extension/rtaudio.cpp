@@ -517,11 +517,18 @@ struct RtLink {
   double hub_ns = 0, hub_audio_s = 0, hub_load = 0, hub_max_us = 0, hub_win = 0; // (stats_mx: the mixing's share of one core, over ~1 s)
   double hub_cpu = 0, hub_tick0 = 0; // (stats_mx: the send thread's own CPU time in hub_serve this window, in thread_ticks; ticks_now at its start)
   int hub_serving = 0;
+  bool sim_wake = false; double sim_pass = -1e9; // (rt_sim: woken since its last send pass; when that pass ran. rt-audio4)
 };
 
 namespace {
 std::once_flag g_aoo_once;
-double now_s() { return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+// The simulated clock and network (rt_sim, tests only; rt-audio4): no threads, no sockets, the clock advanced by rt_sim_run. Off: nothing
+// here is read but this flag.
+std::atomic<bool> g_sim{ false };
+double g_sim_t = 100.0;
+double now_s() { return g_sim.load(std::memory_order_relaxed) ? g_sim_t : std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count(); }
+void wake_up(RtLink *l) { if (g_sim.load(std::memory_order_relaxed)) l->sim_wake = true; else l->wake.set(); }
+int sim_send(RtLink *l, const void *d, int len, const sockaddr_in &to);
 // The calling thread's own CPU time, for the hub's load: the clock also counts the time it was preempted (REAPER's FX and audio threads at
 // 128-sample blocks, another program), which isn't the mix's cost (James, rt: the laptop's hub paused itself at 25-29%; its own cost is ~5%).
 // Windows counts it in the TSC's ticks (QueryThreadCycleTime: a constant rate on x64), whose rate ticks_now measures against the clock.
@@ -574,6 +581,7 @@ bool peer_ok(RtLink *l, const sockaddr_in &a)
 int send_to(RtLink *l, const void *d, int len, const sockaddr_in &to)
 {
   if (synthetic(to)) { const RtNat *n = l->nat.load(); return n ? n->send(n->h, &to, d, len) : -1; }
+  if (g_sim.load(std::memory_order_relaxed)) return sim_send(l, d, len, to);
   return (int)sendto(l->s, (const char *)d, len, 0, (const sockaddr *)&to, sizeof(to));
 }
 // This computer's Tailscale address, as direct.cpp tailscale_ip: where a UDP socket "connected" to 100.100.100.100 would send from.
@@ -1336,7 +1344,7 @@ void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
   if (n < 1) return;
   const char kind = (char)d[0];
   ++d; --n;
-  if (kind == 'M' && n == 1) { p.via_hub.store(d[0] == 1); p.mode_at.store(now); l->wake.set(); return; }
+  if (kind == 'M' && n == 1) { p.via_hub.store(d[0] == 1); p.mode_at.store(now); wake_up(l); return; }
   if (kind == 'I' && n == 8) { float a, b; memcpy(&a, d, 4); memcpy(&b, d + 4, 4); if (std::isfinite(a) && std::isfinite(b)) { p.hin_ms.store(a); p.hload.store(b); } return; }
   if (kind == 'H') { // (whom its mix has, as my hub: a count, then each address and port)
     if (n < 1 || d[0] > RT_MAX_PEERS || n != 1 + d[0] * 6) return;
@@ -1351,7 +1359,7 @@ void handle_ctl(RtLink *l, Slot &p, const unsigned char *d, int n, double now)
     std::lock_guard<std::mutex> g(l->mix_mx);
     p.heard.swap(hv);
     p.heard_ever = true;
-    l->wake.set();
+    wake_up(l);
     return;
   }
   if (kind != 'R' || n < 2 || d[0] > RT_MAX_PEERS) return;
@@ -1573,15 +1581,13 @@ void adapt(RtLink *l, Slot &p, double now)
   for (int k = 0; k < 3; ++k) { settle(k); if (p.wsince[k] >= 0) p.wsince[k] = now; } // (and the read-rate control settles again)
 }
 
-void tx_loop(RtLink *l)
+// One pass of the send thread (tx_loop; rt_sim_run calls it as the thread would: every 5 ms and when woken).
+void tx_pass(RtLink *l)
 {
-  full_speed();
-  while (l->run.load()) {
-    l->wake.wait_for(0.005);
-    while (now_s() < l->hold_tx.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1)); // (rt_test_hold_tx: 1 ms sleeps, as rx_loop's hold)
+  {
     reconfigure(l);
     apply_sends(l);
-    if (!l->live.load()) continue;
+    if (!l->live.load()) return;
     // AOO's source (v2.0-pre4, source.cpp process) reblocks REAPER's blocks into Opus frames through its resampler, and when the
     // send thread falls behind (a stall of ~60 ms on the macOS CI runner) both the resampler and the queue fill. From then on
     // process() gives up on the full resampler before moving it into the queue, so nothing is ever sent again: that peer goes silent
@@ -1613,6 +1619,15 @@ void tx_loop(RtLink *l)
       const double lat = p.rtt_ms >= 0 && p.buffer_ms >= 0 ? p.rtt_ms / 2 + p.buffer_ms + p.src_lat_ms + p.sink_lat_ms : -1;
       if (p.streaming && lat >= 0 && l->hub_state.load() != 2) p.last_direct_ms = lat; // (what the hub's hop adds is measured against this)
     }
+  }
+}
+void tx_loop(RtLink *l)
+{
+  full_speed();
+  while (l->run.load()) {
+    l->wake.wait_for(0.005);
+    while (now_s() < l->hold_tx.load()) std::this_thread::sleep_for(std::chrono::milliseconds(1)); // (rt_test_hold_tx: 1 ms sleeps, as rx_loop's hold)
+    tx_pass(l);
   }
 }
 
@@ -1730,7 +1745,7 @@ void rx_one(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
     } else if (type == kAooMsgTypeSource && id == MIX_ID && p->msrc) p->msrc->handleMessage(msg, size, &from, (AooAddrSize)sizeof(from));
     else { reject(l, "for a stream that isn't theirs", from); return; }
   }
-  l->wake.set(); // (replies and resend requests go out now)
+  wake_up(l); // (replies and resend requests go out now)
 }
 void rx_loop(RtLink *l)
 {
@@ -1747,7 +1762,95 @@ void rx_loop(RtLink *l)
     rx_one(l, buf.data(), n, from);
   }
 }
+
+// ---- the simulated clock and network (rt_sim; tests only, rt-audio4) ---------------------------------------------------------------
+// Every link on 127.0.0.1, told apart by port. A datagram is due at its send time + its path's delay (+ jitter); a link whose receive thread
+// is held (rt_test_hold) gets what came meanwhile at once when the hold ends, in the order it came, as from its socket; one that drops
+// (rt_test_drop) loses it. Each link's send pass runs every SIM_TX_EVERY and whenever it was woken, as tx_loop's wait does, but not while
+// its send thread is held (rt_test_hold_tx). One thread (the test's) does all of it, so a run gives the same numbers every time.
+const double SIM_TX_EVERY = 0.005, SIM_MIN_DELAY = 0.0001;
+struct SimDgram { double at; unsigned long long seq; int port; sockaddr_in from; std::vector<unsigned char> d; };
+struct SimLater { bool operator()(const SimDgram &a, const SimDgram &b) const { return a.at != b.at ? a.at > b.at : a.seq > b.seq; } };
+struct SimPath { double delay = SIM_MIN_DELAY, jitter = 0, loss = 0; bool block = false; };
+std::vector<RtLink *> g_sim_links;
+std::vector<SimDgram> g_sim_q; // (a heap: SimLater)
+std::vector<std::pair<std::pair<int, int>, SimPath>> g_sim_paths;
+unsigned long long g_sim_seq = 0;
+unsigned g_sim_rng = 1;
+double sim_rnd() { g_sim_rng ^= g_sim_rng << 13; g_sim_rng ^= g_sim_rng >> 17; g_sim_rng ^= g_sim_rng << 5; return (g_sim_rng & 0xffffff) / 16777216.0; }
+SimPath sim_path(int from, int to) // (the pair's own, else one with 0 for either end: any)
+{
+  for (const auto &p : g_sim_paths) if (p.first.first == from && p.first.second == to) return p.second;
+  for (const auto &p : g_sim_paths) if ((p.first.first == from || p.first.first == 0) && (p.first.second == to || p.first.second == 0)) return p.second;
+  return SimPath();
+}
+int sim_send(RtLink *l, const void *d, int len, const sockaddr_in &to)
+{
+  if (len <= 0) return -1;
+  const SimPath p = sim_path(l->port, ntohs(to.sin_port));
+  if (p.block || (p.loss > 0 && sim_rnd() < p.loss)) return len; // (lost on the way: the sender can't tell)
+  SimDgram g{ g_sim_t + std::max(SIM_MIN_DELAY, p.delay + p.jitter * sim_rnd()), ++g_sim_seq, ntohs(to.sin_port), l->me,
+              std::vector<unsigned char>((const unsigned char *)d, (const unsigned char *)d + len) };
+  g_sim_q.push_back(std::move(g));
+  std::push_heap(g_sim_q.begin(), g_sim_q.end(), SimLater());
+  return len;
+}
+RtLink *sim_link(int port)
+{
+  for (RtLink *l : g_sim_links) if (l->port == port && l->run.load()) return l;
+  return nullptr;
+}
+double sim_due(RtLink *l) { return std::max(l->sim_wake ? g_sim_t : l->sim_pass + SIM_TX_EVERY, l->hold_tx.load()); } // (its next send pass)
 } // namespace
+
+void rt_sim(int on)
+{
+  g_sim.store(on != 0);
+  g_sim_t = 100.0; g_sim_q.clear(); g_sim_paths.clear(); g_sim_seq = 0; g_sim_rng = 1;
+}
+double rt_sim_now() { return g_sim_t; }
+void rt_sim_net(int from_port, int to_port, double delay_ms, double jitter_ms, double loss)
+{
+  SimPath p;
+  p.block = delay_ms < 0;
+  p.delay = std::max(SIM_MIN_DELAY, delay_ms / 1000.0);
+  p.jitter = std::max(0.0, jitter_ms / 1000.0);
+  p.loss = std::max(0.0, std::min(1.0, loss));
+  for (auto &x : g_sim_paths) if (x.first.first == from_port && x.first.second == to_port) { x.second = p; return; }
+  g_sim_paths.push_back({ { from_port, to_port }, p });
+}
+void rt_sim_freeze(double until_s) { if (g_sim.load() && until_s > g_sim_t) g_sim_t = until_s; } // (nothing runs meanwhile: what came waits)
+void rt_sim_run(double until_s)
+{
+  if (!g_sim.load()) return;
+  for (long long guard = 0; guard < 100000000; ++guard) {
+    bool did = false; // (everything due now: what has arrived, then each send pass due)
+    while (!g_sim_q.empty() && g_sim_q.front().at <= g_sim_t) {
+      std::pop_heap(g_sim_q.begin(), g_sim_q.end(), SimLater());
+      SimDgram g = std::move(g_sim_q.back());
+      g_sim_q.pop_back();
+      RtLink *l = sim_link(g.port);
+      if (!l || g_sim_t < l->drop_until.load()) continue;
+      if (g_sim_t < l->hold_until.load()) { g.at = l->hold_until.load(); g_sim_q.push_back(std::move(g)); std::push_heap(g_sim_q.begin(), g_sim_q.end(), SimLater()); continue; }
+      rx_one(l, g.d.data(), (int)g.d.size(), g.from);
+      did = true;
+    }
+    for (size_t i = 0; i < g_sim_links.size(); ++i) {
+      RtLink *l = g_sim_links[i];
+      if (!l->run.load() || sim_due(l) > g_sim_t) continue;
+      l->sim_wake = false;
+      l->sim_pass = g_sim_t;
+      tx_pass(l);
+      did = true;
+    }
+    if (did) continue;
+    double t = until_s; // (nothing more now: on to the next thing due)
+    if (!g_sim_q.empty()) t = std::min(t, g_sim_q.front().at);
+    for (RtLink *l : g_sim_links) if (l->run.load()) t = std::min(t, sim_due(l));
+    if (t >= until_s) { g_sim_t = std::max(g_sim_t, until_s); return; }
+    g_sim_t = std::max(g_sim_t, t);
+  }
+}
 
 RtLink *rt_new() { return new RtLink(); }
 void rt_set_nat(RtLink *l, const RtNat *nat) { if (l) l->nat.store(nat); }
@@ -1790,18 +1893,22 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   if (inet_pton(AF_INET, ip.c_str(), &me.sin_addr) != 1) { l->err = "bad address"; return 0; }
   l->loopback = ip.compare(0, 4, "127.") == 0 && !l->nat_only; // (nat_only: nothing local is taken as a peer)
   if (!l->nat_only && !addr_ok(me, l->loopback)) { l->err = "not a Tailscale address"; return 0; }
-  sock_t s = socket(AF_INET, SOCK_DGRAM, 0);
-  if (s == BAD_SOCK) { l->err = "no socket"; return 0; }
-  direct_noinherit(s);
-  if (bind(s, (const sockaddr *)&me, sizeof(me)) != 0) { close_sock(s); l->err = "UDP " + std::to_string(port) + " is taken on " + ip; return 0; }
+  const bool sim = g_sim.load(); // (rt_sim: no socket and no threads; the port is the link's name in the simulated network)
+  if (sim && sim_link(port)) { l->err = "UDP " + std::to_string(port) + " is taken on " + ip; return 0; }
+  sock_t s = sim ? BAD_SOCK : socket(AF_INET, SOCK_DGRAM, 0);
+  if (!sim) {
+    if (s == BAD_SOCK) { l->err = "no socket"; return 0; }
+    direct_noinherit(s);
+    if (bind(s, (const sockaddr *)&me, sizeof(me)) != 0) { close_sock(s); l->err = "UDP " + std::to_string(port) + " is taken on " + ip; return 0; }
 #ifdef _WIN32
-  DWORD tmo = 100;
+    DWORD tmo = 100;
 #else
-  timeval tmo = { 0, 100000 };
+    timeval tmo = { 0, 100000 };
 #endif
-  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof(tmo));
-  int big = 1 << 20;
-  setsockopt(s, SOL_SOCKET, SO_RCVBUF, (const char *)&big, sizeof(big));
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tmo, sizeof(tmo));
+    int big = 1 << 20;
+    setsockopt(s, SOL_SOCKET, SO_RCVBUF, (const char *)&big, sizeof(big));
+  }
   l->key.clear(); l->have_secret.clear(); // (the send thread takes the secret from the peers JSON)
   l->s = s;
   l->me = me;
@@ -1821,6 +1928,7 @@ int rt_start(RtLink *l, int first_input, int nch, int kbps, int port, const char
   l->phop = 0; l->pstream = false;  // (rt_play's choice is kept: the send thread opens its mapping again)
   { std::lock_guard<std::mutex> p(l->pend_mx); l->peers_dirty = true; } // (the list given before start, if any)
   l->run.store(true);
+  if (sim) { l->sim_wake = true; l->sim_pass = -1e9; g_sim_links.push_back(l); return 1; }
   l->rx = std::thread(rx_loop, l);
   l->tx = std::thread(tx_loop, l);
   return 1;
@@ -1834,7 +1942,7 @@ void rt_stop(RtLink *l)
   if (l->ears.thr.joinable()) l->ears.thr.join();
   pause_audio(l);
   l->run.store(false);
-  l->wake.set();
+  wake_up(l);
   if (l->tx.joinable()) l->tx.join();
   if (l->rx.joinable()) l->rx.join();
   std::lock_guard<std::mutex> c(l->cfg_mx);
@@ -1847,8 +1955,9 @@ void rt_stop(RtLink *l)
   l->src = l->psrc = nullptr;
   if (l->pshm) hop_shm_close(&l->pmap);
   l->pshm = nullptr; l->phop = 0; l->pstream = false;
-  close_sock(l->s);
+  if (l->s != BAD_SOCK) close_sock(l->s);
   l->s = BAD_SOCK;
+  g_sim_links.erase(std::remove(g_sim_links.begin(), g_sim_links.end(), l), g_sim_links.end());
 }
 
 int rt_peers(RtLink *l, const char *json)
@@ -1863,7 +1972,7 @@ int rt_peers(RtLink *l, const char *json)
   l->want_secret = secret;
   if (port > 0 && port <= 65535) l->want_port = port;
   l->peers_dirty = true;
-  l->wake.set();
+  wake_up(l);
   return (int)peers.size();
 }
 
@@ -1872,7 +1981,7 @@ int rt_send(RtLink *l, const char *peer, int on)
   if (!peer || !*peer) { l->send_on.store(on != 0); return 1; }
   std::lock_guard<std::mutex> g(l->cfg_mx);
   for (int i = 0; i < l->nslots; ++i)
-    if (l->slots[i]->peer == peer) { l->slots[i]->want_send.store(on != 0); l->wake.set(); return 1; }
+    if (l->slots[i]->peer == peer) { l->slots[i]->want_send.store(on != 0); wake_up(l); return 1; }
   return 0;
 }
 
@@ -1891,7 +2000,7 @@ int rt_play(RtLink *l, int hop_id, int send)
   l->play_send.store(send != 0);
   std::lock_guard<std::mutex> g(l->pend_mx);
   l->want_phop = hop_id >= 1 && hop_id <= 64 ? hop_id : 0;
-  l->wake.set();
+  wake_up(l);
   return 1;
 }
 
@@ -1999,13 +2108,13 @@ int rt_hub(RtLink *l, const char *peer, int serve)
   std::lock_guard<std::mutex> g(l->pend_mx);
   l->want_hub = peer ? peer : "";
   l->want_serve = serve ? 1 : 0;
-  l->wake.set();
+  wake_up(l);
   return 1;
 }
 void rt_test_hold(RtLink *l, double ms) { l->hold_until.store(now_s() + ms / 1000.0); }
 void rt_test_speed(RtLink *l, double x) { std::lock_guard<std::mutex> st(l->stats_mx); l->speed = x > 0 ? x : 1; }
 void rt_test_hold_mix(RtLink *l, double ms) { l->hold_mix.store(now_s() + ms / 1000.0); }
-void rt_test_hold_tx(RtLink *l, double ms) { l->hold_tx.store(now_s() + ms / 1000.0); l->wake.set(); }
+void rt_test_hold_tx(RtLink *l, double ms) { l->hold_tx.store(now_s() + ms / 1000.0); wake_up(l); }
 void rt_test_drop(RtLink *l, double ms) { l->drop_until.store(now_s() + ms / 1000.0); }
 void rt_test_drift(RtLink *l, int resample) { l->resample = resample != 0; } // (before rt_start. 0: AOO's resampling off, and the read-rate control with it)
 void rt_test_clock_bias(RtLink *l, double ppm) { l->clk.bias.store(ppm * 1e-6); }
@@ -2036,7 +2145,7 @@ int rt_send_raw(RtLink *l, const void *d, int n, const void *addr, int addrlen)
   if (!l || !d || n <= 0 || n > MAX_DGRAM || !addr || addrlen < (int)sizeof(sockaddr_in)) return -1;
   const sockaddr_in &to = *(const sockaddr_in *)addr;
   std::lock_guard<std::mutex> g(l->cfg_mx); // (rt_stop closes the socket under this lock)
-  if (!l->run.load() || l->s == BAD_SOCK || !peer_ok(l, to)) return -1;
+  if (!l->run.load() || (l->s == BAD_SOCK && !g_sim.load()) || !peer_ok(l, to)) return -1;
   return send_to(l, d, n, to);
 }
 
@@ -2189,10 +2298,10 @@ void rt_capture(RtLink *l, const double *const *in, int nin, int len, double sra
       if (on && rt_talk_add) rt_talk_add(l->inptr, l->nch, len); // (a browser guest goes on to the bandmates in this Talk. rt-browserjoin)
       const AooError e = l->src->process(l->inptr, len, l->tfed);
       if (e == kAooErrorOverflow) l->overflow.store(true); // (the send thread unsticks AOO's queue: tx_loop)
-      if (e == kAooOk || e == kAooErrorOverflow) l->wake.set();
+      if (e == kAooOk || e == kAooErrorOverflow) wake_up(l);
     } else {
       if (!l->live.load()) { l->skip_in.fetch_add(len); l->skipped.fetch_add(1, std::memory_order_relaxed); } // (paused: made up for once it's back)
-      l->wake.set(); // (a new sample rate or block size: the send thread sets AOO up for it)
+      wake_up(l); // (a new sample rate or block size: the send thread sets AOO up for it)
     }
     took(l, t0);
   }
@@ -2235,7 +2344,7 @@ static void play_feed(RtLink *l, int len, AooNtpTime t)
   if (rt_play_tap) rt_play_tap(l->pptr, 2, len, l->cfg_sr); // (Jam takes the same block, after Mute me: extension/direct_audio.cpp. rt-jam)
   const AooError e = l->psrc->process(l->pptr, len, t);
   if (e == kAooErrorOverflow) l->poverflow.store(true);
-  if (e == kAooOk || e == kAooErrorOverflow) l->wake.set();
+  if (e == kAooOk || e == kAooErrorOverflow) wake_up(l);
 }
 void rt_mix(RtLink *l, double *const *out, int nout, int len, double srate)
 {

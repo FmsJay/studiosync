@@ -1,5 +1,6 @@
 // StudioSync's live audio core (extension/rtaudio.cpp: AOO + Opus) without REAPER: three endpoints on 127.0.0.1, each with its own UDP
-// port, driven by a test clock that plays the audio thread (48 kHz, 256-sample blocks, in real time). A sends a 440 Hz sine; B hears A
+// port, driven by a test clock that plays the audio thread (48 kHz, 256-sample blocks; the simulated clock and network of rt_sim, the same
+// numbers every run, or real time with SS_RT_REAL=1: tclock below). A sends a 440 Hz sine; B hears A
 // through Opus and the jitter buffer: it has to arrive within a bounded latency and at the level it was sent. C has the wrong studio
 // secret: B refuses every datagram from it and hears nothing of its 1 kHz tone. Then B mutes A (the cue mix) and A goes quiet there; then
 // C is given the right secret (the peers JSON again, while running) and B hears its tone. The secret and ports go in as lib/liveaudio.lua's
@@ -22,6 +23,35 @@
 #include <vector>
 #include "../extension/rtaudio.h"
 #include "../plugin/hop_shm.h" // (Play: the test writes a Hop's send ring as the live out track's plug-in does)
+
+// The test's clock (rt-audio4): the simulated one (extension/rtaudio.h rt_sim: no threads or sockets, the same numbers every run, the
+// whole suite in about a minute), or real time with SS_RT_REAL=1 (how it ran before: busy-waiting each block, ~9 minutes, at the
+// machine's mercy). wait_until: the clock runs to then (simulated: every link's sends and receives up to then); tstall: the whole test
+// process stops for ms (simulated: nothing runs, then it all catches up).
+static bool g_real = false;
+struct tclock {
+  using rep = long long;
+  using period = std::nano;
+  using duration = std::chrono::nanoseconds;
+  using time_point = std::chrono::time_point<tclock>;
+  static constexpr bool is_steady = true;
+  static time_point now()
+  {
+    if (g_real) return time_point(std::chrono::duration_cast<duration>(std::chrono::steady_clock::now().time_since_epoch()));
+    return time_point(duration((long long)(rt_sim_now() * 1e9 + 0.5)));
+  }
+};
+static tclock::duration secs(double s) { return tclock::duration((long long)(s * 1e9)); }
+static void wait_until(tclock::time_point due)
+{
+  if (g_real) { while (tclock::now() < due) std::this_thread::yield(); }
+  else rt_sim_run((double)due.time_since_epoch().count() / 1e9);
+}
+static void tstall(int ms)
+{
+  if (g_real) std::this_thread::sleep_for(std::chrono::milliseconds(ms));
+  else rt_sim_freeze(rt_sim_now() + ms / 1000.0);
+}
 
 static int fails = 0;
 static void check(bool ok, const char *what) { printf("%s %s\n", ok ? "  ok  " : "  FAIL", what); if (!ok) ++fails; }
@@ -52,7 +82,7 @@ static double tick_ms()
   }
   return t;
 }
-static bool coarse() { return tick_ms() > 2 && !timing_strict(); }
+static bool coarse() { return g_real && tick_ms() > 2 && !timing_strict(); } // (the model's holds end exactly)
 static std::string field(const std::string &json, const std::string &peer, const char *key) // (a peer's value, or a top-level one with peer "")
 {
   size_t at = 0;
@@ -87,10 +117,10 @@ static double hub_load_at(int len, int port0, bool busy)
   double sum = 0, mx = 0;
   int n = 0;
   long long k0 = 0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(6.0); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * len / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    wait_until(due);
     if (b == at(0.5)) { rt_hub(L[0], "", 1); for (int i = 1; i < 4; ++i) rt_hub(L[i], nm[0], 0); }
     if (b > at(2.5) && b % at(1.0) == 0) {
       const double v = atof(field(rt_status(L[0]), "hub", "load").c_str());
@@ -154,14 +184,14 @@ static double drift_slope(bool fix, double ppm_t, double ppm_r, int port0, long 
   std::vector<double> sent, heard; // (real times: each burst's start at T, its onset in R's output)
   const double stall_at[4] = { 5.3, 9.1, 11.7, 14.2 }, stall_ms[4] = { 120, 30, 250, 60 };
   int next_stall = stalls ? 0 : 4;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;;) {
     const double dt = bt * per_t, dr = br * per_r, due = std::min(dt, dr);
     if (due > 16.0) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    wait_until(t0 + secs(due));
+    const double real = std::chrono::duration<double>(tclock::now() - t0).count();
     if (real - due > 0.015) last_stall = real;
-    if (next_stall < 4 && due >= stall_at[next_stall]) std::this_thread::sleep_for(std::chrono::milliseconds((int)stall_ms[next_stall++]));
+    if (next_stall < 4 && due >= stall_at[next_stall]) tstall((int)stall_ms[next_stall++]);
     if (dt <= dr) {
       for (int k = 0; k < LEN; ++k) {
         const long long i = bt * LEN + k, m = i % EVERY;
@@ -277,11 +307,11 @@ static void trim_test()
   double hi = 0, lo_loud = 1e9, lo_after = 1e9, stalled = 0;
   long long trims_loud = -1, n = 0;
   std::vector<double> heard;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(8.0); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    if (b > at(2.0)) stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    if (b > at(2.0)) stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     for (int k = 0; k < LEN; ++k, ++n) id[k] = b < at(6.0) ? 0.5 * sin(2 * PI * 440 * n / SR) : 0.0;
     if (b == at(2.0)) rt_test_hold(E, 70);
     if (b == at(2.0) + 8) rt_peer_buffer(E, pd, 60, 60); // (43 ms into the stall: what was held up is taken in after the re-buffer)
@@ -355,11 +385,11 @@ static void play_resync_test()
   int ears_q = -1, ears_p = -1, ears_bad = 0, ears_busy = -1, held = 0;
   std::string mid;
   long long n = 0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(8.5); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    if (b > at(2.0)) stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    if (b > at(2.0)) stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     for (int k = 0; k < LEN; ++k, ++n) inter[2 * k] = inter[2 * k + 1] = (float)(0.5 * sin(2 * PI * 440 * n / SR));
     if (b == at(0.3)) rt_play(P, HOP, 1);
     if (b == at(2.0)) rt_test_hold(Q, 70);
@@ -455,11 +485,11 @@ static void switch_test()
   std::string before, after;
   long long p0 = -1, p1 = -1, n = 0;
   double stalled = 0; // (the test's own longest stall: on a loaded runner its callbacks come all at once, as rescue_test's)
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(9.5); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     if (b == at(0.5)) { rt_hub(L[0], "", 1); rt_hub(L[1], nm[0], 0); rt_hub(L[2], nm[0], 0); }
     if (b == at(2.9)) before = rt_status(L[2]);
     if (b == at(3.0)) rt_test_hold_mix(L[0], 250);
@@ -509,11 +539,11 @@ static void rescue_test()
   std::string before, after;
   int holds = 0;
   double stalled = 0; // (the test's own longest stall: a runner's 300 ms one is a gap the hub's mix falls back on)
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(9.0); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     if (b == at(0.3)) rt_peer_buffer(L[2], nm[0], 100, 100);
     if (b == at(0.5)) { rt_hub(L[0], "", 1); rt_hub(L[1], nm[0], 0); rt_hub(L[2], nm[0], 0); }
     if (b == at(2.9)) before = rt_status(L[2]);
@@ -563,12 +593,12 @@ static void stall_test()
   std::string before, after, out_x, end_x, after_w, end_w, after_y, out_y, end_y;
   int holds = 0, late = 0;
   double stalled = 0, next_late = 0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(9.0); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    const double now = std::chrono::duration<double>(tclock::now() - t0).count();
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     if (b == at(0.3)) for (int i = 1; i < 4; ++i) rt_peer_buffer(L[i], nm[0], 30, 30);
     if (b == at(0.5)) { rt_hub(L[0], "", 1); for (int i = 1; i < 4; ++i) rt_hub(L[i], nm[0], 0); }
     if (b == at(2.9)) before = rt_status(L[2]);
@@ -634,11 +664,11 @@ static void outage_test()
   double *oo[2] = { o1.data(), o2.data() };
   std::string before, mid, after, before_w, out_x, out_w, end_x, end_w, zb, ze;
   double stalled = 0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(6.0); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     if (b == at(0.3)) { for (int i = 1; i < 4; ++i) rt_peer_buffer(L[i], nm[0], 30, 30); rt_peer_buffer(Z[1], zn[0], 30, 30); }
     if (b == at(0.5)) { rt_hub(L[0], "", 1); for (int i = 1; i < 4; ++i) rt_hub(L[i], nm[0], 0); rt_hub(Z[0], "", 1); rt_hub(Z[1], zn[0], 0); }
     if (b == at(2.9)) { before = rt_status(L[2]); zb = rt_status(Z[1]); }
@@ -690,11 +720,11 @@ static double spike_run(double gap_s, int spikes, int port0, long long &under, l
   double sum = 0, next_jit = 0.5, next_spike = first;
   long long n = 0, u0 = -1, u_half = -1;
   stalled = 0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < at(end); ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     const double now = (double)b * LEN / SR;
     if (now >= next_spike) { rt_test_hold(E, 60); next_spike += gap; next_jit = now + 0.1; }
     else if (now >= next_jit) { rt_test_hold(E, rnd(3, 12)); next_jit = now + rnd(0.05, 0.15); }
@@ -810,12 +840,12 @@ static void rate_test()
   double *oP[2] = { op1.data(), op2.data() }, *oQ[2] = { oq1.data(), oq2.data() };
   long long bp = 0, bq = 0, n = 0, u10 = -1;
   double stalled = 0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;;) {
     const double dp = (double)bp * LP / SR, dq = (double)bq * LQ / SR, due = std::min(dp, dq);
     if (due > 26.0) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double late_ms = (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() - due) * 1000;
+    wait_until(t0 + secs(due));
+    const double late_ms = (std::chrono::duration<double>(tclock::now() - t0).count() - due) * 1000;
     if (due > 2) stalled = std::max(stalled, late_ms);
     if (dp <= dq) {
       for (int k = 0; k < LP; ++k, ++n) ip[k] = 0.5 * sin(2 * PI * 440 * n / SR);
@@ -880,12 +910,12 @@ static void device_test()
   int acc = 0;
   double debt = 0, stalled = 0, real_set = 0, real_end = 0;
   std::string sl0, sd0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;;) {
     const double due_l = (double)bl * LL / SR, due_t = (double)tick * 0.010, due = std::min(due_l, due_t);
     if (due > T_END) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    wait_until(t0 + secs(due));
+    const double real = std::chrono::duration<double>(tclock::now() - t0).count();
     if (due > 2) stalled = std::max(stalled, (real - due) * 1000);
     if (bd_set < 0 && due >= T_SET) { bd_set = bd; real_set = real; sl0 = rt_status(L); sd0 = rt_status(D); }
     real_end = real;
@@ -964,12 +994,12 @@ static void wobble_test()
   bool sized = false;
   double stalled = 0, real_set = 0, real_end = 0, next_look = T_SET, v_lo = 1e9, v_hi = -1e9, v_sum = 0, v_sq = 0;
   std::string s0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;;) {
     const double due_l = (double)bl * LL / SR, due_t = (double)tick * 0.010, due = std::min(due_l, due_t);
     if (due > T_END) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    wait_until(t0 + secs(due));
+    const double real = std::chrono::duration<double>(tclock::now() - t0).count();
     if (due > 2) stalled = std::max(stalled, (real - due) * 1000);
     if (bd_set < 0 && due >= T_SET) { bd_set = bd; real_set = real; s0 = rt_status(L); }
     real_end = real;
@@ -1037,12 +1067,12 @@ static void vm_test()
   double stalled = 0, real_set = 0, real_end = 0, held_until = 0, next_hold = 4.0, jit = 0;
   bool sized = false;
   std::string sv0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;;) {
     const double due_s = (double)bs * LS / SR, due_v = std::max((double)(bursts + 1) * per_v + jit, held_until), due = std::min(due_s, due_v);
     if (due > T_END) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    wait_until(t0 + secs(due));
+    const double real = std::chrono::duration<double>(tclock::now() - t0).count();
     if (due > 2) stalled = std::max(stalled, (real - due) * 1000);
     if (!sized && due > 0.5) sized = rt_peer_buffer(V, ps, 120, 200) == 1;
     if (bv_set < 0 && due >= T_SET) { bv_set = bv; real_set = real; sv0 = rt_status(V); }
@@ -1139,12 +1169,12 @@ static void jitter_test()
   double r_lo = 1e9, r_hi = -1e9, v_hi = -1e9, v_lo = 1e9;
   int looks = 0, fast = 0;
   std::string sj0;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;;) {
     const double due_j = (double)bj * LJ / SR, due_t = (double)tick * 0.010, due = std::min(due_j, due_t);
     if (due > T_END) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    wait_until(t0 + secs(due));
+    const double real = std::chrono::duration<double>(tclock::now() - t0).count();
     if (due > 2) stalled = std::max(stalled, (real - due) * 1000);
     if (bd_set < 0 && due >= T_SET) { bd_set = bd; real_set = real; sj0 = rt_status(J); }
     real_end = real;
@@ -1223,12 +1253,12 @@ static void landed_test()
   long long b = 0, n = 0;
   bool sized = false, held = false;
   double stalled = 0, over = -1e9, rate_hi = 0, next_look = 2.6;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;; ++b) {
     const double due = (double)b * LEN / SR;
     if (due > T_END) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    wait_until(t0 + secs(due));
+    const double real = std::chrono::duration<double>(tclock::now() - t0).count();
     if (due > 1) stalled = std::max(stalled, (real - due) * 1000);
     if (!sized && due > 0.3) sized = rt_peer_buffer(R, pt, 60, 60) == 1;
     if (!held && due >= 2.0) { rt_test_hold(R, 85); held = true; }
@@ -1291,12 +1321,12 @@ static void muted_test()
   double stalled = 0, next_hold = 2.0, next_size = 5.0, next_look = 8.0, r_lo = 1e9, r_hi = -1e9, play_rate = 0, talk_rate = 0;
   bool playing = false, looked2 = false, looked8 = false;
   std::string s0, s1;
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (;;) {
     const double due_m = (double)bm * LM / SR, due_d = (double)bd * LD / SR, due = std::min(due_m, due_d);
     if (due > T_END) break;
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < due) std::this_thread::yield();
-    const double real = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    wait_until(t0 + secs(due));
+    const double real = std::chrono::duration<double>(tclock::now() - t0).count();
     if (due > 2) stalled = std::max(stalled, (real - due) * 1000);
     if (due >= next_hold && due < T_PLAY - 2) { rt_test_hold(D, rnd(30, 70)); next_hold = due + rnd(0.6, 1.6); } // (the link's holds)
     if (due >= next_size && due < T_PLAY - 2) { rt_peer_buffer(D, pm, sizes[size_i % 6], sizes[size_i % 6]); ++size_i; next_size += 3.0; } // (a new size: a re-buffer)
@@ -1365,9 +1395,9 @@ static void not_here_test()
   std::vector<double> in(LEN, 0.25), o1(LEN), o2(LEN);
   const double *ii[1] = { in.data() };
   double *oo[2] = { o1.data(), o2.data() };
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (long long b = 0; b * LEN < SR * 3 / 2; ++b) { // (1.5 s of blocks in real time)
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() < (double)b * LEN / SR) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    wait_until(t0 + secs((double)b * LEN / SR));
     rt_capture(X, ii, 1, LEN, SR); rt_mix(X, oo, 2, LEN, SR);
     rt_capture(Y, ii, 1, LEN, SR); rt_mix(Y, oo, 2, LEN, SR);
   }
@@ -1377,9 +1407,9 @@ static void not_here_test()
   const size_t nhp = sy.find("\"not_here_peers\":{\"" + std::string(px) + "\":{\"ago\":");
   const double nh_ago = nhp == std::string::npos ? -1 : atof(sy.c_str() + sy.find("\"ago\":", nhp) + 6);
   rt_peers(Y, (std::string("{\"peers\":[\"") + px + "\"],\"port\":" + std::to_string(PY) + ",\"secret\":\"studio\"}").c_str());
-  const auto t1 = std::chrono::steady_clock::now();
+  const auto t1 = tclock::now();
   for (long long b = 0; b * LEN < SR; ++b) { // (1 s more, Y listing X now)
-    while (std::chrono::duration<double>(std::chrono::steady_clock::now() - t1).count() < (double)b * LEN / SR) std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    wait_until(t1 + secs((double)b * LEN / SR));
     rt_capture(X, ii, 1, LEN, SR); rt_mix(X, oo, 2, LEN, SR);
     rt_capture(Y, ii, 1, LEN, SR); rt_mix(Y, oo, 2, LEN, SR);
   }
@@ -1433,11 +1463,11 @@ static void start_order_test()
   long long n = 0;
   double stalled = 0;
   const int total = at(13.0), d_on = at(1.5), back = at(8.0);
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   for (int b = 0; b < total; ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+    wait_until(due);
+    stalled = std::max(stalled, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
     for (int k = 0; k < LEN; ++k, ++n) for (int i = 0; i < 3; ++i) in[i][k] = AMP[i] * sin(2 * PI * BIN[i] * (double)n / LEN);
     if (b == at(0.3)) { rt_hub(L[0], "", 1); rt_hub(L[1], nm[0], 0); }
     if (b == d_on) { rt_start(L[2], 0, 1, 128, 0, "127.0.0.1"); rt_hub(L[2], nm[0], 0); }
@@ -1481,8 +1511,56 @@ static void start_order_test()
   for (int i = 0; i < 3; ++i) rt_free(L[i]);
 }
 
+// The model itself (rt-audio4, extension/rtaudio.h rt_sim): A sends B a tone for 3 s over a path of `delay_ms` (block: no path at all);
+// what B hears, sample for sample, and the first sample past 0.1 after A starts (ms; -1: never).
+static double sim_tone(int port0, double delay_ms, bool block, std::vector<double> &heard)
+{
+  const int SR = 48000, LEN = 256;
+  char pa[32], pb[32];
+  snprintf(pa, sizeof pa, "127.0.0.1:%d", port0); snprintf(pb, sizeof pb, "127.0.0.1:%d", port0 + 1);
+  RtLink *A = rt_new(), *B = rt_new();
+  rt_peers(A, (std::string("{\"peers\":[\"") + pb + "\"],\"port\":" + std::to_string(port0) + ",\"secret\":\"studio\"}").c_str());
+  rt_peers(B, (std::string("{\"peers\":[\"") + pa + "\"],\"port\":" + std::to_string(port0 + 1) + ",\"secret\":\"studio\"}").c_str());
+  rt_sim_net(port0, port0 + 1, block ? -1 : delay_ms, 0, 0);
+  rt_start(A, 0, 1, 128, 0, "127.0.0.1"); rt_start(B, 0, 1, 128, 0, "127.0.0.1");
+  std::vector<double> ia(LEN), ib(LEN, 0.0), oa(LEN), ob(LEN);
+  const double *ina[1] = { ia.data() }, *inb[1] = { ib.data() };
+  double *outa[2] = { oa.data(), oa.data() }, *outb[2] = { ob.data(), ob.data() };
+  heard.clear();
+  const int start = SR / LEN; // (A plays from 1 s)
+  const auto t0 = tclock::now();
+  for (int b = 0; b < 4 * SR / LEN; ++b) {
+    wait_until(t0 + secs((double)b * LEN / SR));
+    for (int k = 0; k < LEN; ++k) ia[k] = b >= start ? 0.5 * sin(2 * 3.14159265358979 * 440 * ((double)b * LEN + k) / SR) : 0.0;
+    std::fill(ob.begin(), ob.end(), 0.0);
+    rt_capture(A, ina, 1, LEN, SR); rt_capture(B, inb, 1, LEN, SR);
+    rt_mix(A, outa, 2, LEN, SR); rt_mix(B, outb, 2, LEN, SR);
+    heard.insert(heard.end(), ob.begin(), ob.end());
+  }
+  rt_free(A); rt_free(B);
+  rt_sim_net(port0, port0 + 1, 0, 0, 0);
+  for (size_t i = (size_t)start * LEN; i < heard.size(); ++i) if (std::fabs(heard[i]) > 0.1) return (i - (double)start * LEN) * 1000.0 / SR;
+  return -1;
+}
+static void sim_test()
+{
+  if (g_real) { printf("     sim: skipped (SS_RT_REAL=1)\n"); return; }
+  std::vector<double> h1, h2, h3, hb;
+  const double l0 = sim_tone(47711, 0, false, h1), l1 = sim_tone(47711, 0, false, h2), l40 = sim_tone(47711, 40, false, h3), lb = sim_tone(47711, 0, true, hb);
+  double pk = 0;
+  for (double v : hb) pk = std::max(pk, std::fabs(v));
+  printf("     sim: A -> B heard %.1f ms after A plays, again %.1f (the same %s), over a 40 ms path %.1f; with no path B's loudest %.4f\n", l0, l1,
+         h1 == h2 ? "to the sample" : "NOT to the sample", l40, pk);
+  check(l0 > 0 && h1 == h2, "sim: the model gives the same sound twice, to the sample");
+  check(l40 > l0 + 30 && l40 < l0 + 55, "sim: a path's delay is heard (40 ms later, within a buffer's step)");
+  check(lb < 0 && pk < 1e-6, "sim: a blocked path carries nothing");
+}
+
 int main(int argc, char **argv)
 {
+  g_real = getenv("SS_RT_REAL") && atoi(getenv("SS_RT_REAL")) != 0;
+  if (!g_real) rt_sim(1);
+  printf("     clock: %s\n", g_real ? "real time (SS_RT_REAL=1)" : "simulated (rt_sim; SS_RT_REAL=1 for real time)");
   if (argc > 1 && strcmp(argv[1], "underruns") == 0) { drift_tests(); trim_test(); play_resync_test(); switch_test(); rescue_test(); stall_test(); outage_test(); spike_tests(); clock_tests(); rate_test(); device_test(); vm_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "jitter") == 0) { jitter_test(); landed_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "muted") == 0) { muted_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
@@ -1497,6 +1575,7 @@ int main(int argc, char **argv)
   if (argc > 1 && strcmp(argv[1], "outage") == 0) { outage_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "nothere") == 0) { not_here_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "sim") == 0) { sim_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
   const double PI = 3.14159265358979;
@@ -1528,11 +1607,11 @@ int main(int argc, char **argv)
   heard.reserve((size_t)blocks * LEN);
   const double *ina[1] = { ia.data() }, *inb[1] = { ib.data() }, *inc[1] = { ic.data() };
   double *outa[2] = { oa.data(), oa.data() }, *outb[2] = { ob.data(), ob2.data() }, *outc[2] = { oc.data(), oc.data() };
-  const auto t0 = std::chrono::steady_clock::now();
+  const auto t0 = tclock::now();
   long long n = 0;
   for (int b = 0; b < blocks; ++b) {
     const auto due = t0 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-    while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+    wait_until(due);
     for (int k = 0; k < LEN; ++k, ++n) {
       ia[k] = b >= start_blk ? 0.5 * sin(2 * PI * 440 * n / SR) : 0.0;
       ic[k] = 0.8 * sin(2 * PI * 1000 * n / SR);
@@ -1629,9 +1708,9 @@ int main(int argc, char **argv)
     // (what this machine does to a 20 ms sleep: the hold is one, and the macOS CI runner is a VM with long stalls)
     double sleep_max = 0;
     for (int i = 0; i < 5; ++i) {
-      const auto s0 = std::chrono::steady_clock::now();
+      const auto s0 = tclock::now();
       std::this_thread::sleep_for(std::chrono::milliseconds(20));
-      sleep_max = std::max(sleep_max, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - s0).count());
+      sleep_max = std::max(sleep_max, std::chrono::duration<double, std::milli>(tclock::now() - s0).count());
     }
     printf("     bursts: a 20 ms sleep here takes up to %.1f ms\n", sleep_max);
     double late_max = 0; // (the test clock's own lateness since the last look: a stall of this process, not the network)
@@ -1641,11 +1720,11 @@ int main(int argc, char **argv)
     long long u_stalled = 0;
     double stall_at = -1e9;
     std::string t_last;
-    const auto t1 = std::chrono::steady_clock::now();
+    const auto t1 = tclock::now();
     for (int b = 0; b < total; ++b) {
       const auto due = t1 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-      while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-      late_max = std::max(late_max, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+      wait_until(due);
+      late_max = std::max(late_max, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
       const double now = (double)b * LEN / SR;
       if (b % at(0.25) == 0) { // (a line whenever E's buffer for D changes or underruns: the timeline the checks below read)
         const std::string s = rt_status(E), t = field(s, pd, "target_ms");
@@ -1704,10 +1783,10 @@ int main(int argc, char **argv)
     double *outf[2] = { of.data(), of.data() }, *outg[2] = { og.data(), og2.data() }; // (G's left ear is what's checked)
     std::string mid_f, mid_g, dead_f;
     long long n3 = 0;
-    const auto t2 = std::chrono::steady_clock::now();
+    const auto t2 = tclock::now();
     for (int b = 0; b < total; ++b) {
       const auto due = t2 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-      while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
+      wait_until(due);
       for (int k = 0; k < LEN; ++k, ++n3) {
         iff[k] = 0.2 * sin(2 * PI * 440 * n3 / SR);
         inter[2 * k] = inter[2 * k + 1] = (float)(0.7 * sin(2 * PI * 1000 * n3 / SR));
@@ -1778,11 +1857,11 @@ int main(int argc, char **argv)
     std::thread stopper;
     long long n4 = 0;
     double hub_stall = 0; // (the test's own longest stall: the timing checks below are passed over in CI past 15 ms, check_unless_stalled)
-    const auto t3 = std::chrono::steady_clock::now();
+    const auto t3 = tclock::now();
     for (int b = 0; b < total; ++b) {
       const auto due = t3 + std::chrono::nanoseconds((long long)(1e9 * b * LEN / SR));
-      while (std::chrono::steady_clock::now() < due) std::this_thread::yield();
-      hub_stall = std::max(hub_stall, std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - due).count());
+      wait_until(due);
+      hub_stall = std::max(hub_stall, std::chrono::duration<double, std::milli>(tclock::now() - due).count());
       for (int k = 0; k < LEN; ++k, ++n4)
         for (int i = 0; i < 4; ++i) {
           const bool on = i != 1 || (b >= w_on && b < w_off) || b >= w_on2;
@@ -1862,6 +1941,7 @@ int main(int argc, char **argv)
     check_unless_stalled(field(end_x, "hub", "state") == "\"direct\"" && field(end_x, "hub", "fallbacks") == "1", hub_stall, "hub: X's status: direct, one fallback");
     for (int i = 0; i < 4; ++i) rt_free(L[i]);
   }
+  sim_test(); // (the simulated clock and network themselves: rt-audio4)
   not_here_test();
   start_order_test(); // (the four-computer test's start order: a hub whose list leaves a computer out)
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)

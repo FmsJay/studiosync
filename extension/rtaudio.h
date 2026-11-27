@@ -44,6 +44,17 @@ void rt_test_clock_bias(RtLink *l, double ppm);
 // tests only: what this computer's Talk stream from that peer has learned of its ratio is set to ppm, as if it had learned it (rt-r6's
 // desktop held +29673 for the muted laptop; no link in the lab makes it). rt-audio3
 void rt_test_ratio(RtLink *l, const char *peer, double ppm);
+// tests only (rt-audio4): the simulated clock and network. rt_sim(1) before any rt_start: no threads and no sockets; now is the simulated
+// clock (it starts at 100 s), every link on 127.0.0.1 is reached by its port in an in-memory network, and rt_sim_run(t) advances the clock to
+// t, delivering each datagram when it's due (a held receive thread gets what came meanwhile at once when its hold ends) and running each
+// link's send pass every 5 ms and whenever it was woken, as the threads would. rt_sim_net: a directed path's delay, jitter (ms, uniform on
+// top) and loss (0-1); port 0 for either end: any; delay < 0: no path at all. rt_sim_freeze(t): the clock jumps to t with nothing run (the
+// whole process stalled). rt_sim(0): back to real time. The same calls give the same numbers every run.
+void rt_sim(int on);
+double rt_sim_now();
+void rt_sim_run(double until_s);
+void rt_sim_freeze(double until_s);
+void rt_sim_net(int from_port, int to_port, double delay_ms, double jitter_ms, double loss);
 // tests only: the audio clock's estimate (ppm, as clock_ppm) after callbacks at these times (s) with this block size and rate; handed: how
 // far the times AOO was handed ran from the nominal ones, ppm (0: nothing reads at the estimate. rt-audio3).
 double rt_test_clock(const double *t, int n, int len, double srate, double *handed = nullptr);
