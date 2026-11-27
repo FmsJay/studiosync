@@ -345,7 +345,13 @@ function N.state()
     -- (and where it sits: an item's track, a track's folder parent. An item on another track read as converged before, its text the same:
     -- rt-sync2b's track check found three seeds of that in 28. rt-sync2c)
     if o.kind == "item" then hashes[o.oid] = mirror.hash(tostring(o.track) .. "\n" .. hashes[o.oid])
-    elseif o.kind == "track" and type(o.state) == "table" then hashes[o.oid] = mirror.hash(tostring(o.state.parent) .. "\n" .. hashes[o.oid]) end
+    elseif o.kind == "track" and type(o.state) == "table" then
+      -- (its rank left out: the order it makes is compared as the order, and a lib from before ranks (soak.py --old) hashes none. rt-sync2c)
+      local st = {}
+      for k, v in pairs(o.state) do st[k] = v end
+      st.rank = nil
+      hashes[o.oid] = mirror.hash(tostring(o.state.parent) .. "\n" .. mirror.track_hash(st, false))
+    end
     if o.kind == "track" then order[#order + 1] = o.oid end
   end
   -- (two items alike in everything but their ids, on one track: one change applied twice. The driver never makes two alike: every place it

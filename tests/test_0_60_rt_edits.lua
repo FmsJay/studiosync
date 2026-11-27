@@ -1443,6 +1443,7 @@ do
   -- 2. an order that came apart is put right during the session (REAPER check, 0.59.49.76): the desktop reopened an older file, and one
   -- change of a track carried that file's place. LinuxBox moved the track; the laptop didn't (here: its tab was behind)
   for _, c in ipairs({ A, B, C }) do heal(c) end
+  new_events() -- (what the heal sent: James's computer ranking the room's tracks, StudioSync's own act, lib/rank.lua. rt-sync2c)
   local studio = names(B)
   as(A)
   for i, t in ipairs(A.F.tracks) do if t.name == "Gtr" then table.insert(A.F.tracks, table.remove(A.F.tracks, i)); break end end -- (the older file's order: nobody moved it)

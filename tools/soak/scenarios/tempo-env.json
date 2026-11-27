@@ -2,7 +2,8 @@
  "name": "tempo-env",
  "what": "rt-fix9's 15033 class (a part's timing differs on one computer after tempo changes): today's seed 13007 at 150 edits, shrunk to 55: Drums' volume automation ends with its points at 4, 8, 12 s on James and at 4.706, 9.412, 14.118 s on Cee, the same points under a tempo map 17/20 of the other, and two items likewise (rt-converge's tm/retime path). rt-sync2 phase 5's gate (times in beats). 15033's own sequence no longer fails at bf500ba.",
  "phase": 5,
- "today": "fails",
+ "moved_off": "rt-sync2c phase 4 (ranks): a frozen seed, its network draws moved off the bug by the rank versions' extra writes, not fixed; phase 5 should replace it with a hand-made scenario",
+ "today": "passes",
  "signature": "converged:E differs",
  "seed": 13007,
  "edits": [

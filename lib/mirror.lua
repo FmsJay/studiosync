@@ -3,6 +3,7 @@
 local mirror = {}
 local merges = require("mirror_merge") -- (pure: the three-way merges, rt-sync2 phase 1)
 local judge = require("judge") -- (pure: what each object is, from its own versions: rt-sync2 phase 2)
+local rank = require("rank") -- (pure: a track's place as a code that sorts, rt-sync2 phase 4)
 
 -- Lines in an item chunk that are this machine's business only: selection, REAPER's own ids (regenerated on
 -- apply), MIDI pooling (a copy is its own item), MIDI editor view state, which take is active (wet/dry is each
@@ -419,7 +420,7 @@ end
 -- (measured, REAPER 7.83: no @init, even with a changed parameter). Which envelopes show, which is armed and how
 -- tall its lane is stay each person's own. A receive names its source track by oid (REAPER's chunk says its
 -- position); receives from a track that isn't mirrored (Real time, live views) stay as they are on each machine.
-mirror.HV = 8 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv). 8: a track's line leaves out its parent (0.59.14)
+mirror.HV = 9 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c)
 mirror.KIND = { T = "track", F = "fx", E = "env", R = "recv", M = "misc", I = "item" } -- (an oid's first letter)
 mirror.PART = { fx = "the plug-ins", env = "the automation", recv = "the sends", misc = "the groups, lock, input FX or note names" }
 mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x, R-x, M-x)
@@ -1357,6 +1358,8 @@ function mirror.track_line(t, local_mix, colour)
   -- Automation mode, only when it's Read (power-user review, 0.58.62): left off at the default, so no track's hash changed and nothing was sent
   -- again. Read or Trim/Read is how the song plays; Touch, Latch and Write are what one person is doing, so they travel as Read.
   if (tonumber(t.automode) or 0) >= 1 then f[#f + 1] = "am1" end
+  -- (its place as a rank, when it has one (lib/rank.lua): left off without, so a track no rank was given hashes as before. rt-sync2c)
+  if t.rank ~= nil then f[#f + 1] = "r" .. tostring(t.rank) end
   for i, v in ipairs(f) do
     local s = tostring(v)
     f[i] = s:find("|", 1, true) and s:gsub("|", "/") or s -- (the same text; the gsub only when there's a "|": 150 tracks' 30 fields a look)
@@ -1368,6 +1371,11 @@ end
 -- whole numbers. Read as different, a track that had only moved in the list was put back and suggested to its owner at every restart.
 -- (The hash stays on track_line: changing what it reads would make every track look changed.) Pure.
 function mirror.same_line(x, y, local_mix)
+  -- (a version from a StudioSync before ranks has none: its place isn't another, it's unsaid. rt-sync2c)
+  if (x.rank == nil) ~= (y.rank == nil) then
+    local function sans(t) local c = {}; for k, v in pairs(t) do c[k] = v end; c.rank = nil; return c end
+    x, y = sans(x), sans(y)
+  end
   local function plain(t) return (mirror.track_line(t, local_mix):gsub("(%d)%.0%f[|\0]", "%1")) end
   return plain(x) == plain(y)
 end
@@ -1733,6 +1741,8 @@ end
 mirror.remember = remember
 
 local function trk_oid(tr) return select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "", false)):upper() end
+-- A track's rank here (P_EXT:band_rank), or nil: none yet, or not one (lib/rank.lua). rt-sync2c
+function mirror.rank_of(tr) local r = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", "", false)); return rank.valid(r) and r or nil end
 local function itm_oid(it) return select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", false)):upper() end
 mirror.track_oid, mirror.item_oid = trk_oid, itm_oid
 -- StudioSync's own helper tracks (the SonoBus return, stems) never mirror
@@ -1773,11 +1783,14 @@ function mirror.track_state(proj, tr, local_mix)
     local above = reaper.GetTrack(proj, i)
     if not local_track(above) then t.after = trk_oid(above); break end
   end
+  t.rank = mirror.rank_of(tr) -- (its place among the studio's tracks, kept on it: lib/rank.lua. rt-sync2c)
   return t
 end
 
 function mirror.set_track_state(proj, tr, t, local_mix)
   reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", t.name or "", true)
+  -- (its rank, from a StudioSync that sends one: a version without one leaves the rank here as it is. A bandmate's text, checked. rt-sync2c)
+  if rank.valid(t.rank) and t.rank ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", t.rank, true) end
   -- never fewer lanes than its items sit on: REAPER then says those items are on lane 255, and it went out as an edit, and every
   -- machine grew to 256 lanes (a Back to before the lanes, with items not yet gone: laptop and PC, 0.42.7)
   local in_use = 0
@@ -3216,9 +3229,18 @@ function mirror.apply(proj, ev, media_dir, local_mix)
   if kind == "track" then
     local tr = mirror.find(proj, "track", oid)
     local made = not tr
+    -- (where it goes: by its rank among the tracks here (lib/rank.lua), else under the track its version names. A move from a StudioSync
+    -- before ranks, in a room that has them, gets a rank for that place here, the same on every computer, so the order kept by rank keeps it
+    -- there; any other version without one keeps the rank this track has here. rt-sync2c)
+    local room_dir = media_dir and media_dir:gsub("/media$", "")
+    local r, old_move = rank.valid(ev.state.rank) and ev.state.rank or nil, false
+    if not r and room_dir then r, old_move = mirror.rank_from(room_dir, ev) end
+    local derived = not r and old_move and mirror.ranked(proj) and mirror.rank_at(proj, room_dir, oid, ev.state.after or "") or nil
+    r = r or derived or (tr and mirror.rank_of(tr))
+    local place = r and room_dir and mirror.rank_above(proj, room_dir, oid, r) or ev.state.after or ""
     if not tr then
       local idx = 0 -- under the track it sat under there (or first)
-      local above = ev.state.after ~= "" and mirror.find(proj, "track", ev.state.after)
+      local above = place ~= "" and mirror.find(proj, "track", place)
       if above then idx = math.floor(reaper.GetMediaTrackInfo_Value(above, "IP_TRACKNUMBER")) end
       local colours = mirror.track_colours(proj) -- (auto-colour rules recolour the other tracks when one goes in: theirs are the band's)
       reaper.InsertTrackInProject(proj, idx, 0) -- (InsertTrackAtIndex only knows the tab in front; REAPER 7.18+)
@@ -3227,11 +3249,12 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", oid, true)
     end
     mirror.set_track_state(proj, tr, ev.state, local_mix)
+    if r and r ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r, true) end
     -- moved in the band's project: here too (REAPER reorders only in the tab in front; a tab behind keeps its order)
     -- (mirror.STAY: mirror.heal's mark on a version whose place is the one already held here. A key no event file can carry)
-    if not ev[mirror.STAY] and mirror.track_state(proj, tr, local_mix).after ~= ev.state.after and reaper.EnumProjects(-1) == proj then
-      local above = ev.state.after ~= "" and mirror.find(proj, "track", ev.state.after)
-      if above or ev.state.after == "" then
+    if not ev[mirror.STAY] and mirror.track_state(proj, tr, local_mix).after ~= place and reaper.EnumProjects(-1) == proj then
+      local above = place ~= "" and mirror.find(proj, "track", place)
+      if above or place == "" then
         local sel = {}
         for i = 0, reaper.CountSelectedTracks(proj) - 1 do sel[#sel + 1] = reaper.GetSelectedTrack(proj, i) end
         reaper.SetOnlyTrackSelected(tr)
@@ -4438,6 +4461,30 @@ function W.order(w)
       elseif o.kind == "fx" and o.ptr and not (reaper.time_precise() < (mirror.fx_loading[order_key .. o.oid] or 0)) then
         mirror.fx_load_knobs[order_key .. o.oid] = mirror.fx_params(o.ptr)
       end
+    end
+  end
+  -- (a track this person moved, or made here, gets a rank between its neighbours' as REAPER has them now, so every computer sorts it there:
+  -- lib/rank.lua. Only in a room with ranks (the first look of an opening is the file's order, nobody's move). rt-sync2c)
+  if not first_here and mirror.ranked(proj) then
+    local list, need = {}, {}
+    for _, o in ipairs(objs) do
+      if o.kind == "track" and o.ptr and type(o.state) == "table" then
+        list[#list + 1] = o
+        if moved_set[o.oid] or (o.state.rank == nil and mirror.known(proj, o.oid) == nil) then need[o.oid] = true end
+      end
+    end
+    local a = nil
+    for i, o in ipairs(list) do
+      if need[o.oid] then
+        local b
+        for k = i + 1, #list do if not need[list[k].oid] and list[k].state.rank then b = list[k].state.rank; break end end
+        local r = rank.between(a, b) or (a and rank.between(a, nil)) -- (neighbours out of rank order here: after the one above it)
+        if r then
+          reaper.GetSetMediaTrackInfo_String(o.ptr, "P_EXT:band_rank", r, true)
+          o.state.rank, o.hash = r, mirror.track_hash(o.state, opts.local_mix)
+          a = r
+        end
+      elseif o.state.rank then a = o.state.rank end
     end
   end
   w.order_was = mirror.order_seen[order_key] -- (the tracks as the look before had them: where a track deleted since sat, W.gone)
@@ -6396,18 +6443,10 @@ function mirror.publish_order(proj, room_dir, me)
   reaper.RecursiveCreateDirectory(room_dir .. "/order", 0)
   band.write_json(room_dir .. "/order/" .. me:gsub("[^%w%-_ ]", "_") .. ".json", { list = mirrored_order(proj), time = os.date("!%Y-%m-%dT%H:%M:%SZ"), by = me })
 end
--- This tab's tracks onto the studio's list, moving as few as it takes. Only with the tab in front (REAPER reorders nowhere else), stopped,
--- and caught up. -> how many moved.
-function mirror.keep_order(proj, cfg, song, room)
-  local sync = require("sync")
-  if reaper.EnumProjects(-1) ~= proj or reaper.GetPlayStateEx(proj) ~= 0 then return 0 end
-  if sync.pending_events(proj, cfg, song, room) > 0 then return 0 end
-  local room_dir = sync.room_dir(cfg, song, room)
-  local best, here = mirror.read_order(room_dir), mirrored_order(proj)
-  if not best then -- (nobody's said yet: whoever's here first, and what they have then, is where everyone starts)
-    if #here > 0 then mirror.publish_order(proj, room_dir, cfg.user) end
-    return 0
-  end
+-- The order the studio's newest order list says, for the tracks here (`here`, as oids). -> a list of oids, or nil with no list yet.
+local function list_order(proj, room_dir, here)
+  local best = mirror.read_order(room_dir)
+  if not best then return nil end
   local after = {}
   local listed = {}
   for _, x in ipairs(best.list) do listed[x] = true end
@@ -6418,8 +6457,38 @@ function mirror.keep_order(proj, cfg, song, room)
       after[x] = ev and type(ev.state) == "table" and ev.state.after or ""
     end
   end
-  local want = mirror.wanted_order(best.list, here, after)
-  if table.concat(want, ",") == table.concat(here, ",") then return 0 end
+  return mirror.wanted_order(best.list, here, after)
+end
+-- A room with no ranks yet gets them as soon as this computer holds the studio's order list's order (mirror.order_heal: in front, stopped,
+-- caught up, nobody editing). Nothing moves. -> how many tracks were ranked. rt-sync2c
+function mirror.rank_due(proj, cfg, song, room)
+  if mirror.ranked(proj) then return 0 end
+  local room_dir = require("sync").room_dir(cfg, song, room)
+  local here = mirrored_order(proj)
+  local want = #here > 0 and list_order(proj, room_dir, here)
+  if not want or table.concat(want, ",") ~= table.concat(here, ",") then return 0 end
+  return mirror.rank_room(proj, cfg, song, room, here)
+end
+-- This tab's tracks onto the studio's list, moving as few as it takes. Only with the tab in front (REAPER reorders nowhere else), stopped,
+-- and caught up. -> how many moved.
+function mirror.keep_order(proj, cfg, song, room)
+  local sync = require("sync")
+  if reaper.EnumProjects(-1) ~= proj or reaper.GetPlayStateEx(proj) ~= 0 then return 0 end
+  if sync.pending_events(proj, cfg, song, room) > 0 then return 0 end
+  local room_dir = sync.room_dir(cfg, song, room)
+  local here, want = mirrored_order(proj), nil
+  if mirror.ranked(proj) then want = mirror.rank_order(proj, room_dir) -- (the studio's order from the tracks' own ranks: lib/rank.lua. rt-sync2c)
+  else
+    want = list_order(proj, room_dir, here)
+    if not want then -- (nobody's said yet: whoever's here first, and what they have then, is where everyone starts)
+      if #here > 0 then mirror.publish_order(proj, room_dir, cfg.user) end
+      return 0
+    end
+  end
+  if table.concat(want, ",") == table.concat(here, ",") then
+    mirror.rank_room(proj, cfg, song, room, here) -- (on the studio's order: what has no rank yet gets one. rt-sync2c)
+    return 0
+  end
   local moved, n = mirror.moved_tracks(here, want, {}), 0
   local sel = {}
   for i = 0, reaper.CountSelectedTracks(proj) - 1 do sel[#sel + 1] = reaper.GetSelectedTrack(proj, i) end
@@ -6443,6 +6512,122 @@ function mirror.keep_order(proj, cfg, song, room)
   reaper.Undo_EndBlock2(proj, "StudioSync: the studio's track order", -1)
   mirror.order_seen[tostring(proj)] = table.concat(mirrored_order(proj), ",") -- (not a move of this person's: the next look mustn't send it)
   reaper.TrackList_AdjustWindows(false)
+  return n
+end
+
+-- ---- ranks (docs/rt/rt-sync2.md section 3, docs/rt/rt-sync2c.md phase 4) ------------------------------------------------------------------
+-- Each track's place is a rank kept on it (P_EXT:band_rank) and carried in its version as `rank`: the studio's order is the tracks sorted by
+-- rank (rank.order), the same on every computer whatever arrived when, so a late joiner sorts and is right. A move gives the moved tracks
+-- new ranks between their new neighbours' (W.order); a new track one between the tracks around it. A track with no rank (an older
+-- StudioSync's) sits under the track its version names (`after`). Old computers ignore ranks and keep following `after` and the order lists,
+-- which new computers keep writing.
+-- Has this project's room any ranks yet (a track here has one)?
+function mirror.ranked(proj)
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    if not local_track(tr) and mirror.rank_of(tr) then return true end
+  end
+  return false
+end
+-- The studio's track order by rank, as oids. `except`: one left out (a track being placed).
+function mirror.rank_order(proj, room_dir, except)
+  local list = {}
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local oid = not local_track(tr) and trk_oid(tr) or ""
+    if oid ~= "" and oid ~= except then
+      local r, after = mirror.rank_of(tr), nil
+      if not r then
+        local _, _, evid = mirror.known(proj, oid)
+        local ev = evid and evid ~= "" and event_file(room_dir, evid)
+        after = ev and type(ev.state) == "table" and ev.state.after or ""
+      end
+      list[#list + 1] = { oid = oid, rank = r, after = after }
+    end
+  end
+  return rank.order(list)
+end
+-- The track that should sit right above `oid` (with rank r) among the tracks here: "" for the top. -> its oid.
+function mirror.rank_above(proj, room_dir, oid, r)
+  local prev = ""
+  for _, x in ipairs(mirror.rank_order(proj, room_dir, oid)) do -- (just above the first ranked track after it, as rank.order would place it)
+    local tr = mirror.find(proj, "track", x)
+    local rx = tr and mirror.rank_of(tr)
+    if rx and (rank.less(r, rx) or r == rx and rank.less(oid, x)) then return prev end
+    prev = x
+  end
+  return prev
+end
+-- The rank a track's version gives it: its own, else the newest in what it builds on. A version from before ranks, or an Undo or Restore
+-- of one, keeps the place the track has (the judge's merge_track reads a missing rank the same way), on a track made anew as on one already
+-- here. -> the rank, or nil and true when a move from a StudioSync before ranks comes first (its place is the one its `after` names).
+function mirror.rank_from(room_dir, ev)
+  local x, steps = ev, 0
+  while type(x) == "table" and steps < 200 do
+    if type(x.state) == "table" and rank.valid(x.state.rank) then return x.state.rank, false end
+    if x.moved ~= nil or type(x.loser) == "table" and x.loser.moved ~= nil then return nil, true end
+    steps = steps + 1
+    local next_id = mirror.split_merge(x.id) or x.base_ev
+    x = next_id and event_file(room_dir, next_id) or nil
+  end
+  return nil, false
+end
+-- A rank for a track landing under `above` with no rank of its own (moved by a StudioSync before ranks): between the tracks around that
+-- place here, so it stays there when the order is kept by rank. The same on every computer holding the same ranks. -> a rank or nil.
+function mirror.rank_at(proj, room_dir, oid, above)
+  local order = mirror.rank_order(proj, room_dir, oid)
+  local a, b, at = nil, nil, above == "" and 0 or nil
+  for k, x in ipairs(order) do if x == above then at = k end end
+  if not at then return nil end
+  for k = at, 1, -1 do local tr = mirror.find(proj, "track", order[k]); a = tr and mirror.rank_of(tr); if a then break end end
+  for k = at + 1, #order do local tr = mirror.find(proj, "track", order[k]); b = tr and mirror.rank_of(tr); if b then break end end
+  return rank.between(a, b)
+end
+-- The studio's order is here (`here`, as oids): each track with no rank yet that this person made and may change gets one, as one act
+-- StudioSync makes ("auto": no Undo step of anyone's), its version built on the one held. Where no track has a rank, by place (rank.spread:
+-- the same ranks whoever does it); else between the ranked tracks around it. A track whose maker never ranks it sits under the track its
+-- version names (rank.order). -> how many were ranked.
+function mirror.rank_room(proj, cfg, song, room, here)
+  local sync = require("sync")
+  local room_dir = sync.room_dir(cfg, song, room)
+  local ranks, any = {}, false
+  for i, oid in ipairs(here) do
+    local tr = mirror.find(proj, "track", oid)
+    ranks[i] = tr and mirror.rank_of(tr) or nil
+    any = any or ranks[i] ~= nil
+  end
+  local spread = not any and rank.spread(#here)
+  local can, who = sync.authority(cfg, song, room)
+  local n, act = 0, nil
+  for i, oid in ipairs(here) do
+    local rev, h, evid = mirror.known(proj, oid)
+    local ev = not ranks[i] and rev and (h or "") ~= "" and (evid or "") ~= "" and event_file(room_dir, evid) or nil
+    -- (by its maker, when they may change it: one computer ranks each track, not every computer in the room at once)
+    if ev and not ev.gone and type(ev.state) == "table" and mirror.is_creator(oid, cfg.user)
+        and (can(cfg.user, ev.state.name or "") or sync.maker_may(oid, cfg.user, ev.state.name or "", nil, who.mode, nil, who.is_claimed)) then
+      local a, b
+      if not spread then
+        for k = i - 1, 1, -1 do if ranks[k] then a = ranks[k]; break end end
+        for k = i + 1, #here do if ranks[k] then b = ranks[k]; break end end
+      end
+      local r = spread and spread[i] or rank.between(a, b)
+      local tr = mirror.find(proj, "track", oid)
+      if r and tr then
+        ranks[i] = r
+        local st = band_json(ev.state)
+        st.rank = r
+        reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r, true)
+        act = act or new_act(cfg.user, reaper.time_precise())
+        mirror.hlc_seen(ev.hlc)
+        local post = { type = "obj", obj = "track", oid = oid, rev = mirror.next_rev(rev, false), base = rev, base_ev = evid, state = st, name = st.name,
+          hash = mirror.track_hash(st), hv = mirror.HV, act = act, auto = true }
+        local id = sync.post(cfg, song, room, post)
+        remember(proj, oid, post.rev, post.hash, id, mirror.order_of(post))
+        n = n + 1
+      end
+    end
+  end
+  if n > 0 then require("band").log(string.format("%d track(s) given their place as a rank (StudioSync's track order, from this version on)", n)) end
   return n
 end
 
@@ -6487,6 +6672,8 @@ mirror.order_kept = mirror.order_kept or {} -- tostring(proj) -> when order_heal
 function mirror.order_heal(proj, cfg, song, room, now, idle)
   local sync, pk = require("sync"), tostring(proj)
   if (idle or 0) < mirror.ORDER_IDLE or sync.loading[pk] or reaper.EnumProjects(-1) ~= proj or reaper.GetPlayStateEx(proj) ~= 0 then return 0 end
+  -- (a room with no ranks yet: ranked once this computer is on the studio's list, as soon as it can be. rt-sync2c)
+  if mirror.order_kept[pk] and not mirror.ranked(proj) and sync.pending_events(proj, cfg, song, room) == 0 then mirror.rank_due(proj, cfg, song, room) end
   if mirror.order_kept[pk] then
     if not mirror.order_apart_for(proj, now) or now - mirror.order_kept[pk] < mirror.APART_SECS or now - (mirror.order_landed[pk] or -math.huge) < mirror.ORDER_WAIT then return 0 end
   elseif sync.pending_events(proj, cfg, song, room) > 0 then return 0 end

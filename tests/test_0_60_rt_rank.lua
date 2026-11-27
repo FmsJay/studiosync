@@ -1,7 +1,13 @@
 -- rt-sync2c phase 4 (docs/rt/rt-sync2.md section 3, docs/rt/rt-sync2c.md): a track's place as a rank (lib/rank.lua), carried in its version
--- as `rank`, and the studio's order sorted from the ranks (parts 2-6 come with the order itself). Lua 5.4, from the repo root.
+-- as `rank`, and the studio's order sorted from the ranks. Lua 5.4, from the repo root.
 --  1. (pure) rank.valid, rank.less (bytes, not the locale's collation), rank.between strictly between and short, rank.spread in order,
 --     rank.order (ranked by rank then oid, an unranked track under the track its version names).
+--  2. A room's tracks get ranks once, on the studio's order (mirror.keep_order -> mirror.rank_room), as StudioSync's own act (no Undo step).
+--  3. A move: the moved track gets a rank between its new neighbours'; the bandmate's computer sorts it there.
+--  4. Two moves made at once, on two computers: both end on the same order. A late joiner sorts and lands on it too.
+--  5. A move from a StudioSync before ranks (a version with no rank, `moved` set): every new computer gives it the same rank for that place,
+--     and keeping the order by rank keeps it there. A new track made here gets a rank between the tracks around it.
+--  6. (merge) a version without a rank, merged with one that moved the track, keeps the move's rank (a missing rank is no change).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -41,6 +47,212 @@ do
   assert(table.concat(o, ",") == "T-TOP-20261101000004-1,T-C-20261101000000-3,T-OLD-20261101000002-1,T-OLD-20261101000001-1,T-A-20261101000000-1,T-B-20261101000000-2,T-GONE-20261101000003-1",
     "rank.order: " .. table.concat(o, ","))
   print("rt-rank 1: ranks sort by bytes, between is strictly between and short, spread is in order, unranked tracks sit under their anchor")
+end
+
+-- ---- computers (as tests/test_0_60_rt_reopen.lua) ------------------------------------------------------------------------------------------
+local T = 1800000000
+local real_time, real_date = os.time, os.date
+os.time = function(t) if t then return real_time(t) end return T end
+os.date = function(fmt, t) return real_date(fmt, t or T) end
+local E = require("editreaper")
+local F0 = E.new("C:/A/Song.rpp")
+reaper = F0.reaper
+local band = require("band")
+local files, logged = {}, {}
+band.read_json = function(path) local v = files[path]; if type(v) == "table" then return band.json_decode(band.json_encode(v)) end end
+band.write_json = function(path, v) files[path] = band.json_decode(band.json_encode(v)); return true end
+band.log = function(s) logged[#logged + 1] = s end
+local function list(dir) local out = {}; for p in pairs(files) do local f = p:match("^" .. dir:gsub("%p", "%%%0") .. "/([^/]+%.json)$"); if f then out[#out + 1] = f end end; table.sort(out); return out end
+band.files, band.listing = list, function(dir) return list(dir) end
+package.loaded.trust = { claim_ok = function() return true end }
+local mirror = require("mirror")
+local sync = require("sync")
+require("prints").choose = function() end
+local claimask = require("claimask")
+require("direct").send_live = function() return true end
+claimask.reachable = function() return nil end
+claimask.present = function() return false end
+local function studio(song)
+  local S = { song = song, dir = "R/" .. song .. "/rooms/main", sess = { host = "James", markers = {} }, b = { song = song, room = "main" } }
+  files[S.dir .. "/mode.json"] = { mode = "everyone", by = "James" }
+  local function as(c) reaper = c.F.reaper end
+  S.as = as
+  function S.computer(user)
+    local c = { F = E.new("C:/" .. user .. "/" .. song .. ".rpp"), cfg = { user = user, root = "R" }, user = user }
+    require("undo").confirm = function() return true end
+    c.F.reaper.GetMousePosition = function() return 0, 0 end
+    c.F.reaper.file_exists = function(p) return not p:find("%.json$") or files[p] ~= nil end
+    c.F.reaper.SetExtState(band.SECTION, "user", user, false)
+    c.edited = -1
+    return c
+  end
+  function S.look(c)
+    as(c)
+    c.F.clock = c.F.clock + 1
+    local may, w = sync.authority(c.cfg, song, "main", S.sess)
+    sync.driver_name, sync.room_mode = w.driver, w.mode
+    mirror.watch(c.F.proj, c.cfg, song, "main", { can = may, owner_can = may, mode = w.mode, is_claimed = w.is_claimed, owner_of = w.owner_of, quick = true,
+      edited_at = c.edited, sent = claimask.on_sent })
+    as(c)
+  end
+  function S.settle(c)
+    for _ = 1, 20 do
+      local n = 0
+      for _ in pairs(files) do n = n + 1 end
+      S.look(c)
+      local m = 0
+      for _ in pairs(files) do m = m + 1 end
+      if m == n and not mirror.more and not mirror.unsettled then return end
+      mirror.unsettled = nil
+    end
+    error("never settled")
+  end
+  function S.edit(c, fn) as(c); c.F.clock = c.F.clock + 1; fn(c.F); c.edited = c.F.clock; S.settle(c) end
+  function S.recv(c)
+    as(c)
+    sync.ev_cache = {}
+    for _ = 1, 20 do
+      c.F.clock = c.F.clock + 1
+      local may, w = sync.authority(c.cfg, song, "main", S.sess)
+      sync.room_mode = w.mode
+      local got = sync.receive(c.F.proj, c.cfg, song, "main", may)
+      if (tonumber(got) or 0) == 0 and not sync.backlog and not sync.read_cut then break end
+    end
+    S.settle(c)
+  end
+  function S.keep(c) as(c); local n = mirror.keep_order(c.F.proj, c.cfg, song, "main"); S.settle(c); return n end
+  function S.names(c) local t = {}; for _, tr in ipairs(c.F.tracks) do t[#t + 1] = tr.name end; return table.concat(t, ", ") end
+  function S.track(c, name) for _, t in ipairs(c.F.tracks) do if t.name == name then return t end end end
+  function S.rank(c, name) as(c); local t = S.track(c, name); return t and mirror.rank_of(t) end
+  function S.events(pred) local out = {}; for p, v in pairs(files) do if p:find(S.dir .. "/events/", 1, true) and type(v) == "table" and pred(v) then out[#out + 1] = v end end; return out end
+  function S.move(c, name, to) -- (the track dragged to just above the track at `to`, 0-based, as REAPER's ReorderSelectedTracks)
+    S.edit(c, function() reaper.SetOnlyTrackSelected(S.track(c, name)); reaper.ReorderSelectedTracks(to, 0); reaper.SetTrackSelected(S.track(c, name), false) end)
+  end
+  return S
+end
+-- James and Bee with Drums, Bass, Gtr, Keys, ranked once on the studio's order
+local function song(name)
+  local S = studio(name)
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.edit(A, function(F) for _, n in ipairs({ "Drums", "Bass", "Gtr", "Keys" }) do F.add_track(n) end end)
+  S.keep(A) -- (the first: the studio's order list)
+  S.recv(B)
+  S.keep(A) -- (on the list's order: the tracks get ranks)
+  return S, A, B
+end
+
+-- ---- 2. a room's tracks get ranks once, on the studio's order ------------------------------------------------------------------------------
+do
+  local S, A, B = song("Rank2")
+  for _, n in ipairs({ "Drums", "Bass", "Gtr", "Keys" }) do assert(S.rank(A, n), n .. " has a rank on James's") end
+  assert(rank.less(S.rank(A, "Drums"), S.rank(A, "Bass")) and rank.less(S.rank(A, "Gtr"), S.rank(A, "Keys")), "in the studio's order")
+  local ranked = S.events(function(v) return v.obj == "track" and v.state and v.state.rank and v.auto end)
+  assert(#ranked == 4 and ranked[1].hv == 9, "four versions with their ranks, StudioSync's own (auto: no Undo step of James's), hash version 9: " .. #ranked)
+  S.recv(B)
+  assert(S.rank(B, "Keys") == S.rank(A, "Keys") and S.names(B) == "Drums, Bass, Gtr, Keys", "the same ranks on Bee's")
+  S.keep(B)
+  assert(#S.events(function(v) return v.obj == "track" and v.user == "Bee" end) == 0, "Bee's computer ranks nothing more: they all have one")
+  print("rt-rank 2: a room's tracks are ranked once, on the studio's order, as StudioSync's own act")
+end
+
+-- ---- 3. a move gives the moved track a rank between its new neighbours ------------------------------------------------------------------------
+do
+  local S, A, B = song("Rank3")
+  S.recv(B)
+  T = T + 5
+  S.move(A, "Keys", 1) -- (Keys to just above Bass)
+  assert(S.names(A) == "Drums, Keys, Bass, Gtr", "moved on James's: " .. S.names(A))
+  local kr = S.rank(A, "Keys")
+  assert(rank.less(S.rank(A, "Drums"), kr) and rank.less(kr, S.rank(A, "Bass")), "Keys's rank is between Drums's and Bass's")
+  local mv = S.events(function(v) return v.obj == "track" and v.name == "Keys" and v.moved ~= nil end)[1]
+  assert(mv and mv.state.rank == kr and mv.state.after ~= nil, "the move goes out with the rank (and its after, for older computers)")
+  S.recv(B)
+  assert(S.names(B) == "Drums, Keys, Bass, Gtr", "Bee's sorts it there: " .. S.names(B))
+  print("rt-rank 3: a moved track's rank goes between its new neighbours' and every computer sorts it there")
+end
+
+-- ---- 4. two moves at once; a late joiner --------------------------------------------------------------------------------------------------
+do
+  local S, A, B = song("Rank4")
+  S.recv(B)
+  T = T + 5
+  S.move(A, "Keys", 0) -- (James: Keys to the top)
+  S.move(B, "Drums", 4) -- (Bee, not having seen it: Drums to the bottom)
+  S.recv(A); S.recv(B); S.keep(A); S.keep(B)
+  assert(S.names(A) == S.names(B), "the same order on both: " .. S.names(A) .. " / " .. S.names(B))
+  assert(S.names(A) == "Keys, Bass, Gtr, Drums", "both moves stand: " .. S.names(A))
+  local C = S.computer("Cee") -- (a late joiner: every version, in whatever order receive takes them)
+  S.recv(C); S.keep(C)
+  assert(S.names(C) == S.names(A), "the late joiner sorts and is right: " .. S.names(C))
+  print("rt-rank 4: two moves made at once end the same on both, and a late joiner sorts onto it")
+end
+
+-- ---- 5. a move from a StudioSync before ranks; a new track here ----------------------------------------------------------------------------
+do
+  local S, A, B = song("Rank5")
+  S.recv(B)
+  T = T + 5
+  -- an old computer's move of Gtr to the top: a version built on the held one, `moved` and `after` set, no rank
+  local held = S.events(function(v) return v.obj == "track" and v.name == "Gtr" end)
+  table.sort(held, function(x, y) return x.rev < y.rev end)
+  local h = held[#held]
+  local st = band.json_decode(band.json_encode(h.state))
+  st.rank, st.after = nil, ""
+  local id = "Old-20270101-000000Z-00001-0001"
+  files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "track", oid = h.oid, id = id, user = "Old", name = "Gtr", rev = h.rev + 1, base = h.rev,
+    base_ev = h.id, state = st, moved = S.track(A, "Bass") and h.state.after or "", time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (h.hlc or 0) + 1000 }
+  S.recv(A); S.recv(B)
+  assert(S.names(A) == "Gtr, Drums, Bass, Keys" and S.names(B) == S.names(A), "the old computer's move lands at the top on both: " .. S.names(A) .. " / " .. S.names(B))
+  assert(S.rank(A, "Gtr") and S.rank(A, "Gtr") == S.rank(B, "Gtr") and rank.less(S.rank(A, "Gtr"), S.rank(A, "Drums")), "with the same rank for that place on both")
+  S.keep(A); S.keep(B)
+  assert(S.names(A) == "Gtr, Drums, Bass, Keys" and S.names(B) == S.names(A), "and keeping the order by rank keeps it there")
+  assert(#S.events(function(v) return v.obj == "track" and v.name == "Gtr" and v.user ~= "Old" and v.rev > h.rev end) == 0, "nobody sends it again")
+  -- a new track on James's between Drums and Bass
+  T = T + 5
+  S.edit(A, function(F) F.add_track("Pad", 3) end)
+  assert(S.names(A) == "Gtr, Drums, Pad, Bass, Keys", "Pad made on James's: " .. S.names(A))
+  assert(rank.less(S.rank(A, "Drums"), S.rank(A, "Pad")) and rank.less(S.rank(A, "Pad"), S.rank(A, "Bass")), "with a rank between Drums's and Bass's")
+  S.recv(B)
+  assert(S.names(B) == "Gtr, Drums, Pad, Bass, Keys", "Bee's puts it there: " .. S.names(B))
+  print("rt-rank 5: an older computer's move gets the same rank on every new computer and stays; a new track gets one between its neighbours")
+end
+
+-- ---- 6. merge: a missing rank is no change ----------------------------------------------------------------------------------------------------
+do
+  local base = { name = "Gtr", rank = "V" }
+  local mover = { name = "Gtr", rank = "F" } -- (a new computer moved it)
+  local old = { name = "Guitar" } -- (an old computer renamed it: no rank in its version)
+  local m1 = mirror.merge_track(base, old, mover)
+  local m2 = mirror.merge_track(base, mover, old)
+  assert(m1.rank == "F" and m1.name == "Guitar" and m2.rank == "F" and m2.name == "Guitar", "both stand, whichever wins: " .. tostring(m1.rank) .. " " .. tostring(m2.rank))
+  assert(mirror.same_line({ name = "Gtr", rank = "F" }, { name = "Gtr" }) and not mirror.same_line({ name = "Gtr", rank = "F" }, { name = "Gtr", rank = "G" }),
+    "a version with no rank reads as the same track; another rank doesn't")
+  print("rt-rank 6: a version from before ranks says nothing of the place")
+end
+
+-- ---- 7. an Undo or Restore of a version from before ranks keeps the track's place, on a track made anew as on one already there ---------
+do
+  local S, A, B = song("Rank7")
+  S.recv(B)
+  T = T + 5
+  -- James's Undo restores Gtr's first version (made before ranks: no rank in it), built on the one he holds
+  local held = S.events(function(v) return v.obj == "track" and v.name == "Gtr" end)
+  table.sort(held, function(x, y) return x.rev < y.rev end)
+  local first, last = held[1], held[#held]
+  assert(first.state.rank == nil and last.state.rank, "Gtr's first version has no rank, its last one has")
+  local st = band.json_decode(band.json_encode(first.state))
+  st.vol = "0.500000"
+  local id = "James-20270101-000001Z-00002-0002"
+  files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "track", oid = last.oid, id = id, user = "James", name = "Gtr", rev = last.rev + 1, base = last.rev,
+    base_ev = last.id, state = st, restored = first.id, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (last.hlc or 0) + 1000 }
+  S.recv(B)
+  local C = S.computer("Cee") -- (a late joiner: Gtr made anew from that version)
+  S.recv(C)
+  assert(S.rank(B, "Gtr") == last.state.rank and S.rank(C, "Gtr") == last.state.rank, "the rank it had, on Bee's and on the late joiner's: " ..
+    tostring(S.rank(B, "Gtr")) .. " / " .. tostring(S.rank(C, "Gtr")) .. " (was: kept on one, none on the other, three orders)")
+  S.keep(B); S.keep(C)
+  assert(S.names(B) == S.names(C), "the same order: " .. S.names(B) .. " / " .. S.names(C))
+  print("rt-rank 7: an Undo of a version from before ranks keeps the track's place everywhere")
 end
 
 print("ok rt-rank")

@@ -87,8 +87,12 @@ function H.build_rows()
       local who, secs, what
       if s.sync and not drift then who, secs, what = require("mirror").apart_for(proj, reaper.time_precise()) end
       return { "same", not drift and not who, "red", "Changes from the others come out the same here",
-        who and (what == "order" and string.format("The tracks are in another order here than on %s's computer. Close and reopen this project on the computer that's wrong: " ..
-            "it opens in the studio's order.", who)
+        who and (what == "order" and (require("mirror").ranked(proj)
+            -- (each track carries its place as a rank: the order heal sorts by them, so this mends itself. rt-sync2c)
+            and string.format("The tracks are in another order here than on %s's computer. Each track carries its place, so StudioSync puts them in the " ..
+              "studio's order by itself, with the transport stopped, a little after the last edit.", who)
+            or string.format("The tracks are in another order here than on %s's computer. Close and reopen this project on the computer that's wrong: " ..
+            "it opens in the studio's order.", who))
           or string.format("This project isn't the same as %s's, though every change has arrived on both (%d s now). StudioSync looks for what never landed " ..
             "after a minute and brings it in line, at most every 5 minutes. If this stays, ask the driver to use Restore > Restore whole project to here, " ..
             "or close and reopen this project.", who, secs))

@@ -590,9 +590,11 @@ function M.merge_track(base, winner, loser)
     elseif g and together[g].l then out[k] = loser[k]
     elseif g then out[k] = winner[k]
     else
-      local s, c = M.side3(norm(base[k]), norm(winner[k]), norm(loser[k]))
-      out[k] = loser[k]
-      if s == "w" then out[k] = winner[k] end
+      local wv, lv = winner[k], loser[k]
+      if k == "rank" then wv, lv = wv == nil and base[k] or wv, lv == nil and base[k] or lv end -- (a version from before ranks says nothing of the place: unchanged. rt-sync2c)
+      local s, c = M.side3(norm(base[k]), norm(wv), norm(lv))
+      out[k] = lv
+      if s == "w" then out[k] = wv end
       if c then both[#both + 1] = k end
     end
   end
