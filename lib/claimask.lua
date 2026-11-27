@@ -365,8 +365,35 @@ function claimask.answer(cfg, b, id, yes)
   publish(claimask.proj, b)
   return yes and ("released " .. what .. " to " .. q.from .. ": their edit goes to everyone") or ("kept " .. what .. ": " .. q.from .. "'s edit is put back")
 end
--- The web page's Release / Keep (topic "claimask": { id, answer }).
-function claimask.web_action(cfg, b, a)
+-- The asks only this computer's person answers (the big deletion's, StudioSync's own Undo's: the panel's bar), for the web page's list: [{ kind =
+-- "delete"|"undo", id, text, till }], till an os.time() as the claim asks'. A page elsewhere reads the words but can't answer. rt-askweb
+function claimask.local_asks(proj)
+  local list = {}
+  for _, k in ipairs({ "delete", "undo" }) do
+    local q = (k == "delete" and claimask.big_pending or require("undo").pending)(proj)
+    if q then list[#list + 1] = { kind = k, id = q.id, text = q.text, till = tonumber(q.till) } end
+  end
+  return list
+end
+-- The web page's Yes / No to one of them (topic "claimask": { ask = "delete"|"undo", id, yes }): the same ExtState answers the panel's bar writes,
+-- which Live sync's tick carries out, so whoever answers first wins (an answer already written stands) and the other clears when it's done. Only
+-- a page on this computer (`here`): the answer changes the studio for everyone. -> words for the log, or nil.
+function claimask.web_local(proj, a, here)
+  if (a.ask ~= "delete" and a.ask ~= "undo") or type(a.id) ~= "string" then return nil end
+  local undo = require("undo")
+  local q = (a.ask == "delete" and claimask.big_pending or undo.pending)(proj)
+  if not here then return "the web page's answer about " .. (a.ask == "delete" and "a deletion" or "StudioSync's Undo") .. " wasn't taken: answer it on the computer itself" end
+  if not q or q.id ~= a.id then return "the web page's answer: that ask has run out" end
+  local key = a.ask .. " answer " .. tostring(proj)
+  if band.ext_json(band.SECTION, key) ~= nil then return "the web page's answer: it was answered already" end
+  local yes = a.yes == true
+  if a.ask == "undo" and not yes then undo.clear(proj) -- (No ends it, as the bar's)
+  else reaper.SetExtState(band.SECTION, key, band.json_encode({ id = q.id, yes = yes }), false) end
+  return "the web page answered " .. (yes and "Yes" or "No") .. ": " .. q.text
+end
+-- The web page's Release / Keep (topic "claimask": { id, answer }), or its Yes / No to a local ask (web_local).
+function claimask.web_action(cfg, b, a, proj, here)
+  if type(a) == "table" and a.ask ~= nil then return claimask.web_local(proj, a, here) end
   if type(a) ~= "table" or type(a.id) ~= "string" or (a.answer ~= "release" and a.answer ~= "keep") then return nil end
   local said, why = claimask.answer(cfg, b, a.id, a.answer == "release")
   return said and ("the web page: " .. said) or ("the web page's answer: " .. tostring(why))

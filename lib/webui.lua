@@ -263,7 +263,7 @@ function webui.tick(proj, cfg, b, handlers)
       if said then band.log(said) end
     end
     if topic == "claimask" then
-      local said = require("claimask").web_action(cfg, b, a)
+      local said = require("claimask").web_action(cfg, b, a, proj, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1) -- (Yes / No to the delete and Undo asks: this computer's page only. rt-askweb)
       if said then band.log(said) end
     end
     if topic == "draw" then -- (the drawing layer: lib/webdraw.lua, rt-draw)
@@ -320,6 +320,7 @@ function webui.tick(proj, cfg, b, handlers)
     local pm = webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who,
       function(u) return require("persons").of(cfg.root, u) end) -- (a person's computers as one: lib/persons.lua, rt-people)
     pm.asks = require("claimask").model(b) -- (Claims mode: asks waiting on you, and yours on others. lib/claimask.lua, rt-claims)
+    pm.asks.local_asks = require("claimask").local_asks(proj) -- (a big deletion's and StudioSync's Undo's asks: the panel's bar, here too. rt-askweb)
     local okg, mg = pcall(require("groups").may_manage, cfg.root, cfg.user)
     pm.may_grant = okg and mg or nil -- (Admins only: this page may let people edit here)
     publish("presence", pm)
