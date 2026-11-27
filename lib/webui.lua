@@ -159,6 +159,7 @@ webui.ACTIONS.claimask = true -- (Claims mode: Release / Keep what someone asks 
 webui.ACTIONS.grants = true -- (Admins only: let someone edit in this room, or take it back; owner and admins only. lib/grants.lua, rt-claims)
 webui.ACTIONS.draw = true -- (the drawing layer over the Project and Mixer pages and the phone's Project view: add, remove, clear. lib/webdraw.lua, rt-draw)
 webui.ACTIONS.nav = true -- (Open in REAPER / Open in the browser, from a page on this computer only: lib/webenv.lua, rt-ui1)
+webui.ACTIONS.settings = true -- (Settings: This computer, Studio, Devices, Advanced; changes only from a page on this computer. lib/websettings.lua, rt-ui10b)
 function webui.parse_action(s)
   local a = type(s) == "string" and s ~= "" and band.json_decode(s)
   if type(a) ~= "table" or type(a.topic) ~= "string" or not webui.ACTIONS[a.topic] then return nil end
@@ -267,6 +268,10 @@ function webui.tick(proj, cfg, b, handlers)
       local said = require("webhome").action(proj, cfg, b, a)
       if said then band.log(said) end
     end
+    if topic == "settings" then -- (lib/websettings.lua, rt-ui10b)
+      local said = require("websettings").action({ proj = proj, cfg = cfg, b = b }, a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1, reaper.time_precise())
+      if said then band.log(said) end
+    end
     if topic == "nav" then -- (lib/webenv.lua, rt-ui1)
       local said = require("webenv").nav_action(a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1, webui.local_url(webui.status().port))
       if said then band.log(said) end
@@ -290,6 +295,7 @@ function webui.tick(proj, cfg, b, handlers)
   require("webenv").tick(proj, cfg, b, publish, now, nil, published.health and published.health:match('"worst":"(%a+)"'))
   local nav = require("webenv").nav_topic()
   if nav then publish("nav", nav) end
+  require("websettings").tick({ proj = proj, cfg = cfg, b = b }, publish, now) -- (Settings, while a page shows it: lib/websettings.lua, rt-ui10b)
   if now - pres_at >= webui.PRESENCE_EVERY then
     pres_at = now
     local ps = reaper.GetPlayStateEx(proj)
