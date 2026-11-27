@@ -26,12 +26,14 @@ local band = require("band")
 -- then) and a 150-200 ms stall every minute or so (2.1% of a window), which isn't falling behind; before the spike fix it lost 8-13%.
 local hops = { EVERY = 0.5, ASK_EVERY = 3, IDLE = 30, NAME = "StudioSync Hop", TAG = "for=hop;", TRACK_TAG = "hop", MARGIN_MS = 30, REMOTE_LATENCY = 256,
   LATENCY = 8192, LAT_MAX = 32768, OLD_MAX = 8192, SPARE_MS = 20, HELD = "band_fx_held", MAX_CHAIN = 32, BUSY = 75, CPU_EVERY = 20, START = 20, AWAY = 10, LATE_WINDOW = 10, LATE_MAX = 8, LOST_MAX = 5, SETTLE = 3, SAY_BACK = 300,
-  RUN_BG = { 40871, 40873 } } -- (Project tabs: Run background projects; Run stopped background projects. hops.run_background)
+  RUN_BG = { 40871, 40873 }, -- (Project tabs: Run background projects; Run stopped background projects. hops.run_background)
+  FREEZE = 2, KEEP_WAIT = 10 } -- (a borrowed plug-in's knobs into the song FREEZE s after the last turn, once stopped; an unanswered ask, again. rt-borrow)
 -- (this script's state; kept across Live sync's reload in place (band.reload: the same Lua, the modules loaded again): a fresh one forgot the
 -- hidden tracks this computer hosts, so a stop never removed them, and the next ask made a second track for the same hop. Laptop, rt)
 local S = rawget(_G, "STUDIOSYNC_HOPS_S") or {}
 for k, v in pairs({ at = -math.huge, connected = {}, asked = {}, serving = {}, why = {}, ok_at = {}, late = {}, up = {}, tp = {}, back = {},
-  pending = {}, allow = {}, refused = {}, params = {}, sent = {}, act = {} }) do if S[k] == nil then S[k] = v end end -- (pending .. sent: lib/hoptry.lua's)
+  pending = {}, allow = {}, refused = {}, params = {}, sent = {}, act = {}, stand = {}, keep = {}, kept = {}, dirty = {} }) do if S[k] == nil then S[k] = v end end
+-- (pending .. sent, keep .. dirty: lib/hoptry.lua's; stand: the song's plug-ins a hop plays here, read by prints.track_plays)
 _G.STUDIOSYNC_HOPS_S = S
 hops.S = S
 local SEC = "StudioSync hops" -- ProjExtState: this project's hops (requester side), hop id -> record
@@ -119,6 +121,71 @@ function hops.cpu_parse(out)
     busy = load and n and n > 0 and 100 * tonumber((load:gsub(",", "."))) / n or nil
   end
   return busy and math.min(100, math.max(0, math.floor(busy / 10 + 0.5) * 10)) or nil
+end
+-- Borrow for real (rt-borrow): a plug-in's block as the owner's REAPER wrote it in its track's FXCHAIN (mirror.fx_blocks: from its BYPASS
+-- line on), checked before it goes into a track here: at most KEEP_MAX bytes, one plug-in of a kind a hop runs whose name is `key`
+-- (plugins.key), balanced; any other block in it (a second plug-in, a knob's envelope or modulation) is left out. -> its lines without its
+-- FXID (REAPER gives it one here), and its REAPER name; or nil and why. Pure.
+hops.KEEP_MAX = 48 * 1024 -- (a direct-link message caps at 64 KB with its envelope)
+local KINDS = { VST = true, CLAP = true, AU = true, LV2 = true, JS = true }
+function hops.block_lines(block, key)
+  if type(block) ~= "string" or #block > hops.KEEP_MAX then return nil, "its settings didn't come (or were too big)" end
+  local out, depth, name, skip = {}, 0, nil, false
+  for l in block:gmatch("[^\r\n]+") do
+    local s = l:match("^%s*(.-)%s*$")
+    if #out == 0 then
+      if not s:match("^BYPASS[%d%s]+$") then return nil, "what came isn't a plug-in" end
+    elseif depth == 0 and s:sub(1, 1) == "<" then
+      skip = name ~= nil
+      if not skip then
+        local kind, n = s:match('^<(%u+)%d?%s+"([^"]+)"')
+        if kind == "JS" or s:match("^<JS%s") then kind, n = "JS", "JS: " .. (s:match('^<JS%s+"([^"]*)"') or s:match("^<JS%s+(%S+)") or "") end
+        if not (kind and KINDS[kind] and n) then return nil, "what came isn't a plug-in a hop runs" end
+        name = n
+      end
+    end
+    local was = depth
+    if s:sub(1, 1) == "<" then depth = depth + 1 elseif s == ">" then depth = depth - 1 end
+    if depth < 0 then return nil, "what came isn't a whole plug-in" end
+    if not (skip or (depth == 0 and was == 0 and s:match("^FXID "))) then out[#out + 1] = s end
+    if skip and depth == 0 then skip = false end
+  end
+  if not name or depth ~= 0 then return nil, "what came isn't a whole plug-in" end
+  if require("plugins").key(name) ~= key then return nil, "what came is another plug-in (" .. name .. ")" end
+  return out, name
+end
+-- `chunk` (a track's) with `lines` in its FXCHAIN: in place of the plug-in whose FXID is `replace` (keeping that id), or else in front of the
+-- one whose FXID is `before`. -> the new chunk, or nil when neither is there. Pure.
+function hops.put_block(chunk, lines, before, replace)
+  local src, starts, ids, depth, on, close = {}, {}, {}, 0, false, nil
+  for l in (tostring(chunk) .. "\n"):gmatch("([^\n]*)\n") do src[#src + 1] = l end
+  for n, l in ipairs(src) do
+    local s = l:match("^%s*(.-)%s*$")
+    if not on then on, depth = s == "<FXCHAIN", 1
+    else
+      local top = depth == 1
+      if s:sub(1, 1) == "<" then depth = depth + 1 elseif s == ">" then depth = depth - 1 end
+      if depth == 0 then close = n; break end
+      if top and s:match("^BYPASS ") then starts[#starts + 1] = n
+      elseif top and starts[1] and s:match("^FXID ") then ids[#starts] = s:match("^FXID (%S+)") end
+    end
+  end
+  if not close then return nil end
+  local function build(k)
+    local n, z, res = starts[k], (starts[k + 1] or close) - 1, {}
+    for i = 1, n - 1 do res[#res + 1] = src[i] end
+    local wak
+    for _, x in ipairs(lines) do
+      if replace and not wak and x:match("^WAK ") then wak = true; res[#res + 1] = "FXID " .. replace end
+      res[#res + 1] = x
+    end
+    if replace and not wak then res[#res + 1] = "FXID " .. replace end
+    for i = replace and z + 1 or n, #src do res[#res + 1] = src[i] end
+    return table.concat(res, "\n")
+  end
+  for k in ipairs(starts) do if replace and ids[k] == replace then return build(k) end end
+  for k in ipairs(starts) do if not replace and before and ids[k] == before then return build(k) end end
+  return nil
 end
 -- This computer's `cpu` for its status (Live sync): the probe runs in the background every CPU_EVERY s; an audio dropout in the last minute reads
 -- as 100 (no headroom, whatever the processor says).
@@ -328,7 +395,21 @@ local function status(id) local st = band.json_decode(reaper.StudioSync_HopStatu
 local function ask(cfg, rec, song, room)
   S.asked[rec.token] = reaper.time_precise()
   return require("direct").send_live(cfg, "hop", { op = "serve", token = rec.token, oid = rec.oid, fxi = rec.fxi, fx = rec.fx, chain = rec.chain, user = cfg.user,
-    try = rec.try or nil }, song, room, nil, { rec.peer })
+    try = rec.try or nil, borrowed = rec.borrowed or nil }, song, room, nil, { rec.peer })
+end
+local function tagged(tr, g) return g ~= nil and band.track_ext(tr, "band_local_fx"):find(g .. hops.TAG, 1, true) ~= nil end
+local function untag(tr, g)
+  band.set_track_ext(tr, "band_local_fx", (band.track_ext(tr, "band_local_fx"):gsub(g:gsub("%p", "%%%0") .. hops.TAG:gsub("%p", "%%%0"), "")))
+end
+-- The track's parts play again as Auto says, now that a hop does or doesn't stand for one of its plug-ins (prints.track_plays: a plug-in a hop
+-- plays here counts as here, so its dry take plays through the hop instead of the print with the chain held off).
+local function rechoose(tr) if tr then pcall(function() require("prints").rechoose(tr) end) end end
+local function short(name) return (tostring(name):gsub("^%w+:%s*", ""):gsub("%s*%(.-%)$", "")) end -- ("VST3: Neural Amp (Neural DSP)" -> "Neural Amp")
+-- Something that ended a hop by itself, said in the log and on Health for a while (never silently).
+local function say_back(text)
+  while S.back[1] and reaper.time_precise() - S.back[1].at >= hops.SAY_BACK do table.remove(S.back, 1) end
+  S.back[#S.back + 1] = { text = text, at = reaper.time_precise() }
+  band.log(text)
 end
 -- "Run this plug-in on <user>'s computer": a Hop right after FX `fx` on `tr`, and the bandmate asked to host it. -> hop id, or nil and why.
 function hops.make(proj, cfg, tr, fx, user, peer, song, room)
@@ -369,19 +450,22 @@ function hops.stop(proj, cfg, id)
   require("direct").send_live(cfg, "hop", { op = "stop", token = rec.token }, rec.song, rec.room, nil, { rec.peer })
   local tr = track_by_oid(proj, rec.oid)
   local i = tr and guid_at(tr, rec.hop)
-  if i then
-    reaper.TrackFX_Delete(tr, i)
-    band.set_track_ext(tr, "band_local_fx", (band.track_ext(tr, "band_local_fx"):gsub(rec.hop:gsub("%p", "%%%0") .. hops.TAG:gsub("%p", "%%%0"), "")))
-  end
+  if i then reaper.TrackFX_Delete(tr, i) end
+  if tr and rec.hop then untag(tr, rec.hop) end -- (also when the Hop was deleted by hand: nothing of it left in the list. rt-borrow)
   if rec.offload and tr then hops.release_chain(tr, rec.held or {}) end -- (its own chain on again, as it was)
   recs[tostring(id)] = nil
   local others = false
   for _, r in pairs(recs) do others = others or r.oid == rec.oid end
   if tr and rec.perf and not others then reaper.SetMediaTrackInfo_Value(tr, "I_PERFFLAGS", math.floor(rec.perf)) end -- (as it was, with its last hop)
-  recs[tostring(id)], S.connected[id], S.asked[rec.token], S.why[rec.token] = nil, nil, nil, nil
-  S.ok_at[rec.token], S.late[rec.token], S.up[rec.token], S.tp[rec.token], S.params[rec.token], S.act[rec.token] = nil, nil, nil, nil, nil, nil
+  recs[tostring(id)], S.connected[id] = nil, nil
+  hops.forget(rec.token)
   save(proj, recs)
+  if rec.of and S.stand[rec.of] then S.stand[rec.of] = nil; rechoose(tr) end -- (Auto again: the print where the plug-in doesn't load)
   return true
+end
+-- What this computer kept for a hop's token while it ran.
+function hops.forget(token)
+  for _, k in ipairs({ "asked", "why", "ok_at", "late", "up", "tp", "params", "act", "keep", "kept", "dirty" }) do S[k][token] = nil end
 end
 -- "Try <key> on <user>'s computer" (rt-hopvst, lib/hoptry.lua): a plug-in from their published list (plugins.key's name) that nothing in the
 -- song has: a Hop at the end of `tr`'s chain (MIDI from the track reaches it there, for an instrument; a lost frame plays dry), and they're asked
@@ -417,6 +501,47 @@ end
 function hops.of_fx(proj, tr, fx)
   local g = reaper.TrackFX_GetFXGUID(tr, fx)
   for _, rec in pairs(hops.records(proj)) do if rec.of == g or rec.hop == g then return rec end end
+end
+-- The song's plug-ins a hop plays here (S.stand: fx guid -> track oid), from the project's hops; a track whose set changed plays as Auto says
+-- again. Read by prints.track_plays (prints.hop_plays).
+function hops.stands(proj, recs)
+  local now_set, changed = {}, {}
+  for _, rec in pairs(recs or {}) do if rec.of and not rec.offload then now_set[rec.of] = rec.oid end end
+  for g, oid in pairs(now_set) do if S.stand[g] ~= oid then changed[oid] = true end end
+  for g, oid in pairs(S.stand) do if now_set[g] ~= oid then changed[oid] = true end end
+  S.stand = now_set
+  for oid in pairs(changed) do rechoose(track_by_oid(proj, oid)) end
+end
+-- Borrow for real (rt-borrow, lib/hoptry.lua): the owner's block for a plug-in (hops.block_lines: `lines`, `name`) goes into the song on
+-- `rec`'s track: a try's, in front of its Hop (the try becomes a hop for a plug-in of the song, as "Run plug-in on a bandmate" makes: a new
+-- token, so the owner drops the try's hidden track and hosts a copy of their own copy of the song's, once the band's change reaches them);
+-- a borrowed one's, in place of the plug-in (its settings as last turned there: mirror sends them to the band, and the print follows on a
+-- computer that has it). Only while stopped: a chain set from its chunk reloads its plug-ins. -> true, or nil and why.
+function hops.borrow_in(proj, cfg, key, rec, lines, name)
+  local tr = track_by_oid(proj, rec.oid)
+  if not (tr and guid_at(tr, rec.hop)) then return nil, "its track or its StudioSync Hop is gone" end
+  local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
+  local new = hops.put_block(chunk or "", lines, not rec.of and rec.hop or nil, rec.of)
+  if not new then return nil, "its place in the track's chain wasn't found" end
+  reaper.SetTrackStateChunk(tr, new, false)
+  if rec.of then return true end
+  local i = (guid_at(tr, rec.hop) or 0) - 1
+  local fxi
+  for k, x in ipairs(shared_fx(tr)) do if x == i then fxi = k - 1 end end
+  if not fxi then return nil, "it didn't go into the chain" end
+  require("direct").send_live(cfg, "hop", { op = "stop", token = rec.token }, rec.song, rec.room, nil, { rec.peer })
+  local old = rec.token
+  rec.try, rec.borrowed, rec.key = nil, true, rec.fx
+  rec.of, rec.fxi, rec.fx, rec.token = reaper.TrackFX_GetFXGUID(tr, i), fxi, name, math.random(1, 2147483647)
+  local pm = S.params[old] -- (its knobs show on until the new hop sends them)
+  hops.forget(old)
+  S.params[rec.token], S.connected[math.floor(rec.id)] = pm, nil
+  local recs = hops.records(proj)
+  recs[key] = rec
+  save(proj, recs)
+  band.log(string.format("%s is on %s for real now: in the project for everyone, running on %s's computer through the hop while you play; where it isn't running live (and once you stop it) the studio's print of the track plays, made on a computer that has it",
+    tostring(rec.key), tostring(rec.track or "the track"), tostring(rec.user)))
+  return true
 end
 
 -- ---- Shared CPU: a whole track's FX on a bandmate's computer ---------------------------------------------------------------------------
@@ -507,10 +632,7 @@ end
 -- An offload comes back here: its chain on again as it was, the bandmate's hidden track gone, and said (a line, and Health for a while).
 function hops.hand_back(proj, cfg, rec, why)
   hops.stop(proj, cfg, rec.id)
-  local text = string.format("%s's effects are back on this computer: %s", tostring(rec.track), why)
-  while S.back[1] and reaper.time_precise() - S.back[1].at >= hops.SAY_BACK do table.remove(S.back, 1) end
-  S.back[#S.back + 1] = { text = text, at = reaper.time_precise() }
-  band.log(text)
+  say_back(string.format("%s's effects are back on this computer: %s", tostring(rec.track), why))
 end
 -- The action and the panel's button: offload the track's FX, or bring them back. -> what to tell the person (nil: nothing to say).
 function hops.offload_toggle(proj, cfg, b, tr)
@@ -573,6 +695,7 @@ function hops.serve(proj, cfg, d, song, room)
   end
   for k, e in ipairs(try and {} or chain) do
     local s, si = find_fx(proj, d.oid, e.fxi, e.fx)
+    if not s and d.borrowed then return fail("waiting for the track's new plug-in to reach their copy of the project (it goes in there while their playback is stopped)") end
     if not s then return fail("their copy of the project doesn't have " .. tostring(e.fx) .. " on that track") end
     if not require("prints").fx_here(s, si) then return fail(tostring(e.fx):gsub("^%w+:%s*", "") .. " doesn't load on their computer") end
     src, sis[k] = s, si
@@ -600,7 +723,8 @@ function hops.serve(proj, cfg, d, song, room)
   if not ok then reaper.DeleteTrack(tr); return fail(try and (try.name .. " didn't load on their computer") or "the StudioSync Hop plug-in isn't installed on their computer") end
   local pdc = chain_pdc(tr, #sis)
   sv = { track = reaper.GetTrackGUID(tr), x = x, y = y, pdc = pdc, user = d.user, oid = d.oid, chain = chain, fx = d.fx, asked = reaper.time_precise(), knobs = {},
-    try = try and true or nil, name = try and try.name or nil, instrument = try and try.instrument or nil, song = song, room = room }
+    try = try and true or nil, name = try and try.name or (d.borrowed and d.fx) or nil, instrument = try and try.instrument or nil, song = song, room = room,
+    borrowed = (not try and d.borrowed == true and #chain == 1) or nil } -- (a borrowed plug-in: its knobs go to its borrower too, as a try's: rt-borrow)
   S.serving[token], S.why[token] = sv, nil
   hops.ensure_link(cfg, secret)
   reaper.StudioSync_HopServe(hops.serve_json(secret, token, x, y, pdc))
@@ -611,8 +735,9 @@ end
 -- knobs go to whoever tries it instead (lib/hoptry.lua), and theirs come back as "set".
 local function follow(proj, cfg, token, sv)
   local tr = served_track(proj, sv)
-  if sv.try and not tr then drop_served(proj, token); return end
-  if sv.try then require("hoptry").host_params(cfg, token, sv, tr) end
+  -- (its hidden track deleted here by hand: the same as Stop, so they're told and the yes goes. findings 8, rt-borrow)
+  if sv.try and not tr then require("hoptry").end_use(proj, cfg, token); return end
+  if tr and (sv.try or sv.borrowed) then require("hoptry").host_params(cfg, token, sv, tr) end
   for k, e in ipairs(sv.try and {} or sv.chain) do
     local src, si = find_fx(proj, sv.oid, e.fxi, e.fx)
     if not (tr and src) then drop_served(proj, token); return end
@@ -639,14 +764,12 @@ function hops.on_msg(proj, cfg, d, song, room)
   local token = math.tointeger(tonumber(d.token))
   if d.op == "serve" then hops.serve(proj, cfg, d, song, room)
   elseif d.op == "stop" and token then drop_served(proj, token); require("hoptry").gone(token)
-  elseif (d.op == "params" or d.op == "page" or d.op == "set") and token then require("hoptry").on_msg(proj, cfg, d, token)
+  elseif (d.op == "params" or d.op == "page" or d.op == "set" or d.op == "keep" or d.op == "kept") and token then require("hoptry").on_msg(proj, cfg, d, token)
   elseif d.op == "fail" and token then
     for _, rec in pairs(hops.records(proj)) do
       if rec.token == token and rec.try and d.denied then -- (the owner said no, or stopped it: the try ends here too, and says why)
         hops.stop(proj, cfg, rec.id)
-        local text = string.format("Trying %s on %s's computer ended: %s", tostring(rec.fx), tostring(rec.user), tostring(d.why or "they stopped it"))
-        S.back[#S.back + 1] = { text = text, at = reaper.time_precise() }
-        band.log(text)
+        say_back(string.format("Trying %s on %s's computer ended: %s", tostring(rec.fx), tostring(rec.user), tostring(d.why or "they stopped it")))
       elseif rec.token == token then S.why[token] = tostring(d.why or "?"); band.log("hop " .. rec.id .. ": " .. S.why[token]) end
     end
   end
@@ -703,18 +826,43 @@ function hops.tick(cfg, b, proj)
   S.at = now
   require("hoptry").print_tick(now) -- (a print of a tried plug-in ends on time: lib/hoptry.lua)
   if not (cfg and hops.available()) then return end
+  require("hoptry").asks_tick(cfg) -- (asks for your plug-ins to the panel's bar, its Allow / Deny back: rt-borrow)
   hops.run_background(next(S.serving) ~= nil)
   local secret = secret_of(cfg)
   if not secret then return end
   -- (this computer's own hops only while its Live sync tab is in front; hosting goes on behind another tab too: rt-hop2 item 3)
   local recs, linked = (proj == nil or reaper.EnumProjects(-1) == proj) and hops.records(proj) or {}, false
+  local stopped = (tonumber(reaper.GetPlayStateEx(proj)) or 0) == 0
   for key, rec in pairs(recs) do
     local id = math.floor(rec.id)
     local tr = track_by_oid(proj, rec.oid)
-    local src = tr and (rec.offload or rec.try or find_fx(proj, rec.oid, rec.fxi, rec.fx))
+    local ftr, fi = nil, nil
+    if tr and not (rec.offload or rec.try) then ftr, fi = find_fx(proj, rec.oid, rec.fxi, rec.fx) end
+    local src = tr and (rec.offload or rec.try or ftr)
     if not src then -- (the plug-in it stood for is gone from the song: so is the hop)
       hops.stop(proj, cfg, id)
+    elseif not guid_at(tr, rec.hop) and tagged(tr, rec.hop) then -- (its Hop deleted by hand: the same as Stop, on both sides. findings 8)
+      if rec.offload then hops.hand_back(proj, cfg, rec, "its StudioSync Hop was removed from the track")
+      else
+        hops.stop(proj, cfg, id)
+        say_back(string.format("%s on %s's computer stopped: its StudioSync Hop was removed from %s", short(rec.key or rec.fx), tostring(rec.user),
+          select(2, reaper.GetTrackName(tr))))
+      end
+    elseif fi and require("prints").fx_here(tr, fi) then -- (the plug-in loads here now (installed since): it runs here, and the hop would apply it twice)
+      hops.stop(proj, cfg, id)
+      say_back(string.format("%s loads on this computer now, so it runs here: the hop to %s's computer stopped", short(rec.fx), tostring(rec.user)))
+    elseif S.kept[rec.token] and stopped then -- (a borrowed plug-in's block from its owner: into the song while stopped. lib/hoptry.lua, rt-borrow)
+      local k = S.kept[rec.token]
+      S.kept[rec.token] = nil
+      local ok, why = hops.borrow_in(proj, cfg, key, rec, k.lines, k.name)
+      if not ok then say_back(string.format("%s wasn't added to the track: %s", tostring(rec.key or rec.fx), tostring(why))) end
     elseif not rec.offload or keep_offload(proj, cfg, key, rec, tr, now) then
+      if rec.borrowed and stopped and not S.keep[rec.token] and now - (S.dirty[rec.token] or math.huge) >= hops.FREEZE then
+        require("hoptry").keep(proj, cfg, id) -- (knobs turned while it played: their settings into the song now, so the print follows. rt-borrow)
+      elseif S.keep[rec.token] and now - S.keep[rec.token] > hops.KEEP_WAIT then -- (no answer: asked again, if it was a freeze)
+        S.keep[rec.token] = nil
+        if rec.borrowed then S.dirty[rec.token] = now end
+      end
       if not rec.offload and not guid_at(tr, rec.hop) then -- (the band's chain replaced this track's, own FX and all: the Hop goes back in)
         local i = rec.try and reaper.TrackFX_GetCount(tr) - 1 or select(2, find_fx(proj, rec.oid, rec.fxi, rec.fx)) -- (a try's at the end)
         local idx = add_hop(tr, i + 1, id, math.floor(tonumber(rec.latency) or hops.LATENCY), 1)
@@ -738,6 +886,7 @@ function hops.tick(cfg, b, proj)
       if not (type(st.net) == "table" and st.net.serving) and now - (S.asked[rec.token] or -math.huge) > hops.ASK_EVERY then ask(cfg, rec, b and b.song or rec.song, b and b.room or rec.room) end
     end
   end
+  if proj == nil or reaper.EnumProjects(-1) == proj then hops.stands(proj, hops.records(proj)) end
   -- (a hidden hop track here that this computer doesn't host (any more): left by a StudioSync before the reload fix, or by a crash. It goes)
   local mine = {}
   for _, sv in pairs(S.serving) do mine[sv.track] = true end
@@ -801,6 +950,7 @@ function hops.on_exit(proj, cfg)
   for token in pairs(S.serving) do drop_served(proj, token) end
   hops.run_background(false)
   S.allow, S.pending, S.refused = {}, {}, {}
+  require("hoptry").asks_clear()
 end
 
 -- Health: a row per hop, on either side.

@@ -2,7 +2,8 @@
 -- Select a track (an instrument's MIDI, or the audio to put through an effect), run this, type part of a plug-in's name: the ones bandmates
 -- here have and you don't are listed; pick one and a StudioSync Hop goes at the end of the track. Their StudioSync asks them first (it's their
 -- computer and their licence); once they say yes you hear it through their REAPER, in time with the rest of the mix. Its knobs and Print are on
--- the web UI's Try tab. Run this again on the track to stop or print a try. Needs Live sync on both computers. (James, rt-hopvst)
+-- the web UI's Try tab. Run this again on the track to add a try to the track for real (rt-borrow), print it or stop it. Needs Live sync on
+-- both computers. (James, rt-hopvst)
 local dir = debug.getinfo(1, "S").source:match("^@?(.*)[/\\]")
 package.path = dir .. "/lib/?.lua;" .. package.path
 local band = require("band")
@@ -20,6 +21,10 @@ local oid = require("mirror").track_oid(tr)
 local items, acts = {}, {}
 for _, rec in pairs(hops.records(proj)) do
   if rec.try and rec.oid == oid then
+    items[#items + 1] = "Add " .. rec.fx .. " to the track for real (into the project; it runs on " .. tostring(rec.user) .. "'s computer)"; acts[#items] = function()
+      local said, why = hoptry.keep(proj, cfg, rec.id) -- (rt-borrow)
+      if said then band.log(said) else band.msg("Not added: " .. tostring(why) .. ".") end
+    end
     items[#items + 1] = "Print " .. rec.fx .. " (records it onto a new track)"; acts[#items] = function()
       local ok, why = hoptry.print(proj, cfg, rec.id)
       if not ok then band.msg("Not printed: " .. tostring(why) .. ".") end

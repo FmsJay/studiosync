@@ -1923,31 +1923,10 @@ function ui.driver_rows()
     if v then reaper.DeleteExtState(band.SECTION, "follow " .. tostring(proj), false) end
   end
 end
--- The selected tracks dry, wet or auto here (James, 0.59.3: "an easy way to switch a track between wet and dry from the panel"; 0.59.4: "dry wet
--- auto like the other setting, and move it to advanced"). Only on this computer. Lit: what the first selected track does now.
+-- The selected track's Shared CPU, and showing both takes. (Its own Dry / Wet / Auto, 0.59.3-0.60.1, is gone: a plug-in you lack plays live
+-- through a hop, the print stands in where it doesn't, and Settings > Options > Parts play is for the whole computer. rt-borrow)
 function ui.track_plays_row()
-  local prints = require("prints")
   local sel = reaper.GetSelectedTrack(proj, 0)
-  local cur = sel and prints.track_choice(proj, sel) or nil
-  if cur == "" then cur = ({ notes = "dry", sound = "wet" })[prints.mode()] or "auto" end -- (never set: as Parts play says)
-  ImGui.AlignTextToFramePadding(ctx); ImGui.Text(ctx, "Selected tracks play:")
-  for _, c in ipairs({ { "dry", "Dry" }, { "wet", "Wet" }, { "auto", "Auto" } }) do
-    next_to(c[2]) -- (a narrow column cut Wet and lost Auto: review, 0.59.14)
-    local here = sel and cur == c[1]
-    if here then ImGui.PushStyleColor(ctx, ImGui.Col_Button, theme.SELECTED) end
-    if ImGui.SmallButton(ctx, c[2] .. "##trackplays") then
-      local n = reaper.CountSelectedTracks(proj)
-      if n == 0 then band.msg("Select the tracks first.") else
-        for i = 0, n - 1 do prints.set_track_choice(proj, reaper.GetSelectedTrack(proj, i), c[1]) end
-        band.log(string.format("%d track%s: %s here", n, n == 1 and "" or "s", c[1]))
-      end
-    end
-    if here then ImGui.PopStyleColor(ctx) end
-    ImGui.SetItemTooltip(ctx, ({ dry = "Each part plays itself through the track's plug-ins (they come back on): try other effects here.",
-      wet = "Each part plays the studio's print, exactly what was heard; the track's plug-ins are held off so nothing goes through them twice.",
-      auto = "Through the track's plug-ins when every one of them loads here, else the studio's print." })[c[1]] ..
-      "\nOnly on this computer. Also as actions, for the track's right-click menu: StudioSync - Selected tracks play dry / wet / as chosen.")
-  end
   -- (Shared CPU: the selected track's effects on the idlest bandmate's computer, or back. lib/hops.lua. James, rt)
   if sel and b then
     local hops = require("hops")
@@ -3248,6 +3227,7 @@ function F.bars(t)
   page_rooms.invites()
   tools.join_requests(ctx, ImGui) -- (someone asking to join the band folder)
   if b then require("claimask").bar(ctx, ImGui, proj) end -- (Claims mode: someone asks for what you claimed, Release / Keep; your own asks waiting. lib/claimask.lua, rt-claims)
+  require("hoptry").bar(ctx, ImGui) -- (a bandmate asks to try one of your plug-ins: Allow / Deny. lib/hoptry.lua, rt-borrow)
   if b and can then -- (an edit touching a claim, before the rest: lib/suggest.lua)
     require("suggest").bar(ctx, ImGui, proj, cfg, sync.room_dir(cfg, b.song, b.room), can, select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1")
   end

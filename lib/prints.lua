@@ -193,9 +193,15 @@ end
 -- `to_print`: whether it can print here, where a plug-in offline by choice counts (see installed_here).
 local track_plays
 function prints.track_plays(tr, to_print) return in_look(to_print and "P" or "p", tr, function() return track_plays(tr, to_print) end) end
+-- A plug-in a live hop plays here (lib/hops.lua: "Run plug-in on a bandmate", or one borrowed for real) counts as here for playing (not for
+-- printing): the dry take goes through the hop, rather than the print with the track's plug-ins (the Hop too) held off. rt-borrow
+function prints.hop_plays(tr, i)
+  local h = package.loaded.hops
+  return h ~= nil and h.S ~= nil and h.S.stand ~= nil and h.S.stand[reaper.TrackFX_GetFXGUID(tr, i) or ""] ~= nil
+end
 function track_plays(tr, to_print)
   for _, i in ipairs(prints.fx_all(tr)) do
-    if not prints.fx_here(tr, i, to_print) then return false end
+    if not prints.fx_here(tr, i, to_print) and (to_print or not prints.hop_plays(tr, i)) then return false end
   end
   local dest = prints.route(tr)
   if dest then
@@ -250,16 +256,33 @@ end
 
 -- This machine's choice: "auto" (default), "notes" or "sound".
 function prints.mode() local m = reaper.GetExtState(band.SECTION, "midi_plays"); return m ~= "" and m or "auto" end
--- A track's own choice, this computer's (James, 0.59.2: "right click the track and switch dry or wet"): "dry" (every part plays itself,
--- through the track's plug-ins, which come back on), "wet" (every part plays the studio's print, the track's plug-ins held off so nothing
--- goes through them twice), "auto" (as Auto does: through the plug-ins when they all load here, else the print; James, 0.59.4: "dry wet
--- auto like the other setting"), or "" (never set: as Settings > Options > Parts play says). In the project's own state by the track's GUID: never sent to anyone.
-prints.PLAYS = "BandSync plays"
-function prints.track_choice(proj, tr) return select(2, reaper.GetProjExtState(proj, prints.PLAYS, reaper.GetTrackGUID(tr))) end
-function prints.set_track_choice(proj, tr, choice)
-  reaper.SetProjExtState(proj, prints.PLAYS, reaper.GetTrackGUID(tr), choice or "")
-  for i = 0, reaper.CountTrackMediaItems(tr) - 1 do prints.choose(reaper.GetTrackMediaItem(tr, i)) end
+-- The track's parts play as this computer chose again (a hop started or stopped standing for one of its plug-ins: lib/hops.lua).
+function prints.rechoose(tr)
+  for i = 0, reaper.CountTrackMediaItems(tr) - 1 do prints.choose(reaper.GetTrackMediaItem(tr, i), true) end
   prints.hold_fx(tr)
+end
+-- A track's own dry / wet / auto choice (0.59.2-0.60.1: "Selected tracks play dry / wet / as chosen", the panel's "Selected tracks play")
+-- is gone (rt-borrow, findings 10): a plug-in you don't have now plays live through a hop (Auto counts it as here: prints.hop_plays), the
+-- print stands in wherever it doesn't, and Settings > Options > Parts play stays for the whole computer. A project saved with such choices
+-- (ProjExtState "BandSync plays", by track GUID) has them cleared once, and those tracks' parts play as Parts play says. -> how many.
+prints.PLAYS = "BandSync plays"
+local forgot = {}
+function prints.forget_track_choices(proj)
+  if forgot[tostring(proj)] or not reaper.EnumProjExtState then return 0 end
+  forgot[tostring(proj)] = true
+  local guids, k = {}, 0
+  while true do
+    local ok, key = reaper.EnumProjExtState(proj, prints.PLAYS, k)
+    if not ok or not key or key == "" then break end
+    guids[key], k = true, k + 1
+  end
+  if k == 0 then return 0 end
+  reaper.SetProjExtState(proj, prints.PLAYS, "", "") -- (an empty key clears the whole section)
+  for t = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, t)
+    if guids[reaper.GetTrackGUID(tr)] then prints.rechoose(tr) end
+  end
+  return k
 end
 
 -- Make the item play what this machine chose.
@@ -279,8 +302,7 @@ function prints.choose(it, no_hold) -- no_hold: the caller holds the track's FX 
   local dry = midi or (print and prints.audio_take(it))
   if not (dry and print) then return recheck() end
   -- (several takes: the print plays only for the take it was made from (prints.FROM), and only where the track's plug-ins don't load: the
-  -- picked take is the band's comp choice, so Sound / a track set to wet don't override it. Another take picked plays itself until its own
-  -- print lands. James, rt)
+  -- picked take is the band's comp choice, so Sound doesn't override it. Another take picked plays itself until its own print lands. James, rt)
   local pick = several_pick(it)
   if pick then
     local want = tostring(pick) == take_ext(print, prints.FROM) and not prints.track_plays(tr) and print or dry
@@ -289,8 +311,6 @@ function prints.choose(it, no_hold) -- no_hold: the caller holds the track's FX 
     return
   end
   local mode = prints.mode()
-  local own = prints.track_choice(reaper.GetItemProjectContext(it), tr) -- (the track's own choice first)
-  if own == "dry" then mode = "notes" elseif own == "wet" then mode = "sound" elseif own == "auto" then mode = "auto" end
   local want = mode == "sound" and print or mode == "notes" and dry or (prints.track_plays(tr) and dry or print)
   if reaper.GetActiveTake(it) ~= want then reaper.SetActiveTake(want); reaper.UpdateItemInProject(it) end
   if not no_hold then prints.hold_fx(tr) end
@@ -334,6 +354,7 @@ end
 -- Tracks whose FX are held off for a print, looked at again: a part deleted (here or by the band) never passes through choose, and the
 -- FX stayed off. Review, 0.58.92
 function prints.release_held(proj)
+  prints.forget_track_choices(proj) -- (a project's old dry / wet track choices, once: they're gone. rt-borrow)
   for t = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, t)
     if band.track_ext(tr, prints.FXEN) ~= "" then prints.hold_fx(tr) end

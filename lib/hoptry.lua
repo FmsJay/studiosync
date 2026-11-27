@@ -200,7 +200,7 @@ function hoptry.on_msg(proj, cfg, d, token)
     local off = d.op == "page" and math.tointeger(tonumber(d.off)) or 0
     if not off or off < 0 or off % hoptry.PAGE ~= 0 or off >= hoptry.PARAM_MAX then return end
     for _, rec in pairs(hops().records(proj)) do
-      if rec.try and rec.token == token then
+      if (rec.try or rec.borrowed) and rec.token == token then -- (a borrowed one's knobs too: rt-borrow)
         local list = hoptry.clean_params(d.list, off)
         if list then
           local pm = st.params[token] or { pages = {} }
@@ -219,9 +219,37 @@ function hoptry.on_msg(proj, cfg, d, token)
         end
       end
     end
+  elseif d.op == "keep" then -- (its borrower asks for the plug-in's block as it is here, to put it in the song: rt-borrow)
+    local sv = st.serving[token]
+    if not (sv and (sv.try or sv.borrowed) and d.user == sv.user) then return end
+    local tr = track_of(proj, sv.track)
+    if not tr then return end
+    local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
+    local lines = require("mirror").fx_blocks(chunk or "", { [reaper.TrackFX_GetFXGUID(tr, 1) or ""] = true })
+    local block, r = table.concat(lines, "\n"), { op = "kept", token = token, user = cfg.user }
+    if #lines == 0 then r.why = "its settings couldn't be read on " .. tostring(cfg.user) .. "'s computer"
+    elseif #block > hops().KEEP_MAX then r.why = string.format("its settings are %d KB, more than StudioSync sends in one go (%d KB): Print it instead", #block // 1024, hops().KEEP_MAX // 1024)
+    else r.block = block end
+    sv.peer = sv.peer or hops().peers_by_user(cfg, sv.song, sv.room)[sv.user]
+    require("direct").send_live(cfg, "hop", r, sv.song, sv.room, nil, sv.peer and { sv.peer } or nil)
+    if sv.try and r.block then
+      band.log(string.format("%s is adding your %s to their track for real: it goes into the project, and runs on this computer whenever they play it through a hop (no asking each time); your copy of the project prints it for the others",
+        tostring(sv.user), tostring(sv.fx)))
+    end
+  elseif d.op == "kept" then -- (the owner's answer: only to an ask of ours, then into the song once stopped, by hops.tick)
+    local now = reaper.time_precise()
+    for _, rec in pairs(hops().records(proj)) do
+      if rec.token == token and (rec.try or rec.borrowed) and st.keep[token] then
+        st.keep[token] = nil
+        local lines, name = nil, d.why
+        if type(d.block) == "string" then lines, name = hops().block_lines(d.block, rec.try and rec.fx or rec.key) end
+        if lines then st.kept[token] = { lines = lines, name = name, at = now }
+        else band.log(string.format("%s wasn't added to the track: %s", tostring(rec.key or rec.fx), hoptry.clip(name or "nothing came", 200))) end
+      end
+    end
   elseif d.op == "set" then
     local sv = st.serving[token]
-    if not (sv and sv.try and d.user == sv.user) then return end
+    if not (sv and (sv.try or sv.borrowed) and d.user == sv.user) then return end
     local tr = track_of(proj, sv.track)
     local p, v = math.tointeger(tonumber(d.p)), tonumber(d.v)
     if not (tr and p and v and v == v and p >= 0 and p < reaper.TrackFX_GetNumParams(tr, 1)) then return end
@@ -231,9 +259,23 @@ function hoptry.on_msg(proj, cfg, d, token)
 end
 
 -- ---- the computer trying it ------------------------------------------------------------------------------------------------------------
-local function try_rec(proj, id)
+local function try_rec(proj, id) -- (a try, or one borrowed for real from a try: rt-borrow)
   local rec = hops().records(proj)[tostring(math.tointeger(tonumber(id)) or "")]
-  return rec and rec.try and rec or nil
+  return rec and (rec.try or rec.borrowed) and rec or nil
+end
+-- Borrow for real (rt-borrow): ask the owner for the plug-in's block as their hidden copy has it now. For a try, it goes into this track's
+-- chain in front of the Hop when it comes and playback is stopped (hops.tick, hops.borrow_in); for a borrowed one, its settings replace the
+-- song's (after knobs turned here). -> what to say, or nil and why.
+function hoptry.keep(proj, cfg, id)
+  local rec, st = try_rec(proj, id), S()
+  if not rec then return nil, "that try has ended" end
+  if not st.params[rec.token] then return nil, "it isn't running on " .. tostring(rec.user) .. "'s computer yet" end
+  if st.keep[rec.token] or st.kept[rec.token] then return nil, "it's on its way already" end
+  st.keep[rec.token], st.dirty[rec.token] = reaper.time_precise(), nil
+  require("direct").send_live(cfg, "hop", { op = "keep", token = rec.token, user = cfg.user }, rec.song, rec.room, nil, { rec.peer })
+  if not rec.try then return nil end
+  return string.format("adding %s to %s for real: it goes into the chain once its settings come from %s's computer and playback is stopped",
+    tostring(rec.fx), tostring(rec.track or "the track"), tostring(rec.user))
 end
 -- Turn one of the tried plug-in's knobs (0..1, as REAPER's normalized value) on the owner's copy.
 function hoptry.set_param(proj, cfg, id, p, v)
@@ -243,6 +285,7 @@ function hoptry.set_param(proj, cfg, id, p, v)
   v = math.max(0, math.min(1, v))
   local have = S().params[rec.token]
   for _, e in ipairs(have and have.list or {}) do if e.i == p then e.v = v end end
+  if rec.borrowed then S().dirty[rec.token] = reaper.time_precise() end -- (into the song once stopped: hops.tick, rt-borrow)
   return require("direct").send_live(cfg, "hop", { op = "set", token = rec.token, p = p, v = v, user = cfg.user }, rec.song, rec.room, nil, { rec.peer })
 end
 -- Bandmates here with their published lists, for the search: user -> peer, and the lists.
@@ -258,6 +301,10 @@ function hoptry.start(proj, cfg, b, tr, user, key)
   if not tr then return nil, "select a track first (an instrument's MIDI or the audio to put through it)" end
   local peer = hops().peers_by_user(cfg, b.song, b.room)[user]
   if not peer then return nil, tostring(user) .. " isn't on the link now (Live sync on there too?)" end
+  local plugins = require("plugins") -- (installed here: nothing to try over the link, it runs here. rt-borrow)
+  for _, p in ipairs(plugins.installed()) do
+    if plugins.key(p.name) == key then return nil, "it's installed on this computer: add it from REAPER's FX browser, it runs here" end
+  end
   return hops().try(proj, cfg, tr, user, peer, key, b.song, b.room)
 end
 
@@ -364,6 +411,45 @@ function hoptry.health_rows(proj, cfg)
   return rows
 end
 
+-- ---- an ask for your plug-ins, wherever you are (findings 2026-11-27: "a notification when someone asks to try your VST") ----------------
+-- Live sync puts the asks in ExtState "try asks" ([{token, user, key}], "" for none) for the panel's bar (hoptry.bar), and takes the bar's
+-- answer from "try answer" ({token, yes}). Every web page gets them as the "tryask" topic (hoptry.web_tick; the toast in tryfx.js).
+local bar_s = nil
+function hoptry.asks_tick(cfg)
+  local raw = reaper.GetExtState(band.SECTION, "try answer") -- (the bar's answer first: the asks it shows then leave it at once)
+  if raw ~= "" then
+    reaper.DeleteExtState(band.SECTION, "try answer", false)
+    local a = band.json_decode(raw)
+    local token = type(a) == "table" and math.tointeger(tonumber(a.token))
+    if token then band.log(a.yes == true and hoptry.allow(token) or hoptry.refuse(cfg, token) or "That ask has gone (they stopped asking).") end
+  end
+  local asks = hoptry.asks()
+  local s = #asks > 0 and band.json_encode(asks) or ""
+  if s ~= bar_s then bar_s = s; reaper.SetExtState(band.SECTION, "try asks", s, false) end
+end
+function hoptry.asks_clear() bar_s = ""; reaper.SetExtState(band.SECTION, "try asks", "", false) end
+-- The panel's bar (StudioSync - Panel.lua, beside the claim asks): each ask with Allow and Deny.
+function hoptry.bar(ctx, ImGui)
+  local raw = reaper.GetExtState(band.SECTION, "try asks")
+  local list = raw ~= "" and band.json_decode(raw)
+  if type(list) ~= "table" then return end
+  for _, a in ipairs(list) do
+    local token = type(a) == "table" and math.tointeger(tonumber(a.token))
+    if token then
+      ImGui.AlignTextToFramePadding(ctx)
+      ImGui.TextColored(ctx, 0xFFD040FF, string.format("%s asks to try your %s on this computer", hoptry.clip(a.user, 64), hoptry.clip(a.key, 80)))
+      for _, yes in ipairs({ true, false }) do
+        ImGui.SameLine(ctx)
+        if ImGui.SmallButton(ctx, (yes and "Allow##tryask" or "Deny##tryask") .. token) then
+          reaper.SetExtState(band.SECTION, "try answer", band.json_encode({ token = token, yes = yes }), false)
+        end
+        ImGui.SetItemTooltip(ctx, yes and "Your computer and your licence: they hear it live until Live sync stops. Only audio, MIDI and its settings travel."
+          or "Nothing loads here, and they're told no.")
+      end
+    end
+  end
+end
+
 -- ---- the web UI's Try tab --------------------------------------------------------------------------------------------------------------
 local web = { want = -math.huge, q = "", at = -math.huge, kn = {} } -- (kn: try id -> the knob page shown and its filter)
 -- The knobs a try's box shows, of all it has (`list`): those whose name has `q` in it (any case), or else page `page`; at most PAGE.
@@ -384,7 +470,7 @@ function hoptry.model(proj, cfg, b)
   local hp, st = hops(), S()
   local tries = {}
   for _, rec in pairs(hp.records(proj)) do
-    if rec.try then
+    if rec.try or rec.borrowed then
       local ok, text = hp.health_text(rec, hp.available() and band.json_decode(reaper.StudioSync_HopStatus(math.floor(rec.id))) or {})
       local pm = st.params[rec.token]
       local kv = web.kn[rec.id] or {}
@@ -393,7 +479,8 @@ function hoptry.model(proj, cfg, b)
       local page = math.min(kv.page or 0, (pages or 1) - 1)
       local params, matched = nil, nil
       if pm then params, matched = hoptry.knob_view(pm.list, page, q) end
-      tries[#tries + 1] = { id = rec.id, fx = rec.fx, user = rec.user, track = rec.track, ok = ok, text = text, params = params,
+      tries[#tries + 1] = { id = rec.id, fx = rec.key or rec.fx, user = rec.user, track = rec.track, ok = ok, text = text, params = params,
+        borrowed = rec.borrowed or nil, keeping = (st.keep[rec.token] or st.kept[rec.token]) and true or nil,
         total = pm and pm.total or nil, name = pm and pm.fx or nil, instrument = pm and pm.instrument or nil, page = pm and page or nil, pages = pages,
         kq = q ~= "" and q or nil, matched = q ~= "" and matched or nil, printing = st.printing ~= nil and st.printing.id == rec.id or nil }
     end
@@ -414,12 +501,13 @@ function hoptry.model(proj, cfg, b)
     sel = sel and select(2, reaper.GetTrackName(sel)) or nil, ended = ended, live = hp.available() }
 end
 function hoptry.web_tick(proj, cfg, b, publish, now)
+  publish("tryask", { asks = hoptry.asks() }) -- (on every page, whichever tab: the toast in tryfx.js. Sent only when it changes)
   if now > web.want or now - web.at < hoptry.BUILD_EVERY then return end
   web.at = now
   local ok, m = pcall(hoptry.model, proj, cfg, b)
   publish(hoptry.TOPIC, ok and m or { error = tostring(m) })
 end
--- What the page sends: {want}, {q}, {try = {user, key}}, {set = {id, p, v}}, {knobs = {id, page, q}}, {stop = id}, {print = id},
+-- What the page sends: {want}, {q}, {try = {user, key}}, {set = {id, p, v}}, {knobs = {id, page, q}}, {stop = id}, {print = id}, {keep = id},
 -- {allow = token}, {refuse = token}, {end_use = token}. -> a line for the log, or nil.
 function hoptry.web_action(proj, cfg, b, a)
   local now = reaper.time_precise()
@@ -443,12 +531,18 @@ function hoptry.web_action(proj, cfg, b, a)
   end
   if a.stop then
     local rec = try_rec(proj, a.stop)
-    if rec and hops().stop(proj, cfg, rec.id) then return "stopped trying " .. tostring(rec.fx) end
+    if rec and hops().stop(proj, cfg, rec.id) then
+      return rec.borrowed and ("stopped the hop: " .. tostring(rec.key) .. " stays on the track, and the studio's print of it plays here") or ("stopped trying " .. tostring(rec.fx))
+    end
     return nil
   end
   if a.print then
     local ok, why = hoptry.print(proj, cfg, a.print)
     return not ok and ("not printed: " .. tostring(why)) or nil
+  end
+  if a.keep then -- (borrow for real: into the track's chain. rt-borrow)
+    local said, why = hoptry.keep(proj, cfg, a.keep)
+    return said or (why and ("not added: " .. tostring(why))) or nil
   end
   if type(a.try) == "table" and type(a.try.user) == "string" and type(a.try.key) == "string" then
     local id, why = hoptry.start(proj, cfg, b, reaper.GetSelectedTrack(proj, 0), a.try.user, hoptry.clip(a.try.key, 200))
