@@ -1,0 +1,22 @@
+{
+ "name": "reopen-older-file",
+ "what": "rt-reopen's candidate B, as a file really is: Cee saves the song at 22 s; James and Bee then rename a track, move and delete items and add a track; at 60 s Cee opens the 22 s file in the tab (a new opening, every record in it as old as the file). Nothing may go out from Cee for what the file lacks or holds older (node.lua errors on a deletion from Cee before its next edit), and Cee must end with the studio's song: the rename, the move, the deletion and the new track. Then at 90 s Cee opens the song from a file without Keys (the driver's reopen edit: records for a track it doesn't hold, rt-guard's B); Keys must come back with its two items. The first part passes before rt-guard too (the old file's stale versions were never sent back); the second fails before rt-guard (b34f25e: 508cf43 sent Keys and its items as deleted).",
+ "phase": 3,
+ "today": "passes",
+ "seed": 2,
+ "faults": "clean",
+ "mode": "open",
+ "edits": [
+  {"t": 22, "node": "Cee", "lua": "_G.OLD = F.save()"},
+  {"t": 25, "node": "James", "lua": "reaper.GetSetMediaTrackInfo_String(track('Bass'), 'P_NAME', 'Bass R', true); return 'renamed Bass to Bass R'"},
+  {"t": 28, "node": "Bee", "lua": "reaper.SetMediaItemInfo_Value(item('Drums 1'), 'D_POSITION', 20.5); return 'moved Drums 1 to 20.5'"},
+  {"t": 31, "node": "James", "lua": "F.add_track('James new'); return 'added a track'"},
+  {"t": 34, "node": "Bee", "lua": "local it = item('Gtr'); reaper.DeleteTrackMediaItem(it.track, it); return 'deleted the item Gtr'"},
+  {"t": 60, "node": "Cee", "lua": "reopen(_G.OLD); return 'opened the file saved at 22 s'"},
+  {"t": 90, "node": "Cee", "kind": "reopen", "r": [0.6, 0.9, 0, 0, 0, 0]}
+ ],
+ "checks": [
+  {"on": "all", "what": "the studio's song: Bass R (no Bass), Drums 1 at 20.5, the item Gtr gone, James new there, Keys with its 2 items",
+   "lua": "assert(track('Bass R') and not track('Bass'), 'Bass R'); assert(math.abs(reaper.GetMediaItemInfo_Value(item('Drums 1'), 'D_POSITION') - 20.5) < 1e-9, 'Drums 1'); assert(not item('Gtr'), 'the item Gtr is back'); assert(track('James new'), 'no James new'); assert(#F.tracks == 5, #F.tracks .. ' tracks'); assert(track('Keys') and #track('Keys').items == 2, 'Keys and its 2 items')"}
+ ]
+}

@@ -1,0 +1,20 @@
+{
+ "name": "restore-race",
+ "what": "rt-sync2's restore race (rt-converge's 5057, 9029, 9058 class): James's StudioSync Undo within half a second of Bee's edit of the same thing, three times: an item (James moved Drums 1, Bee resizes it, James undoes the move), its automation (James moved a point of Drums' volume envelope, Bee moves another, James undoes), and its plug-ins (Bee added ReaEQ to Bass, James turned it, Bee turns it again, James undoes his turn). Cee gets the pieces in whatever order the network brings them. All three must end on the same versions (the oracle), and an Undo then Redo on each must leave the song as it was.",
+ "phase": 2,
+ "today": "passes",
+ "seed": 1,
+ "mode": "everyone",
+ "edits": [
+  {"t": 22, "node": "James", "lua": "local it = item('Drums 1'); if it then reaper.SetMediaItemInfo_Value(it, 'D_POSITION', 21.5); return 'moved Drums 1 to 21.5' end"},
+  {"t": 35.0, "node": "Bee", "lua": "local it = item('Drums 1'); if it then reaper.SetMediaItemInfo_Value(it, 'D_LENGTH', 2.2); return 'resized Drums 1 to 2.2' end"},
+  {"t": 35.4, "node": "James", "kind": "undo", "r": []},
+  {"t": 45, "node": "Bee", "kind": "fx", "r": [0.3, 0.1, 0.1, 0.0, 0.5, 0]},
+  {"t": 50, "node": "James", "kind": "envelope", "r": [0.0, 0.3, 0.25, 0, 0, 0]},
+  {"t": 60.0, "node": "Bee", "kind": "envelope", "r": [0.0, 0.6, 0.85, 0, 0, 0]},
+  {"t": 60.4, "node": "James", "kind": "undo", "r": []},
+  {"t": 75, "node": "James", "kind": "fx", "r": [0.3, 0.9, 0.1, 0.0, 0.25, 0]},
+  {"t": 85.0, "node": "Bee", "kind": "fx", "r": [0.3, 0.9, 0.1, 0.0, 0.8, 0]},
+  {"t": 85.4, "node": "James", "kind": "undo", "r": []}
+ ]
+}

@@ -1,0 +1,16 @@
+{
+ "name": "empty-project",
+ "what": "rt-reopen's candidate A (the Cross Test deletion of 11-23): a look over Cee's project while it has no tracks but still holds every record (REAPER closing or loading the tab Live sync runs in; Live sync's edit count moved with it). Nothing may go out (node.lua errors on a deletion from Cee before its next edit); after mirror.EMPTY_SECS the studio's tracks are put back. Before rt-guard every record went out as deleted, for everyone.",
+ "phase": 3,
+ "today": "passes",
+ "seed": 3,
+ "faults": "clean",
+ "mode": "open",
+ "edits": [
+  {"t": 30, "node": "Cee", "kind": "empty", "r": []}
+ ],
+ "checks": [
+  {"on": "all", "what": "the song is whole: Drums (4 items), Bass (4), Keys (2), Gtr (1)",
+   "lua": "for name, n in pairs({ Drums = 4, Bass = 4, Keys = 2, Gtr = 1 }) do local t = track(name); assert(t, 'no ' .. name); assert(#t.items == n, name .. ' has ' .. #t.items .. ' items') end; assert(#F.tracks == 4, #F.tracks .. ' tracks')"}
+ ]
+}

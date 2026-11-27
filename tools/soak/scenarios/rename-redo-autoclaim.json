@@ -1,0 +1,22 @@
+{
+ "name": "rename-redo-autoclaim",
+ "what": "rt-converge's 6006 class (an accepted limit, as 127; phase 6 ends it): James renames Drums to T1, undoes it, and redoes it in the same moment Cee turns Drums' fader, which auto-claims Drums for Cee under its old name; the two cross (James and Cee can't reach each other from 58 to 64 s). If Cee's computer answers the rename (sync.set_back), the Redo is lost. Both must stand on all three: T1, at Cee's 0.5. Passes at bf500ba (sync.receive's soft_ok: a change that merges with the auto-claimer's own lands at once, so the fader and the rename merge by setting); the 6006 seed's own sequence no longer fails there either. Kept as the guard for that path through phase 6.",
+ "phase": 6,
+ "today": "passes",
+ "seed": 6,
+ "faults": "clean",
+ "mode": "open",
+ "undo_probe": false,
+ "net": [{"t": 58, "until": 64, "link_down": ["James", "Cee"]}, {"t": 58, "until": 64, "pause": "Cee"}],
+ "edits": [
+  {"t": 25, "node": "James", "lua": "reaper.GetSetMediaTrackInfo_String(track('Drums'), 'P_NAME', 'T1', true); return 'renamed Drums to T1'"},
+  {"t": 40, "node": "James", "kind": "undo", "r": []},
+  {"t": 50, "node": "James", "lua": "local c = sync.my_claims(cfg, SONG, ROOM); if c then c.tracks = {}; sync.set_claims(cfg, SONG, ROOM, c) end"},
+  {"t": 59.8, "node": "Cee", "lua": "reaper.SetMediaTrackInfo_Value(track('Drums'), 'D_VOL', 0.5); return 'Drums volume 0.5'"},
+  {"t": 60, "node": "James", "kind": "redo", "r": []}
+ ],
+ "checks": [
+  {"on": "all", "what": "James's Redo and Cee's fader both stand: T1 at 0.5",
+   "lua": "local t = track('T1'); assert(t and not track('Drums'), 'the track is ' .. tostring((F.tracks[1] or {}).name)); assert(math.abs(reaper.GetMediaTrackInfo_Value(t, 'D_VOL') - 0.5) < 1e-9, 'T1 volume ' .. reaper.GetMediaTrackInfo_Value(t, 'D_VOL'))"}
+ ]
+}

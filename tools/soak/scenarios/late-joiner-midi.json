@@ -1,0 +1,15 @@
+{
+ "name": "late-joiner-midi",
+ "what": "rt-fix9's seed 15044 class (a late joiner's MIDI merge differing from the three who were there): Keys A's notes edited apart by all three. Bee, offline from 24 to 60 s, adds a note; James transposes the first note; Cee changes a velocity on James's version; Bee then comes back and the three merge note by note. The late joiner reads every change from the folder in its own order and must build the same merges (the oracle's log check), and Undo then Redo on each must leave the song as it was. Passes at bf500ba; 15044's own sequence no longer fails there. rt-sync2 phase 2's gate (the judge builds every merge from the versions alone).",
+ "phase": 2,
+ "today": "passes",
+ "seed": 7,
+ "mode": "everyone",
+ "net": [{"t": 24, "until": 60, "offline": "Bee"}],
+ "edits": [
+  {"t": 30, "node": "Bee", "kind": "notes", "r": [0.0, 0.1, 0.6, 0.5, 0, 0]},
+  {"t": 40, "node": "James", "kind": "notes", "r": [0.0, 0.5, 0.2, 0.0, 0, 0]},
+  {"t": 50, "node": "Cee", "lua": "local it = item('Keys A'); if it then F.set_text(it, (it.text:gsub('\\nE (%d+) 90 (%x%x) (%x%x)', function(d, k, v) return '\\nE ' .. d .. ' 90 ' .. k .. ' 7f' end, 1))); return 'velocity 127 on the first note of Keys A' end"},
+  {"t": 75, "node": "Bee", "kind": "notes", "r": [0.0, 0.9, 0.3, 0.4, 0, 0]}
+ ]
+}

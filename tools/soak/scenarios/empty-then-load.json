@@ -1,0 +1,18 @@
+{
+ "name": "empty-then-load",
+ "what": "Candidate A followed by the load finishing: Cee's tab is read with no tracks and every record (as empty-project), then 1.5 s later the file is in place again (a new opening, before mirror.EMPTY_SECS runs out). Nothing may go out, and the song must be there once: no track put back twice beside the loaded one.",
+ "phase": 3,
+ "today": "passes",
+ "seed": 4,
+ "faults": "clean",
+ "mode": "open",
+ "edits": [
+  {"t": 29, "node": "Cee", "lua": "_G.FILE = F.save()"},
+  {"t": 30, "node": "Cee", "kind": "empty", "r": []},
+  {"t": 31.5, "node": "Cee", "lua": "reopen(_G.FILE); return 'the file finished loading'"}
+ ],
+ "checks": [
+  {"on": "all", "what": "the song is whole, once: Drums (4 items), Bass (4), Keys (2), Gtr (1)",
+   "lua": "for name, n in pairs({ Drums = 4, Bass = 4, Keys = 2, Gtr = 1 }) do local t = track(name); assert(t, 'no ' .. name); assert(#t.items == n, name .. ' has ' .. #t.items .. ' items') end; assert(#F.tracks == 4, #F.tracks .. ' tracks')"}
+ ]
+}

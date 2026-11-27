@@ -1,0 +1,20 @@
+{
+ "name": "item-track-merge",
+ "what": "rt-sync2 judge step 5 / Recommendation 2: an item moved to another track by one computer while another nudges it, both made apart. The merge (mirror.event_file) copies the winner's fields and merges only the state, and the track an item sits on is a field, not part of the state: when the nudge is the newer side (here a higher rev: James's nudge comes past SESSION_SECS, so it isn't rev 1 any more), the move is lost on every computer, and each log says \"both changes are kept\". Reproduced 2026-11-27 at bf500ba. The oracle can't see it (all three agree), so the check says what each person did must stand: Bass 1 on Gtr (Bee) at 33.25 s (James).",
+ "phase": 2,
+ "today": "fails",
+ "signature": "intent:James: Bass # sits on Gtr (Bee's move) a",
+ "seed": 1,
+ "faults": "clean",
+ "mode": "everyone",
+ "undo_probe": false,
+ "net": [{"t": 24, "until": 70, "offline": "Bee"}],
+ "edits": [
+  {"t": 26, "node": "Bee", "lua": "reaper.MoveMediaItemToTrack(item('Bass 1'), track('Gtr')); return 'moved Bass 1 to Gtr'"},
+  {"t": 60, "node": "James", "lua": "reaper.SetMediaItemInfo_Value(item('Bass 1'), 'D_POSITION', 33.25); return 'nudged Bass 1 to 33.25'"}
+ ],
+ "checks": [
+  {"on": "all", "what": "Bass 1 sits on Gtr (Bee's move) at 33.25 s (James's nudge)",
+   "lua": "local it = item('Bass 1'); assert(it, 'Bass 1 is gone'); assert(it.track == track('Gtr'), 'Bass 1 is on ' .. tostring(it.track and it.track.name) .. ', not Gtr'); assert(math.abs(reaper.GetMediaItemInfo_Value(it, 'D_POSITION') - 33.25) < 1e-6, 'Bass 1 is at ' .. reaper.GetMediaItemInfo_Value(it, 'D_POSITION'))"}
+ ]
+}

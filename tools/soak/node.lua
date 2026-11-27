@@ -2,8 +2,9 @@
 -- lib/undo.lua and what they load) in its own Lua state, against the stand-in REAPER (tests/fixtures/editreaper.lua) and a folder of its own
 -- in memory. soak.py makes three of these (plus a late joiner), carries what each writes in the studio's folder to the others as Syncthing
 -- would (late, out of order, half-written, twice) and what each sends on the direct link (late, twice, or never), and drives seeded edits.
--- Everything crosses to Python as JSON text. Set before this runs: SOAK_USER, SOAK_SEED, SOAK_SKEW (seconds this computer's clock is off).
-package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
+-- Everything crosses to Python as JSON text. Set before this runs: SOAK_USER, SOAK_SEED, SOAK_SKEW (seconds this computer's clock is off), and
+-- SOAK_LIB when this computer runs another version's lib (soak.py --old: a git archive of that commit; the stand-in REAPER stays this one's).
+package.path = (SOAK_LIB or "lib") .. "/?.lua;tests/fixtures/?.lua;" .. package.path
 local E = require("editreaper")
 -- (GUIDs: the stand-in counts them from 0 in every Lua, so two computers made the same ones, and a track made here could share a GUID with a
 -- take that came from a bandmate. REAPER's are random: each computer's count starts in a range of its own)
@@ -293,9 +294,22 @@ function N.shared_files() -- every file of the studio's folder here, for a late 
   return json(out)
 end
 function N.errors() return json(ERRORS) end
--- (for looking into a failure by hand: Lua run inside this computer, with F, mirror, sync, cfg and fs at hand)
+-- (for looking into a failure by hand, a scenario's own edits and its checks (soak.py --scenario): Lua run inside this computer, with F, E,
+-- mirror, sync, undo, band, cfg, fs, N, the driver's EDITS and reopen(F.save()) at hand, and track(name) / item(name) to find a track or an
+-- item by its name)
+local EDITS, reopen
+local function by_name(name)
+  for _, t in ipairs(F.tracks) do if t.name == name then return t end end
+end
+local function item_named(name)
+  for _, t in ipairs(F.tracks) do for _, it in ipairs(t.items) do if it.text:match('\nNAME "([^"]*)"') == name then return it end end end
+end
+local function eval_env()
+  return setmetatable({ F = F, E = E, mirror = mirror, sync = sync, undo = undo, band = band, cfg = cfg, fs = fs, SONG = SONG, ROOM = ROOM, MEDIA = MEDIA,
+    N = N, EDITS = EDITS, reopen = reopen, track = by_name, item = item_named }, { __index = _G })
+end
 function N.eval(code)
-  local fn = assert(load(code, "eval", "t", setmetatable({ F = F, mirror = mirror, sync = sync, band = band, cfg = cfg, fs = fs, SONG = SONG, ROOM = ROOM, MEDIA = MEDIA }, { __index = _G })))
+  local fn = assert(load(code, "eval", "t", eval_env()))
   local res = table.pack(pcall(fn))
   local out = {}
   for i = 1, res.n do out[#out + 1] = tostring(res[i]) end
@@ -465,7 +479,7 @@ rawset(reaper, "TrackFX_GetOpen", function() return false end)
 rawset(reaper, "TrackFX_GetEnabled", function(tr, i) local b = fx_of(tr, i); return b ~= nil and b[1]:match("^BYPASS 0") ~= nil end)
 rawset(reaper, "TrackFX_GetOffline", function() return false end)
 rawset(reaper, "TrackFX_GetFXGUID", function(tr, i) local b = fx_of(tr, i); for _, l in ipairs(b or {}) do local g = l:match("^FXID (%S+)"); if g then return g end end end)
-local EDITS = {}
+EDITS = {}
 EDITS.item_move = function(r)
   local it = pick(items_in_order(), r[1]); if not it then return end
   reaper.SetMediaItemInfo_Value(it, "D_POSITION", at(r[2]))
@@ -705,6 +719,11 @@ end
 -- load, as it would. Until this computer's next edit, no deletion may go out from it (`reopened`, checked in sync.post below): before rt-guard
 -- W.gone sent each left-out track and its items as deleted, for everyone (Cross Test, 11-23: docs/rt/rt-reopen.md).
 local reopened = false
+reopen = function(snap) -- (a saved project, F.save(), opened in the tab as a new opening; scenarios call it too)
+  F.load(snap)
+  if mirror.opened then mirror.opened[tostring(F.proj)] = nil end -- (a lib from before rt-guard has none: soak.py --old)
+  reopened = true
+end
 EDITS.reopen = function(r)
   local snap = F.save()
   if #snap.tracks < 2 then return end
@@ -712,10 +731,24 @@ EDITS.reopen = function(r)
   local names = { snap.tracks[drop].name }
   table.remove(snap.tracks, drop)
   if r[2] < 0.4 and #snap.tracks > 1 then local d2 = 1 + math.floor(r[3] * #snap.tracks); names[2] = snap.tracks[d2].name; table.remove(snap.tracks, d2) end
-  F.load(snap)
-  mirror.opened[tostring(F.proj)] = nil
-  reopened = true
+  reopen(snap)
   return "reopened the song from a file without " .. table.concat(names, ", ")
+end
+-- Scenario-only edits (soak.py --scenario; never drawn by the seeded driver, so seeds keep their sequences):
+-- REAPER closing or loading the project in the tab Live sync runs in: every track gone, the records kept, the edit count moved (rt-guard's
+-- candidate A). No deletion may go out for it before this computer's next edit.
+EDITS.empty = function()
+  if #F.tracks == 0 then return end
+  for i = #F.tracks, 1, -1 do F.tracks[i] = nil end
+  F.changed()
+  reopened = true
+  return "the project read with its records and no tracks (closing or loading)"
+end
+-- A scenario's own edit: Lua run here as eval runs it (track(name), item(name), EDITS ...). -> what it says it did; nil when it wasn't the
+-- person's edit (Live sync's edit count doesn't move: holding back a receive, saving a snapshot).
+EDITS.lua = function(code)
+  local said = assert(load(code, "edit", "t", eval_env()))()
+  return said ~= nil and tostring(said) or nil
 end
 do
   local post = sync.post

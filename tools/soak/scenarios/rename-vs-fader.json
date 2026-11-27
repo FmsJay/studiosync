@@ -1,0 +1,19 @@
+{
+ "name": "rename-vs-fader",
+ "what": "rt-r4 bug A (rt-converge's rt-fix9 A and round 2): James renames Drums while Bee's fader change of Drums, built on the old name, is already on its way, and the receive runs before any look of James's has seen the rename (as rt-r5 traced it in REAPER). Before rt-fix9 round 2 the bandmate's track version was applied whole and the rename was lost on every computer, James's too, silently. The soak's passes always look before they receive, so James holds back his receives from 24 s and the rename's own edit receives at once. Both must stand everywhere: Drums R5 at Bee's 0.5. (Open room: no claim asks; the soak has no live fader preview, so rt-r6's G isn't covered.)",
+ "phase": 0,
+ "today": "passes",
+ "seed": 1,
+ "faults": {"clean": true, "link_min": 0.01, "link_max": 0.01},
+ "mode": "everyone",
+ "undo_probe": false,
+ "edits": [
+  {"t": 24, "node": "James", "lua": "_G.HELD = sync.receive; sync.receive = function() return 0 end"},
+  {"t": 25, "node": "Bee", "lua": "reaper.SetMediaTrackInfo_Value(track('Drums'), 'D_VOL', 0.5); return 'Drums volume 0.5'"},
+  {"t": 30, "node": "James", "lua": "reaper.GetSetMediaTrackInfo_String(track('Drums'), 'P_NAME', 'Drums R5', true); sync.receive = _G.HELD; N.receive(); return 'renamed Drums to Drums R5, then a receive before any look'"}
+ ],
+ "checks": [
+  {"on": "all", "what": "the rename and the fader both stand: Drums R5 at 0.5",
+   "lua": "local t = track('Drums R5'); assert(t, 'no track Drums R5'); assert(math.abs(reaper.GetMediaTrackInfo_Value(t, 'D_VOL') - 0.5) < 1e-9, 'Drums R5 volume ' .. reaper.GetMediaTrackInfo_Value(t, 'D_VOL'))"}
+ ]
+}

@@ -16,9 +16,19 @@ A failing seed is shrunk to the fewest edits that still fail the same way, and p
   python tools/soak/soak.py --seed 17               # one seed, with its trace
   python tools/soak/soak.py --seed 17 --shrink      # one seed, shrunk to the fewest edits that still fail the same way
   python tools/soak/soak.py --seed 17 --keep 3,9,12 # only those edits of seed 17 (what a shrink prints)
+  python tools/soak/soak.py --scenario all          # every tools/soak/scenarios/*.json (or one file): each must fail or pass as it says
+  python tools/soak/soak.py --old 3ffc001 --quick   # mixed versions: Cee (--old-nodes) runs that commit's lib (git archive)
+  python tools/soak/soak.py --detcheck --seed 17    # two runs of seed 17 must write the same (tools/soak/detcheck.py; --against <commit>)
 Exit 0 when every seed passed. From the repo root or anywhere; Lua 5.4 through lupa, as tests/run.py.
+
+A scenario (docs/rt/rt-sync2a.md) is one JSON file: "name", "what" (what it reproduces), "today" ("fails" or "passes" at the commit it was
+written at; "signature" the failure it shows then), "seed" (the network's and the computers' randomness), optionally "faults" ("clean", or an
+object of Faults fields to change), "mode" ("open" Claims / "everyone" Open), "undo_probe"; "edits": { "t", "node" (a name), "kind" and "r"
+(the driver's edit and its six numbers) or "lua" (code run on that computer: track(name), item(name), EDITS, reaper ...) }; "net":
+{ "t", "until", and "offline": name (its Syncthing paused and its link lanes down), "pause": name, or "link_down": [name, name] }; "checks":
+{ "on": "all" or [names], "what", "lua" (asserts, run on each once everything has settled, before the late joiner) }.
 """
-import argparse, gc, heapq, json, os, random, re, sys, threading, time
+import argparse, atexit, gc, glob, heapq, io, json, os, random, re, shutil, subprocess, sys, tarfile, tempfile, threading, time
 
 import lupa.lua54 as lupa
 
@@ -55,13 +65,13 @@ class Faults:
 
 
 class Node:
-    def __init__(self, user, seed, skew):
+    def __init__(self, user, seed, skew, lib=None):  # lib: another version's lib folder (--old)
         self.user = user
         self.L = lupa.LuaRuntime(unpack_returned_tuples=True)
         g = self.L.globals()
         self.out = []
         g.print = lambda *a: self.out.append(" ".join(str(x) for x in a))
-        g.SOAK_USER, g.SOAK_SEED, g.SOAK_SKEW = user, seed, skew
+        g.SOAK_USER, g.SOAK_SEED, g.SOAK_SKEW, g.SOAK_LIB = user, seed, skew, lib
         self.L.execute(NODE_LUA)
         self.N = g.NODE
 
@@ -71,11 +81,12 @@ class Node:
 
 
 class Sim:
-    def __init__(self, seed, edits, faults, trace=False, steps_s=0.1):
+    def __init__(self, seed, edits, faults, trace=False, steps_s=0.1, old=None, mode=None, net=()):
         self.seed, self.edits, self.f, self.trace = seed, edits, faults, trace
+        self.old, self.mode, self.net = old or {}, mode, sorted(net, key=lambda e: e["t"])  # (--old: name -> lib folder; a scenario's mode and network)
         self.rng = random.Random(seed * 7919 + 1)   # the network's and the passes' randomness (the edits are a fixed list)
         skews = [0.0] + [self.rng.uniform(-faults.skew, faults.skew) for _ in USERS[1:]]
-        self.nodes = [Node(u, seed * 10 + i + 1, skews[i]) for i, u in enumerate(USERS)]
+        self.nodes = [Node(u, seed * 10 + i + 1, skews[i], self.old.get(u)) for i, u in enumerate(USERS)]
         self.q, self.qn = [], 0
         self.version = {}        # path -> (time, writer index): Syncthing's newest version of each file
         self.applied = {}        # (dst, path) -> version applied there
@@ -99,6 +110,23 @@ class Sim:
     def push(self, at, what):
         self.qn += 1
         heapq.heappush(self.q, (at, self.qn, what))
+
+    def network(self, ev):
+        """A scenario's network event, until ev["until"]: "offline" (that computer's Syncthing paused and its link lanes down: what it sends
+        on the link meanwhile is lost, as when a lane is down), "pause" (Syncthing only) or "link_down" ([a, b]: both lanes between them)."""
+        i = lambda name: USERS.index(name)
+        lanes = []
+        if "offline" in ev or "pause" in ev:
+            who = i(ev.get("offline") or ev.get("pause"))
+            self.paused[who] = max(self.paused[who], ev["until"])
+            if "offline" in ev:
+                lanes = [(who, j) for j in range(len(self.nodes)) if j != who] + [(j, who) for j in range(len(self.nodes)) if j != who]
+        if "link_down" in ev:
+            a, b = i(ev["link_down"][0]), i(ev["link_down"][1])
+            lanes = [(a, b), (b, a)]
+        for lane in lanes:
+            self.down[lane] = max(self.down.get(lane, 0), ev["until"])
+        self.log("net: %s until %.1f" % ({k: v for k, v in ev.items() if k not in ("t", "until")}, ev["until"]))
 
     # ---- what a computer wrote or sent goes into the shim ----
     @staticmethod
@@ -182,7 +210,7 @@ class Sim:
     # ---- the run ----
     def run(self, quiesce_max=400.0):
         n = self.nodes
-        self.mode = "open" if self.seed % 5 < 3 else "everyone"  # (Claims, the default, three seeds in five; Open the others)
+        self.mode = self.mode or ("open" if self.seed % 5 < 3 else "everyone")  # (Claims, the default, three seeds in five; Open the others)
         n[0].call(0, "set_mode", self.mode)
         n[0].call(0, "share")
         for x in n:
@@ -194,10 +222,14 @@ class Sim:
         next_pass = [self.rng.uniform(0.1, 0.5) for _ in n]
         self.next_status = [self.rng.uniform(1, 5) for _ in n]
         edits = sorted(self.edits, key=lambda e: e["t"])
-        k, end = 0, (edits[-1]["t"] if edits else 0) + 1.0
+        k, end = 0, max([e["t"] for e in edits] + [e["until"] for e in self.net] + [0]) + 1.0
+        ni = 0
         while self.t < end:
             self.t = round(self.t + self.dt, 6)
             self.step(next_pass, healing=False)
+            while ni < len(self.net) and self.net[ni]["t"] <= self.t:  # (a scenario's network: a computer offline, Syncthing paused, a lane down)
+                self.network(self.net[ni])
+                ni += 1
             while k < len(edits) and edits[k]["t"] <= self.t:
                 e = edits[k]
                 k += 1
@@ -250,6 +282,16 @@ class Sim:
     # ---- the oracle ----
     def state(self, i):
         return json.loads(self.nodes[i].call(self.t, "state"))
+
+    def intent(self, checks):
+        """A scenario's checks of what each person meant (the oracle only sees that the computers agree: an edit lost everywhere converges)."""
+        bad = []
+        for c in checks:
+            for name in (USERS if c.get("on", "all") == "all" else c["on"]):
+                out = self.nodes[USERS.index(name)].call(self.t, "eval", c["lua"])
+                if not out.startswith("true"):
+                    bad.append(("intent", "%s: %s (%s)" % (name, c.get("what", "a check"), out.split("\t", 1)[-1][:300])))
+        return bad
 
     def check(self, undo_probe=True):
         """-> list of (category, detail). Empty: passed."""
@@ -393,12 +435,13 @@ def make_edits(seed, n, span, first=None):
     return out
 
 
-def run_once(seed, edits, faults, trace=False, undo_probe=True):  # -> list of (category, detail), the Sim
+def run_once(seed, edits, faults, trace=False, undo_probe=True, checks=(), **sim_kw):  # -> list of (category, detail), the Sim
     gc.collect()  # (the last run's Lua states sit in reference cycles Python's collector only reaches when asked: 15 MB a run otherwise)
-    sim = Sim(seed, [dict(e) for e in edits], faults, trace=trace)
+    sim = Sim(seed, [dict(e) for e in edits], faults, trace=trace, old=OLD, **sim_kw)
     try:
         ok = sim.run()
-        bad = sim.check(undo_probe=undo_probe) if ok else [("settle", "never went quiet within 400 s of the last edit")]
+        intent = sim.intent(checks) if ok else []  # (a scenario's own checks, on the settled song, before the late joiner and the undo probe)
+        bad = (sim.check(undo_probe=undo_probe) if ok else [("settle", "never went quiet within 400 s of the last edit")]) + intent
     except Exception as e:  # (a Lua error outside StudioSync's own pcalls: the soak's or the code's)
         bad = [("raised", str(e).splitlines()[0][:400])]
     return bad, sim
@@ -475,6 +518,53 @@ def report(seed, bad, sim, keep=None):
     return "\n".join(lines)
 
 
+OLD = {}  # --old: computer name -> the lib folder it runs
+
+
+def git_tree(commit, paths=("lib",)):
+    """`paths` of a commit, by git archive, in a temporary folder removed at exit. -> (folder, sha). What --old and detcheck --against run."""
+    sha = subprocess.run(["git", "rev-parse", "--verify", commit + "^{commit}"], cwd=REPO, capture_output=True, text=True, check=True).stdout.strip()
+    d = tempfile.mkdtemp(prefix="soak-tree-%s-" % sha[:10])
+    atexit.register(shutil.rmtree, d, True)
+    tar = subprocess.run(["git", "archive", "--format=tar", sha] + list(paths), cwd=REPO, capture_output=True, check=True).stdout
+    tarfile.open(fileobj=io.BytesIO(tar)).extractall(d, filter="data")
+    return d, sha
+
+
+def scenario_files(arg):
+    if arg == "all":
+        arg = os.path.join(REPO, "tools", "soak", "scenarios")
+    return sorted(glob.glob(os.path.join(arg, "*.json"))) if os.path.isdir(arg) else [arg]
+
+
+def run_scenario(path, trace=False):
+    """-> (as it says, the line to print). Fails or passes as its "today" says; a fail must show its "signature" when it gives one."""
+    s = json.load(open(path, encoding="utf-8"))
+    faults = Faults(clean=s.get("faults") == "clean" or (isinstance(s.get("faults"), dict) and s["faults"].get("clean", False)))
+    for k, v in (s["faults"].items() if isinstance(s.get("faults"), dict) else ()):
+        if k != "clean":
+            setattr(faults, k, v)
+    edits = [{"i": e.get("i", n), "t": e["t"], "node": USERS.index(e["node"]), "kind": e.get("kind", "lua"), "r": e["lua"] if "lua" in e else e["r"]}
+             for n, e in enumerate(s["edits"])]
+    t0 = time.monotonic()
+    bad, sim = run_once(s.get("seed", 1), edits, faults, trace=trace, undo_probe=s.get("undo_probe", True), checks=s.get("checks", ()),
+                        mode=s.get("mode"), net=s.get("net", ()))
+    took, name = time.monotonic() - t0, s.get("name", os.path.basename(path))
+    sig = signature(bad) if bad else None
+    want = s.get("today", "passes")
+    ok = (not bad) if want == "passes" else (bool(bad) and (not s.get("signature") or s["signature"] == sig))
+    if ok:
+        return True, "scenario %s: %s, as it says (%s, %.1f s)" % (name, "fails" if bad else "passes", sig or "ok", took)
+    lines = ["scenario %s: %s, but it says it %s%s (%.1f s)" % (name, ("fails (%s)" % sig) if bad else "PASSES", want,
+             (" (%s)" % s["signature"]) if s.get("signature") else "", took)]
+    if not bad:
+        lines.append("  if a fix made it pass, set its \"today\" to \"passes\" in %s" % os.path.relpath(path, REPO))
+    lines += ["  [%s] %s" % (c, d[:600]) for c, d in bad[:6]]
+    if bad:
+        lines += sim.lines[-40:]
+    return False, "\n".join(lines)
+
+
 def selfcheck():
     """The soak's own parts that could lie: node.lua's plug-in model (the chain's text through the API) and the driver's plug-in edits (a
     chain with nested blocks once came out unbalanced and made a track out of an item). Raises on a failure."""
@@ -532,9 +622,31 @@ def main():
     ap.add_argument("--shrink-secs", type=float, default=600)
     ap.add_argument("--trace", action="store_true")
     ap.add_argument("--selfcheck", action="store_true", help="only the soak's own self-check (--quick runs it first too)")
+    ap.add_argument("--scenario", action="append", help="a scenario file, a folder of them, or all (tools/soak/scenarios)")
+    ap.add_argument("--old", help="mixed versions: --old-nodes run this commit's lib (git archive)")
+    ap.add_argument("--old-nodes", default="Cee", help="which computers run --old's lib (comma-separated; default Cee)")
+    ap.add_argument("--detcheck", action="store_true", help="two runs of each seed (--seed, else detcheck's quick seeds) must write the same")
+    ap.add_argument("--against", help="with --detcheck: compare with a run of this commit instead of a second run here")
     a = ap.parse_args()
     global FIRST_EDIT
     FIRST_EDIT = a.first_edit
+    if a.detcheck:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import detcheck
+        return detcheck.main(([str(a.seed)] if a.seed is not None else []) + (["--edits", str(a.edits)] if a.edits else []) +
+                             (["--against", a.against] if a.against else []))
+    if a.old:
+        d, sha = git_tree(a.old)
+        for name in a.old_nodes.split(","):
+            OLD[name.strip()] = os.path.join(d, "lib").replace("\\", "/")
+        print("mixed versions: %s run lib from %s" % (", ".join(OLD), sha[:10]), flush=True)
+    if a.scenario:
+        results = [run_scenario(p, trace=a.trace) for arg in a.scenario for p in scenario_files(arg)]
+        for _, line in results:
+            print(line, flush=True)
+        bad = sum(1 for ok, _ in results if not ok)
+        print("scenarios: %d, %d as they say%s" % (len(results), len(results) - bad, (", %d NOT" % bad) if bad else ""))
+        return 1 if bad else 0
     faults = Faults(clean=a.clean)
     probe = not a.no_undo_probe
     mem_cap = int(os.environ.get("STUDIOSYNC_TEST_MEM_MB", "4096"))
