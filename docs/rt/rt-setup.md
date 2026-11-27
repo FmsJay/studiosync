@@ -75,8 +75,8 @@ Three causes in the code, each fixed:
    peaks by take and a signature (file, offset, rate, length). What REAPER answers for a file whose peaks aren't built yet is silence (all
    zeros), and that was cached like a real answer: the take stayed a flat line at every look after, P8's partial read or a whole one, until
    the item itself changed. Now an all-silent answer counts as none (`dawview.flat`), asked again after 5 s, then 10, 20, 40, and every 60 s
-   (a take that really is silent costs one read a minute); and the signature includes the source's length, so a take whose file grew or
-   came back online under the same name is read again.
+   (a take that really is silent costs one read a minute); and the signature includes the take's source, so a take whose file grew under the
+   same name (streams give it a new source) is read again. A take offline until its file arrived answers silence, so it's asked again too.
 2. **REAPER's peak files went through Syncthing.** They're written beside the media in the shared folder (`rooms/<room>/media/peaks/*.reapeaks`
    on the desktop's Cross Test, 11 of them) and nothing ignored them, so every computer's build of the same take met in the shared folder:
    two building at once, one half-written when Syncthing picked it up, Syncthing replacing one REAPER had open. A take could keep a waveform
@@ -133,7 +133,7 @@ closed, so another studio couldn't be picked. The Projects page now has its own 
   an older REAPER is never busy; the wiring in Live sync, Autostart and startup; REAPER's start with three studio tabs preloads one; no 40047.
 - `tests/test_0_60_rt_setup_mic.lua`: `talk_advice` (who records from each input, the fold, the free input, stereo, MIDI, unarmed) and the
   picker's warning and one-click move.
-- `tests/test_0_60_rt_setup_peaks.lua`: silence not kept and asked again with its back-off, a real waveform kept, a new source length read
+- `tests/test_0_60_rt_setup_peaks.lua`: silence not kept and asked again with its back-off, a real waveform kept, a new source read
   again; `(?d)*.reapeaks` first in every block and before the songs in the written file; the purge (what goes, what stays); the peak builder
   (one at a time, steps, MIDI skipped, a take deleted mid-build let go).
 - `tests/test_0_60_rt_setup_format.lua`: the ini parse, checksum, kind, decision; set through the API with the project's own format kept,

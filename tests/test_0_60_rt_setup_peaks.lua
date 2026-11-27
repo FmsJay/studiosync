@@ -1,7 +1,7 @@
 -- rt-setup (findings 2026-11-27, issue "Waveforms not showing on some tracks"). Three causes found in the code, each checked here:
 -- 1. The web view's Project page (lib/dawview.lua take_peaks) kept what REAPER answered for a take whose peaks weren't built yet (all silence)
 --    as that take's waveform for good: the cache answered for it at every look after, P8's partial read or a whole one. Now silence is asked
---    again (5 s, then twice as long each time, up to 60 s), and a source with a new length (a file that grew or came online) is read again.
+--    again (5 s, then twice as long each time, up to 60 s), and a take given a new source (a file that grew) is read again.
 -- 2. REAPER's peak files (.reapeaks, in the media folder's peaks folder) went through Syncthing: every computer's build of a take met in the
 --    shared folder. lib/songsync.lua leaves them out (first line of each block), and lib/peaks.lua purge deletes the ones that came in.
 -- 3. Missing peaks were built by REAPER's modal "Build any missing peaks", in the front tab only: lib/peaks.lua builds them a step a tick in
@@ -47,9 +47,9 @@ zeros = false
 local p = peaks_now(6)
 assert(asked == 2 and p and not dawview.flat(p), "asked again: the real waveform shows (it stayed a flat line before)")
 assert(peaks_now(100) == p and asked == 2, "a real waveform is kept")
--- a take's file that grew (or came online) under the same name: a new source with a new length is read again
+-- a take's file that grew under the same name: the take gets a new source (lib/streams.lua), read again
 take.src = { len = 12, file = src.file }
-assert(peaks_now(101) and asked == 3, "a new source length: read again")
+assert(peaks_now(101) and asked == 3, "a new source: read again")
 -- silence that stays silence (a silent take): asked less and less often, 60 s apart at most
 zeros, take.src = true, { len = 20, file = src.file }
 local times = {}

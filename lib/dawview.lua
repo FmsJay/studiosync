@@ -278,8 +278,9 @@ function dawview.flat(s) return s ~= nil and not s:find("[^0]") end
 local function take_peaks(take, pos, len, now, budget_end)
   local key = tostring(take)
   local src = reaper.GetMediaItemTake_Source(take)
-  -- (and the source's length: a take whose file grew, or came online, under the same name has a new source, and its peaks are read again. rt-setup)
-  local sig = table.concat({ src and reaper.GetMediaSourceFileName(src) or "", src and r3(reaper.GetMediaSourceLength(src)) or 0,
+  -- (and the source itself: a take whose file grew under the same name gets a new source (lib/streams.lua), and its peaks are read again; no
+  -- REAPER call for it, as this runs for every audio take at every look. rt-setup)
+  local sig = table.concat({ src and reaper.GetMediaSourceFileName(src) or "", tostring(src),
     r3(reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")), reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"), r3(len) }, "|")
   local c = peak_cache[key]
   if c and c.sig == sig and (c.s or now - c.at < (c.wait or dawview.PEAK_RETRY)) then c.seen = true; return c.s, false end
