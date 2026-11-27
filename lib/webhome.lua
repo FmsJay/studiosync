@@ -439,6 +439,10 @@ function webhome.action(proj, cfg, b, a)
   end
   if a.open ~= nil then return webhome.open(shown, a.open) end
   if type(a.computer) == "table" then -- ({ user, on }: one of the studio's computers is yours, or isn't. lib/persons.lua, rt-people)
+    -- (only from a page on this computer: a phone doesn't speak for which computers are yours. rt-ui10b's finding)
+    if not (reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1) then
+      return "Your computers can only be changed on the computer itself, not from a phone or another device"
+    end
     S.at = -math.huge
     local said, why = require("persons").set(cfg.root, a.computer.user, a.computer.on == true)
     return said or ("the web page's Your computers change wasn't made: " .. tostring(why))

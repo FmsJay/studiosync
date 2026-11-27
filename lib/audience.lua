@@ -230,7 +230,11 @@ function audience.action(proj, cfg, b, a)
   if not d then return end
   if not may_manage(cfg) then return "only the owner or an admin can manage listening links" end
   local said, bad
-  if d.public then said, bad = audience.set_public(cfg, d.public.on, d.public.sure)
+  -- (the Public links switch is a studio setting: only a page on this computer changes it, never a phone or another device. James's
+  --  decision 4, 2026-11-27; found by rt-ui10b)
+  if d.public and not (reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1) then
+    bad = "Public links can only be switched on this computer, not from a phone or another device"
+  elseif d.public then said, bad = audience.set_public(cfg, d.public.on, d.public.sure)
   elseif d.make then
     local url
     url, said = audience.make(cfg, d.make)

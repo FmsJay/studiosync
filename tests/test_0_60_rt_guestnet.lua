@@ -11,6 +11,7 @@ local ext_status = { guests = {} }
 reaper = setmetatable({
   time_precise = function() return clock end,
   GetOS = function() return "Win64" end,
+  StudioSync_WebUIPollHere = function() return 1 end, -- (a page on this computer; a phone is tried apart)
   GetExtState = function(s, k) return ext[s .. "/" .. k] or "" end,
   SetExtState = function(s, k, v) ext[s .. "/" .. k] = v end,
   DeleteExtState = function(s, k) ext[s .. "/" .. k] = nil end,

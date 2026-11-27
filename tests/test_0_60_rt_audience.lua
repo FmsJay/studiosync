@@ -11,6 +11,7 @@ local play_state = 0
 reaper = setmetatable({
   time_precise = function() return clock end,
   GetOS = function() return "Win64" end,
+  StudioSync_WebUIPollHere = function() return 1 end, -- (a page on this computer; a phone is tried apart)
   GetExtState = function(s, k) return ext[s .. "/" .. k] or "" end,
   SetExtState = function(s, k, v) ext[s .. "/" .. k] = v end,
   DeleteExtState = function(s, k) ext[s .. "/" .. k] = nil end,
@@ -141,6 +142,13 @@ assert(au.action("P", cfg, b, { public = { on = true, sure = true } }):find("onl
 role = "owner"
 assert(au.action("P", cfg, b, { public = { on = true } }):find("warning confirmed") and not au.public_on() and #ts_calls == 0, "the owner, without confirming the warning: no")
 ts_answer = "1\nFunnel is not enabled on your tailnet."
+do -- (from a phone or another device: refused, whoever asks; James's decision 4)
+  local here = reaper.StudioSync_WebUIPollHere
+  reaper.StudioSync_WebUIPollHere = function() return 0 end
+  assert(au.action("P", cfg, b, { public = { on = true, sure = true } }):find("only be switched on this computer") and not au.public_on() and #ts_calls == 0,
+    "the owner from a phone: Public links stay off")
+  reaper.StudioSync_WebUIPollHere = here
+end
 said = au.action("P", cfg, b, { public = { on = true, sure = true } })
 assert(said:find("didn't open Funnel") and said:find("not enabled") and not au.public_on() and starts[#starts].pport == 0, "Funnel refused: it stays off, the port shut again")
 ts_answer = "0\n"
