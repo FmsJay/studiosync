@@ -349,7 +349,9 @@ function N.state()
       -- (its rank left out: the order it makes is compared as the order, and a lib from before ranks (soak.py --old) hashes none. rt-sync2c)
       local st = {}
       for k, v in pairs(o.state) do st[k] = v end
-      st.rank = nil
+      -- (and its parent and depth out of the line: the folders are compared as each track's parent (here) and the order, as REAPER can write
+      -- one tree with other depths (an open folder at the end), and a lib before rt-sync2d hashes no parent. rt-sync2d)
+      st.rank, st.parent, st.depth = nil, nil, nil
       hashes[o.oid] = mirror.hash(tostring(o.state.parent) .. "\n" .. mirror.track_hash(st, false))
     end
     if o.kind == "track" then order[#order + 1] = o.oid end
@@ -563,7 +565,42 @@ EDITS.track_volume = function(r)
   reaper.SetMediaTrackInfo_Value(t, "D_VOL", v)
   return "set track " .. tname(t) .. " volume " .. v
 end
+-- A track dragged into a folder or out of one, as REAPER leaves the project: the track and what's under it move together, to the end of the
+-- folder it goes into (or right under the folder it leaves), and the depths say the new tree. rt-sync2d
+local function folder_move(r)
+  local par, stack = {}, {}
+  for _, x in ipairs(F.tracks) do
+    par[x] = stack[#stack]
+    local d = x.depth or 0
+    if d == 1 then stack[#stack + 1] = x elseif d < 0 then for _ = 1, -d do stack[#stack] = nil end end
+  end
+  local list = studio_tracks()
+  local t = pick(list, r[4]); if not t then return end
+  local function under(x, a) while x do if x == a then return true end; x = par[x] end end
+  local was, to, out = par[t], nil, false
+  if was and r[5] < 0.4 then to, out = par[was], true -- (out of its folder, one level up)
+  else
+    local can = {}
+    for _, x in ipairs(list) do if not under(x, t) and x ~= was then can[#can + 1] = x end end
+    to = pick(can, r[5]); if not to then return end
+  end
+  local kids = {} -- (each track's children, and the top level's (false), in list order)
+  for _, x in ipairs(F.tracks) do local p = par[x] or false; kids[p] = kids[p] or {}; if x ~= t then table.insert(kids[p], x) end end
+  local into = kids[to or false] or {}
+  kids[to or false] = into
+  local at = #into + 1
+  if out then for i, x in ipairs(into) do if x == was then at = i + 1 end end end
+  table.insert(into, at, t)
+  par[t] = to
+  local order, level = {}, {}
+  local function walk(p, l) for _, x in ipairs(kids[p] or {}) do order[#order + 1] = x; level[x] = l; walk(x, l + 1) end end
+  walk(false, 0)
+  for i, x in ipairs(order) do F.tracks[i] = x; x.depth = (order[i + 1] and level[order[i + 1]] or 0) - level[x] end
+  F.changed()
+  return (out and "moved track " .. tname(t) .. " out of its folder" or "moved track " .. tname(t) .. " into " .. tname(to))
+end
 EDITS.track_move = function(r)
+  if r[3] < 0.5 then return folder_move(r) end -- (half of the moves: into or out of a folder. rt-sync2d)
   if #F.tracks < 2 then return end
   local t = pick(studio_tracks(), r[1]); if not t then return end
   local to = math.floor(r[2] * #F.tracks)

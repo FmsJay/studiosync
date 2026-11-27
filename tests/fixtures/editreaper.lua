@@ -411,7 +411,22 @@ function E.new(path)
     GetTrackGUID = function(t) return t.guid end,
     InsertTrackInProject = function(_, idx) F.add_track("", idx + 1) end,
     InsertTrackAtIndex = function(idx) F.add_track("", idx + 1) end,
-    DeleteTrack = function(t) local i = index_of(t); if i then table.remove(tracks, i); changed() end end,
+    DeleteTrack = function(t) -- (as REAPER keeps the folders around it: a last child's closing moves to the track above, a folder's children
+      -- move up a level. Removed alone, a last child left the tracks after it inside its folder. rt-sync2d)
+      local i = index_of(t)
+      if not i then return end
+      local d = t.depth or 0
+      if d < 0 and tracks[i - 1] then tracks[i - 1].depth = (tracks[i - 1].depth or 0) + d
+      elseif d == 1 then
+        local level = 1
+        for j = i + 1, #tracks do
+          level = level + (tracks[j].depth or 0)
+          if level <= 0 then tracks[j].depth = tracks[j].depth + 1; break end
+        end
+      end
+      table.remove(tracks, i)
+      changed()
+    end,
     GetMediaTrackInfo_Value = function(t, k)
       local fld = TV[k]
       if fld then return t[fld] or 0 end
