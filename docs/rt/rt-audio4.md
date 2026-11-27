@@ -102,10 +102,12 @@ It stays sane because:
 ### 3.3 The listener: one stream whichever way it comes (the merge)
 AOO gives each (source, sink) pair its own stream id, but the sequence numbers are the source's (one encode per block): the copy X sends
 the relay and the copy X sends L carry the same `seq` for the same frame. So per sender and stream the receive side keeps the stream
-id the sink knows (`acc`) and the other ids seen for the same stream (aliases): a `/start` whose `seq_start` is within 2 s of what is
-playing and whose format id matches is an alias (dropped, nothing restarts); a data message with an alias id gets `acc` written into it
-(4 bytes, big-endian, right after AOO's binary header); a `/stop` is passed only when no other copy delivered in the last 0.2 s. AOO's
-jitter buffer drops the second copy of a frame. A genuinely new stream (a restart: `seq_start` far off, or a new format) replaces `acc`.
+id the sink knows (`acc`, from a `/start` or from the data it plays) and the other ids of the same stream (aliases): an id whose *data*
+carries on from `acc`'s sequence (within 800 blocks, 4 s) is an alias, and its data gets `acc` written into it (4 bytes, big-endian, right
+after AOO's binary header). A `/start` for another id while `acc` plays is held and decided on that id's first data: carrying on, an
+alias (the `/start` dropped, nothing restarts); not, a new stream (a restart: the held `/start` goes in first, then its data). An alias's
+`/stop` is dropped; `acc`'s passes only when no alias delivered in the last 0.2 s. AOO's jitter buffer drops the second copy of a frame.
+(First built on the `/start`'s `seq_start`; a kept `/start` from minutes ago carries a stale one, so the data decides.)
 
 Per sender X (not the holder, not me), with the relay on and a valid lease held by someone else:
 - **relayed(X)** = the holder hears X (its `'H'`) and (the room relays everything, or nothing came from X directly for 1.5 s).
@@ -124,25 +126,33 @@ Per sender X (not the holder, not me), with the relay on and a valid lease held 
   still end with one holder among those that hear each other; a holder that hears a winning lease yields at once.
 - **Handover:** only the holder moves the role: when a computer ranked before it has been heard for 5 s, it sends `'L'` with the
   handing-over flag and that computer claims at once with `term + 1`. A preferred computer coming back gets the role 5 s later, once.
+  A holder never hands the role back to the computer it got it from within 60 s, so two computers whose orders disagree can't ping-pong.
 - **Partition:** two holders can exist only where they can't hear each other; a listener that hears both follows the higher term; when
   they hear each other again the lower yields. Nothing reads status files or Syncthing: `lag`, `blind`, `HOLD`, `VOUCH` don't apply.
 
 ### 3.5 Lua (additive, apart from rt-setup's talk-mic code)
-- `liveaudio.can_relay()`; the status's `lrelay = true` (two additive lines in `StudioSync - Live sync.lua`, beside `lhub`).
-- `liveaudio.relay_plan(o)` (pure): the relay is on only when every computer in the room says `lrelay`; `all` from the same room size and
-  senders rule `hub_plan` uses today; the order: the song's hub (or livex's shared-CPU pick), then wired computers, then by name.
-- `liveaudio.hub_tick` calls `StudioSync_LiveAudioRelay(json)` when the gate is open (and `StudioSync_LiveAudioHub("", 0)`), else
-  exactly what it calls today. Health: the holder, the term, `fwd_kbps`.
+- As built, a module of its own, `lib/liverelay.lua` (rt-setup was editing `lib/liveaudio.lua`): `can()`, `mine()` (the status's
+  `lrelay = true`, two additive lines in `StudioSync - Live sync.lua` beside `lhub`), `gate` (pure: "yes" when every computer on the
+  live-audio list says `lrelay`, "no" when one's status doesn't, "wait" when one has no status here yet), `held` (on after `SETTLE` 10 s of
+  yes, off at once on a no, a wait keeps what it was), `order`, `json`, `tick` (tells the extension on a change only, and logs it), `text`
+  (Health).
+- `all` is `hub_plan`'s own answer: the room is big enough and two or more send (it would have mixed). The order: the song's hub (or
+  livex's shared-CPU pick), then wired computers, then by name.
+- `liveaudio.hub_tick` (3 additive lines) calls `liverelay.tick`; when it returns true, hub_tick asks the extension for no mix
+  (`StudioSync_LiveAudioHub("", 0)`), else exactly what it called before. `liveaudio.health_text` (1 line): the relay's holder, what it
+  forwards and how many bandmates come through it.
 - `lib/hub.lua` is untouched: its song hub still keeps the restore points; the lease decides only who relays live audio.
 
 ## 4. Versions and compatibility (an explicit gate)
 
-- The relay is used only when **every** computer in the room's live audio has it (`lrelay` in its status). One 1.0.40 computer in the
-  room: the room runs **exactly what it runs today** (the elected song hub mixes from 4 people; peer to peer below), because the new
-  extension keeps `StudioSync_LiveAudioHub` and its mix unchanged.
-- What a 1.0.40 computer sees: nothing new. It never gets an `'L'`, `'F'` or `"SSF1"` it would act on (it drops unknown kinds), and
-  nobody turns the relay on while it is in the room. If it joins a room that relays, the next Lua tick (1 s) closes the gate: everyone's
-  extension gets `on = 0` and the old path resumes (listeners hear direct streams meanwhile, as in a fallback).
+- The relay is used only when **every** computer in the room's live audio has it (`lrelay` in its status), for 10 s. One 1.0.40
+  computer in the room: the room runs **exactly what it runs today** (the elected song hub mixes from 4 people; peer to peer below),
+  because the new extension keeps `StudioSync_LiveAudioHub` and its mix unchanged.
+- What a 1.0.40 computer sees: nothing new. It gets `'L'` leases (it drops unknown control kinds silently, as today), never an `'F'` or
+  an `"SSF1"` (nobody asks it, and the relay forwards only to those that ask), and nobody turns the relay on once its status is read.
+  If it joins a room that relays, the next Lua tick after its status is read (1 s) closes the gate: everyone's extension gets `on = 0`
+  and the old path resumes (listeners hear direct streams meanwhile, as in a fallback). Until its status is read it is sent everything
+  directly (it never says `'M'` 1), and it hears everyone directly (relay_test 9).
 - What a new computer sees in an old room: today's behaviour. In an all-new room: the relay.
 - The release after every computer has the relay deletes the mix (`hub_serve`, the `'R'`/`'I'` handling, `hub_watch`'s mix states,
   `msink`/`msrc`, `hring`): about 600 lines.
@@ -193,3 +203,127 @@ Per sender X (not the holder, not me), with the relay on and a valid lease held 
 | 3 | `pace.h`; the web side matched | `extension/pace.h`, `rtaudio.cpp`, `webui.cpp`, `lib/webui/*.js`, tests |
 | 4 | Names resolved off the send thread; the status outside the receive path's lock; the control's last minute in a ring | `extension/rtaudio.cpp`, `rtaudio.h`, tests |
 | 5 | The AOO patch (ratio, fill in samples); then our own jitter buffer | `extension/third_party/aoo/...`, `rtaudio.cpp` |
+
+## 8. What was built (phases 1-4; phase 5 is design only)
+
+| Phase | Commit | What | Tests (each fails without it) |
+|---|---|---|---|
+| 1 | 75d9039 | `rt_sim`: the simulated clock and network (no threads, no sockets; delay, jitter, loss, blocked paths, held threads, a frozen process); the native suite on it unless `SS_RT_REAL=1` | the whole suite in **8-12 s** instead of ~9 minutes, the same numbers every run (only AOO's wall-clock round trip in a status differs); `sim_test`: the same sound twice to the sample, a path's delay heard, a blocked path silent |
+| 2 | f83a6de | the relay (forwarding, the merge, `'F'`, `'M'`), the lease (`'L'`), `StudioSync_LiveAudioRelay`; `lib/liverelay.lua` (gate, order, tick, Health); hooks in `liveaudio.lua` and Live sync's status | `relay_test`, 18 checks (below); `test_0_60_rt_audio4.lua` (fails with HEAD's `liveaudio.lua`) |
+| 3 | 62a5661 | `extension/pace.h`: the read-rate control as one struct per stream (moved, not changed); the guests' light law there too (`pace::Lite`, `webui.cpp`'s copy gone); `tests/fixtures/pace_lite.json` | the simulated suite's 235 result lines **identical** before and after the move; `pace_lite_test` (C++) and `tests/pace_lite_check.py` (the worklet's own `ssPace` in Node, in `tests/run.py`): the golden trace's 200 rates to the bit; `webui_test`: all ok |
+| 4 | 1081316 | names looked up by a resolver thread (in the model: finished when due); the tag checked before `cfg_mx`; `rt_status` under `stats_mx` alone; the control's last minute (160 windows and events per stream) and `StudioSync_LiveAudioTrace(peer)` | `lookup_test` (a 2 s lookup: B hears A whole meanwhile, the status says "looking up its name", C once the name has come); `trace_test` (windows and the underrun in the dump). Also fixed: the hub test stopped H from a second real thread, which raced the model (a crash about one run in four) |
+| finish | this file's commit | the gate held (on after 10 s of everyone relaying, off at once on an older computer, a late status changes nothing); `'M'` 1 only when every stream asked for flows through the relay | `test_0_60_rt_audio4.lua` parts 1 and 3 (the hold); `relay_test` unchanged |
+
+**`relay_test`, on the simulated network (4 computers, 60 ms buffers):**
+
+| Case | Result |
+|---|---|
+| Lease | one holder, the first in the order (term 1); the others follow it |
+| Forwarding | A hears B through the relay at the level B sent (0.354 rms, quietest 10 ms 0.349); B sends **218 datagrams/s** (one copy; peer to peer it was three); H forwards 1203 packets/s (838 kbit/s) to the three that ask |
+| The relay stalls 150 ms, three times | A's longest gap in B **25 ms** (concealed), **no re-buffer**, everything through the relay again once it's steady. With the merge taken out: 85 ms. Through the hub's mix the same stall was a fallback (everyone's streams anew, each a re-buffer, 3.3 s on direct streams) |
+| The holder goes | the next in the order holds (term 2) within the lease's 2 s; A's longest gap 20 ms, no re-buffer; C now gets B through A |
+| The holder comes back | handed back to it once (handovers 1), 5 s after it's heard |
+| Talkback B -> C only | A hears nothing of B, H doesn't play it (it only forwards), C hears it through the relay |
+| A mutes B | the relay stops forwarding B to A: 1203 -> 1002 packets/s |
+| B can't reach A (room below the threshold) | A asks the relay for B alone and hears it (0.353 rms); the path back: B's own stream again, **no gap** (70 ms with the merge taken out) |
+| A partition (two that each put themselves first) | two holders while apart, one at once when they hear each other (the lower address; yields 1) |
+| A computer with the relay off (as a 1.0.40) | sent everything directly, hears B at 0.353 rms, takes no forwarded copy |
+
+Whole native suite at the end: **191 checks, fails 0**, about 12 s, 15 runs out of 15 with no crash; `SS_RT_REAL=1 rtaudio_test stalls`,
+`outage`, `nothere`, `startorder`: all ok in real time. `extension\build_windows.cmd` with `DLL_OUT` in scratch: built (4,075,520
+bytes), the tracked DLL untouched. `python tests/run.py --no-luals` in a clean clone: in the report.
+
+## 9. Left, untested, limits
+
+- **Nothing ran in REAPER or over a real network.** The relay, the lease and the merge are proven on the model only.
+- **The model's links are near-instant (0.1 ms).** What a relay stall costs is what the sender sent the relay before a listener noticed
+  (the rescue line: 40 ms, or the buffer less 20 ms) **plus one round trip** listener -> sender -> listener for the direct copy to come.
+  On the laptop's 80-200 ms link a 150 ms relay stall would cost about as much as the stall itself, still with no re-buffer and no
+  fallback state; its buffer for such a link is 110-400 ms, which covers most of it.
+- **The relay's uplink** (section 2's table) is estimated, not measured; `fwd_kbps` in its status is the measurement to take.
+- **The mix stays** for rooms with a 1.0.40 computer; its deletion (about 600 lines) is for the release after everyone has the relay.
+- A sender whose Talk the relay won't forward (no talkback list from it: an older computer) keeps sending it directly; tested for Talk
+  alone (`relay_test` 9), not with a Play stream beside it.
+- The gate reads statuses: an older computer whose status hasn't come yet counts as "wait" (the relay stays as it was) for as long as
+  that lasts; it hears everyone directly meanwhile.
+- Lua's order puts the song's hub first, then wired computers. Two computers that disagree on the order still end with one holder (term,
+  then address), maybe the less preferred one until it hands over.
+- The listener learns whom the relay hears from the mix's `'H'`, reused; a relay that doesn't hear a sender carries nothing for it.
+- **Not built: phase 5.** The small AOO patch (read at a ratio instead of bent timestamps, the fill in samples) is a cleanup and doesn't
+  bridge a hold; our own jitter buffer with PLC and WSOLA is the real fix (recommendation 1). The web pages still run the light law
+  (their copy is now pinned to the C++ one, not to the full law).
+- `lib/files.txt` doesn't list `lib/liverelay.lua` yet (the release regenerates it; `tools/files_check.py` fails only with `--release`).
+- The pages' check needs Node (as `tools/js_check.py`); without it, it says so and passes.
+
+## 10. REAPER re-check (needs the extension after 1.0.40 on every computer, and this Lua)
+
+Setup as rt-r7 (its `tools/ears` rig); Deafen back to 1 and no other live-audio keys after every run. Read `StudioSync_LiveAudioStatus`'s
+`relay` block and each peer's `relayed`, `fwd_ago`.
+
+1. **The gate, mixed.** With a 1.0.40 computer in the room (the Mac, or one REAPER not restarted): every computer's `relay.on` false,
+   `claims` 0; the log has no relay line, or one "the room's relay is off"; the mix behaves as in rt-r6 step 5 (59-60 s to switch).
+2. **The gate, all new** (desktop, laptop, LinuxBox; `live_hub` 3 for the test as rt-r6 did; two sending): within 70 s of the second
+   sender (`HUB_SETTLE` 60 + `SETTLE` 10) every log says "through the room's relay"; `relay.holder` names the same computer everywhere
+   ("me" on it), `term` the same, `claims` 1 on it and 0 elsewhere; on the holder `asking` 2; on listeners `relayed` = the other
+   senders, their `fwd_ago` under 0.1. Ten minutes on: `claims`, `yields`, `handovers` unchanged everywhere.
+3. **Through the relay, by ear** (the desktop sends; the holder another computer: hand the song's hub to LinuxBox first, as rt-r2 D):
+   `TAP="l" rig.sh live a6 d`, then `ears.py wav a6_d.wav a6_l.wav --pattern --stamps --gain 0.01` (the laptop's own volume: no mix any
+   more). **Hit:** `speed_error` 1 +- 0.002, `gap_ms` 0, `aligned` (corr_windows over 0.9), `steady`; on the laptop the desktop's
+   `play_underruns` and `play_resyncs` +0 in the run, `fwd_refused` 0; the desktop's `sent` about one stream's worth a second (200-250
+   datagrams per stream, not one per listener).
+4. **The relay stalls or goes.** During step 3's playing, on LinuxBox (the holder) `kill -STOP <its REAPER>; sleep 0.15; kill -CONT`.
+   **Hit:** on the laptop's tap `gap_ms` at most 60 + the laptop-desktop round trip per stall, `play_resyncs` +0, no "peer to peer"
+   line. Then quit LinuxBox's REAPER: within 3 s the next in the order holds (`term` +1 on both survivors), the laptop's `gap_ms` at most
+   one rescue line + round trip, `play_resyncs` +0. (Through the mix: a fallback and 3.3 s on direct streams.)
+5. **The holder back:** LinuxBox's Live sync again: about 6-8 s after its start it holds again (`handovers` +1 on the interim holder),
+   once; nothing moves in the 10 minutes after.
+6. **A missing path, small room** (`live_hub` back to 4, three computers: `all` 0): inside LinuxBox block UDP from the desktop's
+   Tailscale address (`lab.sh net x1 block <desktop IP>`, UDP only, as rt-r2's notes). **Hit:** within 2 s LinuxBox's desktop entry
+   `relayed` true, its tap of the desktop's pattern `gap_ms` at most 100 around the switch and 0 after; undo: `relayed` false within 2 s,
+   `gap_ms` 0 at the switch back.
+7. **Bandwidth:** the holder's `fwd_kbps` with two senders (Talk only) and two listeners: about 4 x 365 = 1460 kbit/s (5 ms frames);
+   muting one sender in one listener's cue mix takes about 365 off within 2 s. Note the numbers for section 2.
+8. **The trace:** during step 3, `StudioSync_LiveAudioTrace("<the desktop's peer>")` on the laptop: `talk` and `play` hold 100-120
+   windows a minute (event 1) and the run's underruns and re-buffers (8, 4) at their times. Keep one dump from the poor link (rec 19).
+9. **No regression:** rt-audio3 round 3's steps 1-3 (a1 `speed_error` 0.997-1.003, `play_rate_ppm` within 2500 of `play_ratio_ppm` in 9
+   of 10 reads, idle trims +8 at most): the controller moved, it didn't change.
+10. **Lookups:** a Live sync start with a MagicDNS peer name (if the list uses names): its entry says "looking up its name" for a
+    moment, and the status's hub `stalls` doesn't grow at the start.
+
+## 11. Review later (security)
+
+- **A relay can attribute audio to another member.** Forwarded packets carry the sender's address in an envelope tagged with the studio
+  key; a member holding the lease could inject or alter what a listener takes for another member's stream. Before, Tailscale
+  authenticated each sender's address. Fix later: a per-member signature on the inner AOO message, checked by listeners.
+- **A member can take the lease** by claiming a high term (up to 2^32 - 1) and keep it. Possible limits: a term must be one more than the
+  highest seen, listeners follow only holders in their own order, a cap on claims.
+- `'F'` lets a member ask the relay for any stream it could already hear directly: one copy per stream per listener, at most 16 x 2
+  streams; nothing amplifies further. Its talkback list is its own word (as `'R'`'s deny list was).
+- Bounds: every `"SSF1"`, `'F'`, `'L'` is length-checked; the merge's OSC reader stops at the message's end; a kept `/start` is one
+  datagram per sender and stream (1400 bytes at most).
+- A listener takes forwarded copies only from the holder it follows, and only for a listed sender's Talk or Play sink; everything else
+  is counted in `fwd_refused`.
+- `StudioSync_LiveAudioTrace` and the `rt_test_*` hooks are local calls; the resolver looks up only names from the local peers JSON.
+
+## 12. Recommendations (ranked)
+
+1. **Our own jitter buffer, with Opus PLC and WSOLA time-stretch** (rt-audio3 recs 3, 6, 12, 13), in front of libopus: a lone hold
+   becomes a soft patch instead of a gap, the size moves by setpoint instead of re-buffering, the target comes from the histogram of
+   waits. AOO stays for the sender (or goes: its packet format is all the two ends share). Rust would suit it (section 5). Two to three
+   weeks; the simulated network makes it testable from day one (holds, jitter and loss are scripted).
+2. **Delete the mix** in the release after every computer has the relay (the gate's second half): `hub_serve`, the `'R'`/`'I'`
+   handling, `hub_watch`'s mix states, `msink`/`msrc`/`hring`, `own_outage`, `gap_learn`: about 600 lines; Lua's `hub_plan` and
+   `hub_budget` reduce to the relay's `all`.
+3. **Sender-side bandwidth in relay rooms:** a Talk muted 5 s pauses its stream (AOO stop/start; a muted computer sends zeros at the
+   full rate today), 10 ms frames when everything goes through the relay (-33 % on the wire, +5 ms), and a sender with a weak uplink
+   sending only to the relay whatever the room's size (sender-driven relaying).
+4. **Sign forwarded packets per member** (section 11's first item) before the relay is used outside James's own computers.
+5. **Use the lease for the song's hub too** (restore points): `lib/hub.lua`'s election becomes the order, and `lag`, `blind`, `HOLD`,
+   `VOUCH`, `REACH_SETTLE` go. The lease is general; only its holder's jobs differ.
+6. **The web pages on the full law** (`pace::Pace`), with the guests' events (dry, cut) as its inputs; extend the golden trace to it.
+7. **Measure latency per stream** (rec 8): with the relay each sender's path differs; stamp frames with the link clock.
+8. **The rest of rec 5:** counters as atomics and a seqlock'd snapshot, so the status doesn't take `stats_mx` (the send thread holds it
+   for `pollEvents` and `adapt` every pass).
+9. **The small AOO patch** (`kAooCtlSetResampleRatio`, the fill in samples) only if recommendation 1 waits: it removes `toff`'s
+   unbounded growth and `fill_of`'s copy of AOO's capacity formula, nothing audible.
+10. **Health names the device as the problem** (rec 9), and **`tools/ears` on a real-time stamp** (recs 11, 21).

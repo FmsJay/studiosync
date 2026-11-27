@@ -3,27 +3,42 @@
 -- (StudioSync_LiveAudioRelay, extension/rtaudio.cpp). Lua says only whether the room uses it, whether everything goes through it, and who
 -- should hold it first:
 --   - the gate: every computer on the live-audio list here says "lrelay" in its status (this module's mine(), written by Live sync beside
---     "lhub"). One that doesn't (an older extension, or one heard before its status came) closes it, and the room runs exactly what it ran
---     before: the elected song hub mixes from the studio's threshold, peer to peer below it (lib/liveaudio.lua hub_plan, unchanged);
+--     "lhub"), for SETTLE s. One whose status doesn't (an older extension) closes it at once, and the room runs exactly what it ran before:
+--     the elected song hub mixes from the studio's threshold, peer to peer below it (lib/liveaudio.lua hub_plan, unchanged). One with no
+--     status here yet (heard before its status came) changes nothing either way;
 --   - all: the room relays everything when the mix would have run (big enough and two or more sending: hub_plan's own answer), else the relay
 --     only carries the bandmates a listener gets nothing from directly;
 --   - the order: the hub hub_tick would have used (the song's, or the shared-CPU pick) first, then wired computers, then by name.
 -- GPL-3.0-or-later.
 local band = require("band")
-local liverelay = { EVERY = 1 } -- (s: the room's statuses looked at at most this often)
+-- EVERY: s, the room's statuses looked at at most this often. SETTLE: s every computer here must have said lrelay before the relay goes on
+-- (a status that comes and goes doesn't switch the room between the relay and the mix every few seconds); it goes off at once.
+local liverelay = { EVERY = 1, SETTLE = 10 }
 
 function liverelay.can() return reaper.StudioSync_LiveAudioRelay ~= nil end
 function liverelay.mine() return liverelay.can() or nil end -- (this computer's status file: "lrelay")
 
--- Open only when this computer has it and every computer on its live-audio list says lrelay. sts: user -> that computer's status; users:
--- peer -> user (those on the list here). Pure.
+-- -> "yes" when this computer has it and every computer on its live-audio list says lrelay; "no" when this one doesn't or one's status says
+-- nothing of it (an older extension: the room as before, at once); "wait" when one has no status here yet (heard before its status came,
+-- or vouched for: the relay stays as it is). sts: user -> that computer's status; users: peer -> user (those on the list here). Pure.
 function liverelay.gate(sts, users, mine)
-  if not mine then return false end
+  if not mine then return "no" end
+  local wait = false
   for _, u in pairs(users or {}) do
     local x = (sts or {})[u]
-    if type(x) ~= "table" or x.lrelay ~= true then return false end
+    if type(x) ~= "table" then wait = true
+    elseif x.lrelay ~= true then return "no" end
   end
-  return true
+  return wait and "wait" or "yes"
+end
+-- The gate held (mem: kept): on once it has said yes for SETTLE s; off at once on a no; a wait keeps what it was. Pure.
+function liverelay.held(g, mem, now)
+  if g == "no" then mem.yes_since, mem.on = nil, false
+  elseif g == "yes" then
+    mem.yes_since = mem.yes_since or now
+    if now - mem.yes_since >= liverelay.SETTLE then mem.on = true end
+  end
+  return mem.on == true
 end
 
 -- Who should hold the lease, first to last, as the extension takes it: each computer's peer ("name:port"), this one as "". The hub first,
@@ -59,7 +74,8 @@ function liverelay.tick(cfg, b, users, o, mem)
       if type(x) == "table" and x.user then mem.rsts[x.user] = x; mem.rnets[x.user] = x.net end
     end
   end
-  local on = liverelay.gate(mem.rsts, users, true)
+  mem.rgate = mem.rgate or {}
+  local on = liverelay.held(liverelay.gate(mem.rsts, users, true), mem.rgate, now)
   local json = liverelay.json(on, o.all, liverelay.order(o.hub, o.me, users, mem.rnets))
   if json ~= mem.relay_json then
     reaper.StudioSync_LiveAudioRelay(json)

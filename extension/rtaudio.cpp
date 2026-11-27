@@ -342,7 +342,7 @@ struct Slot {
   // direct and forwarded copies per stream (Talk, Play; the receive thread's, under cfg_mx: relay_merge).
   std::atomic<bool> relayed{ false };
   bool msaid = false;
-  std::atomic<double> fwd_at{ -1e9 }, fwd_first{ -1e9 };
+  std::atomic<double> fwd_at[2]{ { -1e9 }, { -1e9 } }, fwd_first[2]{ { -1e9 }, { -1e9 } }; // (per stream: Talk, Play)
   struct Merge { AooId acc = 0, alias[4] = { 0, 0, 0, 0 }, pend_sid = 0; double alias_at[4] = { 0, 0, 0, 0 }; int fmt = 0, seq = 0; bool live = false; std::vector<unsigned char> pend; } mg[2];
   // As the holder: what this listener asked for ('F': a bit per sender slot, for Talk and for Play), when, which listeners its own Talk
   // leaves out (a bit per slot: its talkback), and whether it leaves this computer out (its Talk then not heard here, only forwarded); the
@@ -1889,7 +1889,7 @@ void relay_rx(RtLink *l, const unsigned char *d, int n, const sockaddr_in &from)
   unsigned char copy[MAX_DGRAM];
   memcpy(copy, msg, (size_t)size);
   l->fwd_in.fetch_add(1, std::memory_order_relaxed);
-  if (now - x->fwd_at.exchange(now) > FWD_GAP) x->fwd_first.store(now);
+  if (now - x->fwd_at[k].exchange(now) > FWD_GAP) x->fwd_first[k].store(now);
   const int mr = relay_merge(x->mg[k], copy, size, off, now);
   if (mr == MERGE_DROP) return;
   const double gap = now - x->arr_at[k].exchange(now, std::memory_order_relaxed); // (the level's newest packet, as rx_one's came)
@@ -2031,7 +2031,11 @@ void relay_watch(RtLink *l, double now)
   for (int i = 0; i < l->nslots; ++i) { // ('M': said every MODE_EVERY while 1, once when it goes back to 0)
     Slot &x = *l->slots[i];
     const double line = std::max(FWD_GAP, (x.target_ms - RESCUE_LEAD) / 1000.0);
-    const bool m = l->relay_on && l->relay_all && x.relayed && now - x.fwd_first.load() >= ENTER_S && now - x.fwd_at.load() < line;
+    // (every stream asked for flowing: one the relay doesn't forward, an older computer's Talk with no talkback list there, keeps its
+    // sender sending directly)
+    const bool mt = !x.mute.load(), want_t = mt && x.gain.load() > 0, want_p = mt && x.pgain.load() > 0 && x.pstreaming;
+    auto flows = [&](int k) { return now - x.fwd_first[k].load() >= ENTER_S && now - x.fwd_at[k].load() < line; };
+    const bool m = l->relay_on && l->relay_all && x.relayed && (want_t || want_p) && (!want_t || flows(0)) && (!want_p || flows(1));
     if (m != x.msaid || (m && again)) { const unsigned char v = m ? 1 : 0; send_ctl(l, x, 'M', &v, 1); x.msaid = m; for (int j = 0; j < l->nslots; ++j) l->slots[j]->switch_at = now; }
   }
   if (l->holding && now >= l->next_rh) { // ('H' to those that ask: whom this computer hears now, so each asks only for them)
@@ -2760,7 +2764,7 @@ std::string rt_status(RtLink *l)
     o.insert(o.size() - 1, b);
     snprintf(b, sizeof(b), ",\"heard_ago\":%.2f", std::min(1e6, now - p.rx_at.load(std::memory_order_relaxed))); // (its last tagged datagram: it lists this computer. rt-roomlist)
     o.insert(o.size() - 1, b);
-    snprintf(b, sizeof(b), ",\"relayed\":%s,\"fwd_ago\":%.2f", p.relayed.load() ? "true" : "false", std::min(1e6, now - p.fwd_at.load())); // (it comes through the relay; its newest forwarded copy. rt-audio4)
+    snprintf(b, sizeof(b), ",\"relayed\":%s,\"fwd_ago\":%.2f", p.relayed.load() ? "true" : "false", std::min(1e6, now - std::max(p.fwd_at[0].load(), p.fwd_at[1].load()))); // (it comes through the relay; its newest forwarded copy. rt-audio4)
     o.insert(o.size() - 1, b);
     // (overruns: AOO's resets of Talk's buffer for a burst that didn't fit (CAP_HEAD). Play's own: its underruns, overruns, resyncs (both: each a
     // re-buffer, a gap), trims (sheds), its buffer as measured and its latency from that (half the round trip + that buffer + AOO's codec and

@@ -31,14 +31,21 @@ local lr = require("liverelay")
 do
   local users = { ["bx.ts.net:47281"] = "Bx", ["cy.ts.net:47281"] = "Cy" }
   local sts = { Bx = { user = "Bx", lrelay = true }, Cy = { user = "Cy", lrelay = true } }
-  assert(lr.gate(sts, users, true), "every computer here relays: on")
-  assert(not lr.gate(sts, users, false), "this one doesn't: off")
+  assert(lr.gate(sts, users, true) == "yes", "every computer here relays: yes")
+  assert(lr.gate(sts, users, false) == "no", "this one doesn't: no")
   sts.Cy.lrelay = nil
-  assert(not lr.gate(sts, users, true), "one that doesn't say lrelay (1.0.40): off, the room as before")
+  assert(lr.gate(sts, users, true) == "no", "one whose status doesn't say lrelay (1.0.40): no, the room as before")
   sts.Cy = nil
-  assert(not lr.gate(sts, users, true), "one with no status here yet (heard before its status came): off")
-  assert(lr.gate({}, {}, true), "alone: on (nothing to relay, nothing lost)")
+  assert(lr.gate(sts, users, true) == "wait", "one with no status here yet (heard before its status came): wait")
+  assert(lr.gate({}, {}, true) == "yes", "alone: yes (nothing to relay, nothing lost)")
   assert(lr.can() and lr.mine() == true, "this extension has it: the status says lrelay")
+  -- held: on after SETTLE s of yes, off at once on a no, a wait keeps what it was
+  local m = {}
+  assert(not lr.held("yes", m, 0) and not lr.held("yes", m, lr.SETTLE - 1) and lr.held("yes", m, lr.SETTLE), "on after SETTLE s of yes, not before")
+  assert(lr.held("wait", m, lr.SETTLE + 5), "a status late for a moment: stays on (no switch to the mix and back)")
+  assert(not lr.held("no", m, lr.SETTLE + 6), "an older extension appears: off at once")
+  assert(not lr.held("wait", m, lr.SETTLE + 7) and not lr.held("yes", m, lr.SETTLE + 8), "and a wait or a fresh yes doesn't put it back on")
+  assert(lr.held("yes", m, 2 * lr.SETTLE + 8), "until SETTLE s of yes again")
 end
 
 -- ---- 2. the order -------------------------------------------------------------------------------------------------------------------
@@ -66,7 +73,10 @@ do
   local users = { ["bx.ts.net:47281"] = "Bx", ["cy.ts.net:47281"] = "Cy" }
   statuses = { { user = "Bx", lrelay = true, net = "wired" }, { user = "Cy", lrelay = true } }
   local mem, cfg, b = {}, { user = "Me" }, { song = "Cross Test" }
-  assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == true and #relayed == 1, "on: the extension told")
+  assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == false and #relayed == 1 and relayed[1]:find('"on":0', 1, true), "everyone relays, not yet SETTLE s: off")
+  now_p = now_p + lr.SETTLE
+  assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == true and #relayed == 2, "on: the extension told")
+  table.remove(relayed, 1)
   assert(relayed[1]:find('"on":1', 1, true) and relayed[1]:find('"all":1', 1, true), "everything through it")
   assert(logged[#logged]:find("through the room's relay", 1, true), "and the log says so")
   now_p = now_p + 2
@@ -81,7 +91,18 @@ do
   now_p = now_p + 0.5
   assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == false, "statuses looked at once a second: not yet")
   now_p = now_p + 1
+  assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == false, "read: yes, but not yet SETTLE s")
+  statuses[2] = nil -- (Cy's status late here for a moment: on its list, no status)
+  now_p = now_p + lr.SETTLE
+  assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == false, "a wait doesn't open it")
+  statuses[2] = { user = "Cy", lrelay = true }
+  now_p = now_p + 1.5
+  lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem)
+  now_p = now_p + lr.SETTLE
   assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == true, "then on again")
+  statuses[2] = nil
+  now_p = now_p + 2
+  assert(lr.tick(cfg, b, users, { all = true, hub = "Bx", me = "Me" }, mem) == true, "and a status late for a moment leaves it on")
 end
 
 -- ---- 4. hub_tick end to end ---------------------------------------------------------------------------------------------------------
