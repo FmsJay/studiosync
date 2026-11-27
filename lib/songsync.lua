@@ -21,9 +21,14 @@ songsync.LISTING = { "/*/session.json", "/*/session.json.sig", "/*/folder.json",
   "/*/rooms/*/room.json", "/*/rooms/*/room.json.sig",
   "/*/rooms/*/summary", "/*/rooms/*/status", "/*/rooms/*/chat" }
 
+-- REAPER's peak files (.reapeaks, beside the media or in its peaks folder) stay each computer's own: they're caches each REAPER builds from
+-- the file it has. Synced, every computer's build of the same take met in the shared folder, half-written ones and Syncthing's copies over one
+-- REAPER had open among them, and a take could keep a waveform built from part of the file, or none ("waveforms not showing on some tracks",
+-- findings 2026-11-27). First in each block: Syncthing goes by the first line that matches. (rt-setup)
+songsync.PEAKS = "(?d)*.reapeaks"
 -- The block's lines for the songs wanted here. Pure.
 function songsync.block(wanted)
-  local out = { BEGIN }
+  local out = { BEGIN, songsync.PEAKS }
   for _, p in ipairs(songsync.BAND_WIDE) do out[#out + 1] = "!" .. p end
   local list = {}
   for s in pairs(wanted) do list[#list + 1] = s end
@@ -37,7 +42,7 @@ end
 
 -- A computer keeping every song, with some deleted here (lib/localcopy.lua): everything comes, but those only as a listing. Pure.
 function songsync.block_except(gone)
-  local out = { BEGIN }
+  local out = { BEGIN, songsync.PEAKS }
   for _, p in ipairs(songsync.LISTING) do out[#out + 1] = "!" .. p end
   local list = {}
   for s in pairs(gone) do list[#list + 1] = s end
@@ -52,7 +57,7 @@ end
 function songsync.block_guest(allowed)
   -- (but not the studio's copy of StudioSync: band-wide, a guest's edit there reached every computer that updates through the folder, and ran.
   -- First match wins, so this goes before the band-wide lines. Full review, 0.59.44)
-  local out = { BEGIN, "/_tools" }
+  local out = { BEGIN, songsync.PEAKS, "/_tools" }
   for _, p in ipairs(songsync.BAND_WIDE) do out[#out + 1] = "!" .. p end
   local list = {}
   for s in pairs(allowed) do list[#list + 1] = s end

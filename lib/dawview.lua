@@ -263,14 +263,19 @@ function dawview.items_of(tr)
   end
   return out
 end
-local peak_cache, note_cache = {}, {} -- take pointer -> { sig, s / notes, at }
+local peak_cache, note_cache = {}, {} -- take pointer -> { sig, s / notes, at, wait }
+-- Peaks that are all silence: what REAPER hands back for a file whose peaks it hasn't built yet (a bandmate's take that just landed, a file still
+-- arriving). Kept as none and asked again later, each time twice as long after (up to 60 s): kept as they were, the take stayed a flat line on the
+-- Project page for good, the cache answering for it at every look after ("waveforms not showing on some tracks", findings 2026-11-27). Pure. rt-setup
+function dawview.flat(s) return s ~= nil and not s:find("[^0]") end
 local function take_peaks(take, pos, len, now, budget_end)
   local key = tostring(take)
   local src = reaper.GetMediaItemTake_Source(take)
-  local sig = table.concat({ src and reaper.GetMediaSourceFileName(src) or "", r3(reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")),
-    reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"), r3(len) }, "|")
+  -- (and the source's length: a take whose file grew, or came online, under the same name has a new source, and its peaks are read again. rt-setup)
+  local sig = table.concat({ src and reaper.GetMediaSourceFileName(src) or "", src and r3(reaper.GetMediaSourceLength(src)) or 0,
+    r3(reaper.GetMediaItemTakeInfo_Value(take, "D_STARTOFFS")), reaper.GetMediaItemTakeInfo_Value(take, "D_PLAYRATE"), r3(len) }, "|")
   local c = peak_cache[key]
-  if c and c.sig == sig and (c.s or now - c.at < dawview.PEAK_RETRY) then c.seen = true; return c.s, false end
+  if c and c.sig == sig and (c.s or now - c.at < (c.wait or dawview.PEAK_RETRY)) then c.seen = true; return c.s, false end
   if reaper.time_precise() > budget_end then return c and c.sig == sig and c.s or nil, true end -- (next tick)
   local n = dawview.peak_count(len)
   local want = n * 2 -- (twice the columns, each column the louder of two: REAPER's own reduction is a sample, not a maximum)
@@ -284,7 +289,9 @@ local function take_peaks(take, pos, len, now, budget_end)
     for i = 1, got do maxs[i] = t[i]; mins[i] = t[want + i] end
     s = dawview.peak_chars(maxs, mins, got, math.max(1, math.floor(n * got / want + 0.5)))
   end
-  peak_cache[key] = { sig = sig, s = s, at = now, seen = true }
+  local wait
+  if dawview.flat(s) then s, wait = nil, math.min(60, ((c and c.sig == sig and c.wait) or dawview.PEAK_RETRY / 2) * 2) end
+  peak_cache[key] = { sig = sig, s = s, at = now, seen = true, wait = wait }
   return s, false
 end
 local function take_notes(take, pos, len)

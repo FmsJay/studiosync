@@ -105,7 +105,7 @@ local function same_session(now_b)
 end
 local function still_ours() return reaper.ValidatePtr2(0, proj, "ReaProject*") and same_session(band.binding(proj)) end
 -- (no take baseline: the old take sync's send half is gone, and nothing read it. Round 1 review, 0.59.45)
-sync.audio_follow_tempo(proj) -- band audio follows tempo changes piece by piece (REAPER auto-stretch), never drifting
+-- (band audio follows tempo changes piece by piece once the tab has loaded: loading(), at the tick. rt-setup)
 
 -- Side by side (panel, Together): press play/stop/record as usual; every machine with it on follows, `lag`
 -- seconds behind whoever pressed (0 with Listen live; a bar or two with Play along, so you hear them in time with
@@ -1553,7 +1553,21 @@ local function perf_publish(now)
 end
 -- an error anywhere in a tick (a malformed cue from someone's machine, say) is logged, and Live sync carries on
 local said_at, sws_at = -math.huge, -math.huge
+-- (loading: nothing while REAPER loads or saves a project, and the first look only once this tab has loaded and gone quiet; then what waited for
+-- a loaded project. Alive meanwhile, so Autostart doesn't start another. lib/loadguard.lua, rt-setup)
+local guard = require("loadguard")
+local guard_st = guard.new(reaper.time_precise())
+local function loading()
+  if not reaper.ValidatePtr2(0, proj, "ReaProject*") then return false end -- (closed: tick_body says so and stops)
+  local wait = guard.hold(guard_st, proj, function(n)
+    band.try("sync.audio_follow_tempo", sync.audio_follow_tempo, proj) -- band audio follows tempo changes piece by piece (REAPER auto-stretch), never drifting
+    if n > 1 then band.log("'" .. b.song .. "' was loaded again in its tab: Live sync carries on now it has loaded") end
+  end)
+  if wait then reaper.SetExtState(band.SECTION, "live " .. key, tostring(reaper.time_precise()), false) end
+  return wait
+end
 tick = function()
+  if loading() then return reaper.defer(tick) end
   -- (the tab may have just been closed: check before asking about it, or REAPER stops us with an error box)
   -- (and not during a count-in or a start or stop still to come: the reload lost them, leaving the metronome on and "together_at" set. Review, 0.59.14)
   -- (nothing while anything records: lib/live.lua live.reload says nothing and hands nothing over then; it logged "reloaded" every 5 s through a
@@ -1577,12 +1591,14 @@ tick = function()
     sws_at = reaper.time_precise()
     band.try("band.sws_colours", band.sws_colours) -- (lib/band.lua)
     band.try("mirror.note_open_fx", require("mirror").note_open_fx, proj)
-    -- (with no audio device REAPER builds no peaks by itself: a bandmate's take stayed a blank box: Mac, 0.57.6)
-    if sync.landed_media and reaper.Audio_IsRunning() ~= 1 and reaper.EnumProjects(-1) == proj then
+    -- (with no audio device REAPER builds no peaks by itself: a bandmate's take stayed a blank box: Mac, 0.57.6. Built a step a tick, in any tab:
+    -- REAPER's "Build any missing peaks" held it in a modal box, front tab only. lib/peaks.lua, rt-setup)
+    if sync.landed_media and reaper.Audio_IsRunning() ~= 1 then
       sync.landed_media = nil
-      reaper.Main_OnCommand(40047, 0) -- Peaks: Build any missing peaks
+      require("peaks").want(proj)
     end
   end
+  if open then band.try("peaks.tick", require("peaks").tick, proj) end -- (missing peaks built a step at a time: lib/peaks.lua, rt-setup)
   lap("colours, open fx")
   local ok, go = xpcall(tick_body, debug.traceback)
   if not ok then

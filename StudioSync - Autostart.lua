@@ -57,6 +57,15 @@ end
 
 local REQUEST = band.home() .. "/install-request"
 local tried = {} -- project key -> when we last started it (don't hammer a Live sync that refuses to run)
+-- A tab is left alone until it has been open a look (2 s) and REAPER isn't loading or saving: its live audio switched off (plug-ins deleted, set
+-- offline) and its Live sync started only once it has loaded. A big project clicked around in as it opened crashed REAPER (James, findings
+-- 2026-11-27 item 14). lib/loadguard.lua, rt-setup
+local first_seen = {} -- tab key|file -> when a look first saw it
+local function tab_settled(key, fn)
+  local k, now = key .. "|" .. fn, reaper.time_precise()
+  first_seen[k] = first_seen[k] or now
+  return now - first_seen[k] >= 2
+end
 local at, seen_disk = reaper.time_precise(), nil -- (0 read as a gap, and held the first look back 30 s after REAPER opened. Onboarding review, 0.59.9)
 local keys_set = BANDSYNC_AUTOSTART_STARTED == true -- (carried over an update's reload: the startup steps ran again, reopening tabs and switching the front one. Review, 0.58.47)
 -- Something stopped syncing: the panel says so in red, and with the panel closed the tiny box comes back to say it. (Said once: closing the box again keeps it closed.)
@@ -155,6 +164,7 @@ local function loop_body()
   if reaper.time_precise() - at > 10 then held_until = reaper.time_precise() + 30 end
   at = reaper.time_precise()
   reaper.SetExtState(band.SECTION, "autostart beat", tostring(at), false) -- (Health says when Autostart stopped: lib/compat.lua. James, rt)
+  if require("loadguard").busy() then return end -- (REAPER is loading or saving a project: nothing opened, started or switched off now. rt-setup)
   -- the hidden REAPER that renders prints (lib/bgrender.lua) opens a copy from bandsync-render: nothing to do there
   for i = 0, 64 do
     local p, fn = reaper.EnumProjects(i)
@@ -167,6 +177,9 @@ local function loop_body()
     -- (Syncthing started here, once, when this computer is in a studio: only Live sync started it, and a version whose Live sync failed as it
     -- started left a restarted Windows or Mac computer without it, so the fix couldn't arrive. Not a login item. James's decision, Round 2 review, 0.59.46)
     if #band.bands() > 0 then band.try("services.ensure_syncthing", require("services").ensure_syncthing) end
+    band.try("recformat.once", require("recformat").once) -- (REAPER's recording format for new projects: 24-bit WAV, once. lib/recformat.lua, rt-setup)
+    -- (peak files that came from other computers go, once per studio, before any project opens: lib/peaks.lua, rt-setup)
+    for _, x in ipairs(band.bands()) do band.try("peaks.purge_once", require("peaks").purge_once, x.root, reaper.GetExtState(band.SECTION, "user")) end
     local ok, why = pcall(require("startup").on_start) -- (the band's songs, opened without REAPER's boxes: lib/startup.lua)
     if not ok then band.log("couldn't open the studio's projects by itself: " .. tostring(why)) end
     band.try("services.stop_old_relay", require("services").stop_old_relay) -- (a Mac's ReaNINJAM relay from an older StudioSync, left running: lib/services.lua)
@@ -274,7 +287,7 @@ local function loop_body()
     local proj, fn = reaper.EnumProjects(i)
     if not proj then break end
     local key = tostring(proj)
-    if fn ~= "" and band.autosync(fn) and band.binding(proj) then -- (the ExtState, the old key, or autosync.json: band.autosync)
+    if fn ~= "" and band.autosync(fn) and band.binding(proj) and tab_settled(key, fn) then -- (the ExtState, the old key, or autosync.json: band.autosync)
       -- A tab just opened: its live audio off now, as Live sync does when it starts there ("live began <tab>", this REAPER session). A song
       -- saved with ReaNINJAM in it opens with its windows up, and a tab behind waited up to half a minute for its Live sync (James, 0.59.19).
       if reaper.GetExtState(band.SECTION, "live began " .. key) == "" then

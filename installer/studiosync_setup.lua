@@ -79,6 +79,16 @@ if not ok or type(req) ~= "table" then step("read request", false, req); return 
 local ver = reaper.GetAppVersion()
 local major, minor = ver:match("^(%d+)%.(%d+)")
 step("REAPER 7.18 or newer", tonumber(major) > 7 or (tonumber(major) == 7 and tonumber(minor) >= 18), ver)
+-- REAPER's recording format for new projects: 24-bit WAV, as StudioSync records in its projects (only over FLAC or nothing, and not where this
+-- computer chose FLAC: lib/recformat.lua). Marked done, so StudioSync's own once-over doesn't do it again. rt-setup
+do
+  local okr, rf = pcall(require, "recformat")
+  if okr and type(rf) == "table" then
+    local okc, res = pcall(rf.apply, reaper.GetExtState("BandSync", "record wav") == "0")
+    if okc then reaper.SetExtState("BandSync", rf.KEY, "1", true) end
+    step("recording format for new projects", okc, okc and (res == "kept" and "left as it was" or res == "failed" and "couldn't set it: File > Project settings > Media" or "24-bit WAV") or res)
+  end
+end
 
 local root = (req.sync_root or ""):gsub("\\", "/"):gsub("/+$", "")
 local probe = io.open(root .. "/.bandsync-write-test", "w")

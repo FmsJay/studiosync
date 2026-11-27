@@ -109,8 +109,9 @@ local function open_song(song, room) -- room: for a new tab (nil when refreshing
   reaper.PreventUIRefresh(1)
   reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", s.srate, true)
   reaper.GetSetProjectInfo(proj, "PROJECT_SRATE_USE", 1, true)
-  -- record 24-bit FLAC: Send renders 24-bit, but can't restore detail a 16-bit recording never captured
-  if first_open then reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", band.FLAC, true) end
+  -- record 24-bit: WAV unless this computer chose FLAC (lib/streams.lua record_want; it set FLAC here, and Live sync's keep_format then changed
+  -- it again. James, 2026-11-23: WAV for every computer and studio. rt-setup)
+  if first_open then reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", require("streams").record_want(), true) end
   band.apply_tempo(proj, s.tempo)
   band.apply_markers(proj, s.markers)
   -- the band's timeline, not a local edit: Live sync mustn't send it back (lib/sync.lua timeline_sig)

@@ -1886,9 +1886,9 @@ function sync.receive(proj, cfg, song, room, can)
   -- (published while its first catch-up runs, for saved versions made from the panel: lib/recall.lua. Not kept past REAPER, and read only
   -- while Live sync runs in the tab. Round 3 review, 0.59.48)
   if sync.loading[pk] and not loading_said[pk] then loading_said[pk] = true; reaper.SetExtState(band.SECTION, "loading " .. pk, "1", false) end
-  if peaks_due[pk] and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0 then -- (an action works on the tab in front)
+  if peaks_due[pk] then -- (built a step a tick in any tab, not REAPER's modal "Build any missing peaks" in the front one: lib/peaks.lua, rt-setup)
     peaks_due[pk] = nil
-    reaper.Main_OnCommand(40047, 0) -- Peaks: Build any missing peaks
+    require("peaks").want(proj)
   end
   local budget = (sync.loading[pk] and reaper.GetPlayStateEx(proj) == 0) and sync.LOAD_BUDGET or sync.BUDGET
   local dir = sync.room_dir(cfg, song, room) .. "/events"

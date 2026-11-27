@@ -224,7 +224,7 @@ local function hand_over_tabs(tabs, first, open, finish)
       end
       since = nil
       local here = reaper.EnumProjects(-1)
-      local tb = t.band and band.binding(here)
+      local tb = startup.preload_this(t) and band.binding(here) -- (the tab you'll see only)
       if tb then pcall(function() require("sync").preload(here, band.for_tab(band.settings(), tb), tb.song, tb.room) end) end
     end
     repeat i = i + 1; t = tabs[i] until not t or (reaper.file_exists(t.path) and not open[startup.same_path(t.path)])
@@ -248,7 +248,13 @@ local function hand_over_tabs(tabs, first, open, finish)
   step()
 end
 
+-- Which reopened tab catches up before REAPER is yours: the one in front only. The others catch up in their own Live sync, a second's
+-- worth a pass with REAPER free in between, once each has loaded (lib/loadguard.lua): preloading each in turn held REAPER up to 20 s a tab
+-- while it opened, and a big session clicked around in meanwhile crashed it (James, findings 2026-11-27 item 14). Pure. rt-setup
+function startup.preload_this(t) return t.band == true and t.front == true end
 function startup.on_start(by_hand_over) -- (by_hand_over: what a Mac does, for testing it elsewhere)
+  -- (not while REAPER loads or saves a project itself: opening one then, from a script, is asking for trouble. Again in a moment. rt-setup)
+  if require("loadguard").busy() then return reaper.defer(function() startup.on_start(by_hand_over) end) end
   local plan = usable() and band.read_json(FILE)
   if not plan then return end
   os.remove(FILE)
@@ -280,9 +286,9 @@ function startup.on_start(by_hand_over) -- (by_hand_over: what a Mac does, for t
       if not first then reaper.Main_OnCommand(40859, 0) end -- New project tab
       first = false
       reaper.Main_openProject(t.path)
-      -- (each one ready now: clicking a tab later finds it caught up, not loading while you wait)
+      -- (the one in front ready now; the others catch up in their own Live sync once loaded: startup.preload_this)
       local here = reaper.EnumProjects(-1)
-      local tb = t.band and band.binding(here)
+      local tb = startup.preload_this(t) and band.binding(here)
       if tb then pcall(function() require("sync").preload(here, band.for_tab(band.settings(), tb), tb.song, tb.room) end) end
     end
     if t.front then front = startup.same_path(t.path) end

@@ -1090,20 +1090,80 @@ function liveaudio.bar_ui(ctx, ImGui, cfg, at_row, proj)
   end
 end
 
--- The input this computer sends: a list of REAPER's inputs. -> changed
+-- The talk mic (James, findings 2026-11-27: "set the talk mic to the correct input, which could avoid switching when armed"). Live audio's Talk
+-- is the input picked here; Auto sends an armed track as Play and, when the talk mic is that track's input, the mic goes once, as Play, so your
+-- talk "switches" into the track as you arm it. The picker names the tracks that record from each input, says when the talk mic is an armed
+-- track's, and offers the first input no track records from. tracks: { { name, inp = I_RECINPUT, armed } }; n: REAPER's input count.
+-- -> users (0-based input -> "Guitar (armed), Bass"), clash (the armed track the talk mic folds into, or nil), free (the first input nobody
+-- records from, outside the talk mic, or nil). Pure. (A second audio device, a USB headset beside the interface, needs the extension: it reads
+-- only REAPER's own device's inputs. docs/rt/rt-setup.md has the plan. rt-setup)
+function liveaudio.talk_advice(first, nch, n, tracks)
+  local users, used, clash = {}, {}, nil
+  for _, t in ipairs(tracks or {}) do
+    local inp = math.floor(tonumber(t.inp) or -1)
+    if inp >= 0 and inp & 4096 == 0 then
+      local ch, w = inp & 1023, inp & 1024 ~= 0 and 2 or 1
+      for c = ch, ch + w - 1 do
+        used[c] = true
+        local l = users[c] or {}
+        users[c] = l
+        l[#l + 1] = t.armed and (tostring(t.name) .. " (armed)") or tostring(t.name)
+      end
+      if t.armed and not clash and liveaudio.input_overlaps(inp, first, nch) then clash = tostring(t.name) end
+    end
+  end
+  local free
+  for i = 0, (n or 0) - nch do
+    local ok = not (i < first + nch and first < i + nch)
+    for c = i, i + nch - 1 do if used[c] then ok = false end end
+    if ok then free = i; break end
+  end
+  local words = {}
+  for c, l in pairs(users) do words[c] = table.concat(l, ", ") end
+  return words, clash, free
+end
+local function advice(first, nch, n) -- (the project in front's tracks, read once a second: the picker draws every frame)
+  local now = reaper.time_precise()
+  local key = first .. ":" .. nch .. ":" .. n
+  if S.advice and S.advice.key == key and now - S.advice.at < 1 then return S.advice.users, S.advice.clash, S.advice.free end
+  local proj, tracks = reaper.EnumProjects(-1), {}
+  for i = 0, (proj and reaper.CountTracks(proj) or 0) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local tag = band.track_ext(tr, "band_local")
+    if tag == "" or tag == "yours" then -- (StudioSync's own helper tracks aren't anyone's input)
+      tracks[#tracks + 1] = { name = select(2, reaper.GetTrackName(tr)), inp = reaper.GetMediaTrackInfo_Value(tr, "I_RECINPUT"),
+        armed = reaper.GetMediaTrackInfo_Value(tr, "I_RECARM") == 1 }
+    end
+  end
+  local users, clash, free = liveaudio.talk_advice(first, nch, n, tracks)
+  S.advice = { key = key, at = now, users = users, clash = clash, free = free }
+  return users, clash, free
+end
+-- The talk mic: a list of REAPER's inputs, each with the tracks that record from it. -> changed
 function liveaudio.input_picker(ctx, ImGui, id, width)
   local first, nch = liveaudio.mine()
   local n = reaper.GetNumAudioInputs and reaper.GetNumAudioInputs() or 0
+  local users, clash, free = advice(first, nch, n)
   ImGui.SetNextItemWidth(ctx, width)
   local changed = false
   if ImGui.BeginCombo(ctx, id, n > 0 and (input_name(first) .. (nch > 1 and (" + " .. (nch - 1) .. " more") or "")) or "no inputs") then
     for i = 0, n - 1 do
-      if ImGui.Selectable(ctx, input_name(i) .. "##lai" .. i, i == first) then liveaudio.set_mine(i); changed = true end
+      if ImGui.Selectable(ctx, input_name(i) .. (users[i] and ("  ·  " .. users[i]) or "") .. "##lai" .. i, i == first) then liveaudio.set_mine(i); changed = true end
     end
     if n == 0 then ImGui.TextDisabled(ctx, "No audio inputs: pick your interface in REAPER's Preferences > Audio > Device.") end
     ImGui.EndCombo(ctx)
   end
-  ImGui.SetItemTooltip(ctx, "Only on this computer. Your mic or instrument input (the first of a stereo pair). Changing it restarts live audio within a second.")
+  ImGui.SetItemTooltip(ctx, "Your talk mic, only on this computer: the input you talk into (the first of a stereo pair). Pick one no track records " ..
+    "from (a mic of its own, a spare input), and your talk stays separate when you arm a track. Changing it restarts live audio within a second.")
+  if clash then
+    ImGui.PushTextWrapPos(ctx, 0)
+    ImGui.TextColored(ctx, require("theme").YELLOW, "Your talk mic is what " .. clash .. " records from: while it's armed, your talk goes as part of its " ..
+      "playing, not on its own.")
+    ImGui.PopTextWrapPos(ctx)
+    if free and ImGui.SmallButton(ctx, "Talk on " .. input_name(free) .. " instead##lafree") then liveaudio.set_mine(free); changed = true end
+    if free then ImGui.SetItemTooltip(ctx, "The first input no track records from. Plug the mic you talk into there (or pick another above).") end
+  end
+  if changed then S.advice = nil end
   return changed
 end
 
@@ -1141,7 +1201,7 @@ function liveaudio.studio_ui(ctx, ImGui, cfg, may)
       "the hub records if it costs too much, and falls back to everyone's own streams within a jitter buffer when the hub drops.")
   else ImGui.TextDisabled(ctx, "The song's hub mixes it " .. word(from) .. ".") end
   local _, nch, kbps = liveaudio.mine()
-  liveaudio.input_picker(ctx, ImGui, "This computer sends##liveaudioin", 220)
+  liveaudio.input_picker(ctx, ImGui, "Talk mic##liveaudioin", 220)
   local sch, stereo = ImGui.Checkbox(ctx, "Stereo pair##liveaudiost", nch >= 2)
   if sch then liveaudio.set_mine(nil, stereo and 2 or 1) end
   ImGui.SameLine(ctx)

@@ -22,7 +22,7 @@ if not b.song and reaper.GetExtState(band.SECTION, "prepared " .. tostring(proj)
 end
 reaper.DeleteExtState(band.SECTION, "prepared " .. tostring(proj), false)
 if not b.song then -- (only a setting, nothing recorded changes: done here, without a question)
-  reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", band.FLAC, true)
+  reaper.GetSetProjectInfo_String(proj, "RECORD_FORMAT", require("streams").record_want(), true) -- (24-bit WAV, or FLAC where this computer chose it. rt-setup)
   reaper.GetSetProjectInfo(proj, "PROJECT_SRATE", band.srate(proj), true)
   reaper.GetSetProjectInfo(proj, "PROJECT_SRATE_USE", 1, true)
 end

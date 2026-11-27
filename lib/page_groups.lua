@@ -534,6 +534,15 @@ function pg.draw_projects(env)
     table.sort(rows, function(a, z) return a.song:lower() < z.song:lower() end)
   end
   back_button(env)
+  -- (with no project open, the way to every studio is here too: the studio pill at the top is hidden once the studio you were in is left or
+  -- closed, and this page had no other way back, so another studio couldn't be picked. Findings 2026-11-27, rt-setup)
+  if not env.project() then
+    if ImGui.SmallButton(ctx, "Your studios##pgall") then pg.root = nil; env.go("Groups") end
+    ImGui.SetItemTooltip(ctx, "All your studios: switch to another, invite people, start or join one.")
+    if groups.is_old(root) or (reaper.file_exists(root .. "/_band/closed.json") and groups.closed_ok(root)) then
+      ImGui.TextColored(ctx, theme.YELLOW, "You've left " .. info.name .. ", or it was closed: nothing syncs there any more. Pick another studio in Your studios.")
+    end
+  end
   -- the tab in front, if it isn't in a group yet, whatever's in it: an empty new tab showed no way to share at all (James)
   local front = reaper.EnumProjects(-1)
   local plain = not band.binding(front)
