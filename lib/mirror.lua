@@ -5258,6 +5258,7 @@ function W.prints(w)
 end
 mirror.gone_why = mirror.gone_why or {} -- tostring(proj) .. oid -> "user" (a deletion of this person's) or "not": W.gone's judgement, until seen again
 mirror.empty_since = mirror.empty_since or {} -- tostring(proj) -> when a look first found it with no tracks and the studio's records (W.gone)
+mirror.seen_here = mirror.seen_here or {} -- tostring(proj) -> { oid = true }: every object a look has seen since this opening (W.gone's (2b), mirror.watch)
 mirror.EMPTY_SECS = 10 -- seconds an emptied project is left as it is before the studio's tracks are put back (W.gone, rt-guard)
 mirror.guard_said = mirror.guard_said or {}
 mirror.order_owed = mirror.order_owed or {} -- tostring(proj) -> tracks W.gone put back wait for mirror.keep_order (mirror.watch, at its end)
@@ -5350,9 +5351,12 @@ function W.gone(w)
       hold_empty = now - mirror.empty_since[pk] < mirror.EMPTY_SECS
       if hold_empty then mirror.guard_say(pk .. " empty", now, "this project has no tracks but still holds the studio's: nothing is sent to the others for it, and if it stays empty the studio's tracks come back") end
     end
+    -- (and the object was here: a look since this opening saw it, or StudioSync put it here since the last look. A record whose object this
+    -- session never had is no deletion of this person's, whatever they edited meanwhile. rt-sync2 section 6 (2b), rt-sync2c)
+    local was_here, put_here = mirror.seen_here[pk] or {}, w.remembered or {}
     for _, g in ipairs(gone) do
       local k = pk .. g.oid
-      mirror.gone_why[k] = mirror.gone_why[k] or (evidence and "user") or (not hold_empty and "not") or nil
+      mirror.gone_why[k] = mirror.gone_why[k] or (evidence and (was_here[g.oid] or put_here[g.oid]) and "user") or (not hold_empty and "not") or nil
     end
   end
   for _, g in ipairs(gone) do
@@ -5801,7 +5805,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- the tab kept the old project's edit count as "you edited", and W.gone took what the file lacked for a deletion. rt-guard)
   local opened_now = mirror.on_open(proj)
   if opened_now then
-    mirror.edit_seen[pk], mirror.looks[pk], mirror.order_seen[pk] = nil, nil, nil -- (order_seen: W.order's first look. rt-sync2c)
+    mirror.edit_seen[pk], mirror.looks[pk], mirror.order_seen[pk], mirror.seen_here[pk] = nil, nil, nil, nil -- (order_seen: W.order's first look. rt-sync2c)
     for k in pairs(mirror.gone_why) do if k:sub(1, #pk) == pk then mirror.gone_why[k] = nil end end
   end
   mirror.hold_colours()
@@ -5835,7 +5839,7 @@ function mirror.watch(proj, cfg, song, room, opts)
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
     back_tracks = {}, held_tracks = {}, clean = {}, unasked = {},
     -- (the last look's record, with each item's reading and the map then, and this look's map: W.send. rt-fix9)
-    look_was = L, map_now = band.capture_tempo(proj) }
+    look_was = L, map_now = band.capture_tempo(proj), remembered = remembered }
   local top = reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil
   local es = mirror.edit_seen[pk]
   -- (a new undo point of someone's on top since the last look: what a project emptied of tracks needs before its deletions go. W.gone, rt-guard)
@@ -5880,7 +5884,9 @@ function mirror.watch(proj, cfg, song, room, opts)
     if not w.first_here then for _, k in ipairs(now_back) do if k:sub(1, #pk) == pk then mirror.reopened[k] = nil end end end
   end
   local raw = {} -- (each object's hash as read, before W.one re-anchors any: what the next look compares with)
-  for _, o in ipairs(objs) do raw[o.oid] = o.hash end
+  local was_here = mirror.seen_here[pk] or {}
+  mirror.seen_here[pk] = was_here
+  for _, o in ipairs(objs) do raw[o.oid] = o.hash; was_here[o.oid] = true end
   local first_here = w.first_here
   local playing = reaper.GetPlayStateEx(proj) & 1 == 1
   local function mine(id) return sync.is_mine(id, me) end -- (event ids start with their author's name, then the date: "James" isn't "James-Laptop". 0.58.82)

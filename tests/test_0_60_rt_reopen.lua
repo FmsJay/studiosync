@@ -177,4 +177,26 @@ do
   print("rt-reopen 2: a knob turned and the file opened again inside the minute after its chain landed still goes out")
 end
 
+-- ---- 3. a record whose object no look of this session ever saw is no deletion of this person's, whatever they edited -------------------------
+do
+  local S, A, B = song("Reopen3")
+  T = T + 5
+  S.edit(B, function(F) F.add_track("Bass") end)
+  local ev = S.events(function(v) return v.obj == "track" and v.name == "Bass" end)[1]
+  assert(ev, "Bee's Bass went out")
+  -- on James's, Bass's record turns up without the track (as records merged in from a file would: nothing of this session put it there)
+  S.as(A)
+  reaper.SetProjExtState(A.F.proj, mirror.SEC, ev.oid, string.format("%d|%s|%s|", ev.rev, ev.hash or "x", ev.id))
+  -- James edits something else, and a full look reads every record
+  A.F.clock = A.F.clock + 200
+  S.edit(A, function() reaper.SetMediaTrackInfo_Value(S.track(A, "Gtr"), "D_VOL", 0.5) end)
+  assert(#S.events(function(v) return v.oid == ev.oid and v.gone end) == 0, "nothing sent for a track this session never had (was: deleted for everyone, as James had edited)")
+  assert(S.track(A, "Bass"), "it's put back from the studio: " .. S.names(A))
+  -- the same track, once a look has seen it here, deleted by hand: that goes
+  T = T + 5
+  S.edit(A, function() reaper.DeleteTrack(S.track(A, "Bass")) end)
+  assert(#S.events(function(v) return v.oid == ev.oid and v.gone end) == 1, "a track a look saw, deleted by hand, goes out")
+  print("rt-reopen 3: a deletion needs the object to have been here: a record this session never saw the object of is put back, not sent")
+end
+
 print("ok rt-reopen")
