@@ -286,8 +286,10 @@ assert(html:find("tabs.js", 1, true) < html:find("history.js", 1, true), "after 
 assert(ui:find("webui.ACTIONS.history = true", 1, true) and ui:find('require("webhistory").tick', 1, true) and ui:find('require("webhistory").action', 1, true), "webui.lua routes it")
 assert(pjs:find("ssTabs.add('history'", 1, true) and pjs:find("T.hist", 1, true), "history.js makes its tab and reads hist")
 assert(not pjs:find("innerHTML", 1, true), "names go in as text")
--- read-only: the page sends nothing but want, and the module changes nothing in REAPER
-for call in pjs:gmatch("ssTabs%.act%(([^)]*)%)") do assert(call:find("want", 1, true), "the page only says it's looking: " .. call) end
+-- read-only: the time lapse sends nothing but want, and the module changes nothing in REAPER (Changes, Versions and Mixes after it in
+-- history.js do change things, only after Live sync's ask and the page's confirm: tests/test_0_60_rt_ui3.lua, rt-ui3)
+local lapse = assert(pjs:match("^(.-)\n// History > Changes, Versions and Mixes"), "the time lapse comes first in history.js")
+for call in lapse:gmatch("ssTabs%.act%(([^)]*)%)") do assert(call:find("want", 1, true), "the page only says it's looking: " .. call) end
 for _, f in ipairs({ "SetMedia", "Set_", "SetProj", "SetTrack", "DeleteTrack", "Undo_", "Main_OnCommand", "SetEnvelope", "AddProjectMarker", "panel_do", "sync.post", "write_json" }) do
   assert(not src:find(f, 1, true), "webhistory changes nothing: " .. f)
 end
