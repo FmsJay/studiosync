@@ -1,0 +1,4 @@
+// The StudioSync window's title-bar and taskbar icon (webui_dock.cpp set_icon loads icon 101 from this DLL). studiosync.ico is
+// lib/webui/icon.svg drawn at 256 px (its two bars in a grey that reads on light and dark title bars) and scaled to 16-256 px. Windows only;
+// built by build_windows.cmd. GPL-3.0-or-later. (rt-ui8)
+101 ICON "studiosync.ico"

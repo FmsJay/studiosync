@@ -90,6 +90,9 @@ static bool on_command(int command, int flag)
   if (command == PLAY_SKIP_SEL) note_play_skip(); // (not ours: REAPER runs it as ever)
 #endif
   if (!command || command != g_cmd) return false;
+#ifndef REAPERSONA
+  if (webui_dock_is_ui()) { webui_dock_button(); return true; } // (the web view is the UI, ExtState "ui" = "web": its window, not the panel. rt-ui8)
+#endif
   if (!g_target) g_target = find_target(); // (once found it stays: a script keeps its command id for the session)
   if (g_target) Main_OnCommand(g_target, 0);
   else {
@@ -104,6 +107,9 @@ static bool on_command(int command, int flag)
 static int on_toggle(int command)
 {
   if (command != g_cmd) return -1;
+#ifndef REAPERSONA
+  if (webui_dock_is_ui()) return webui_dock_lit(); // (lit while the web view is open, in any shape. rt-ui8)
+#endif
   if (!g_target) return 0;
   return GetToggleCommandState(g_target) == 1 ? 1 : 0;
 }
