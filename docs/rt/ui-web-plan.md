@@ -677,3 +677,9 @@ together, Project's Follow menu, Plug-ins, Devices, the loading state).
 9. **Who answers the page with no studio project open**: Autostart (Lua, no extension change, proposed for now) or a per-topic poll in the
    extension (cleaner, needs a release)?
 10. **AI**: hide lyrics, mix feedback, recap and take names (proposed, code kept) or delete them?
+
+## James's decisions (2026-11-27)
+1. Tab names and renames: accepted as proposed ("In control" replaces "driver").
+2. When REAPER takes the focus: shrink to the strip by default, with the other behaviours (button, stay as it is, go behind REAPER, fade) as options in Settings.
+3. Edit switch: back to View on every open of the Project tab and after 5 minutes idle.
+4-10. All other proposals accepted: phone may restore history with an in-page confirm but not change studio settings; Classic panel kept until the web view has passed a band test; "View only" folds into the strip; History playback through REAPER (SWS) by default; Mixer inside Project, Mixes under History; Autostart answers the page with no project open; the other AI tools hidden, not deleted.
