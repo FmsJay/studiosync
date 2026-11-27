@@ -112,6 +112,9 @@ async function page(url, o = {}) {
   await cdp('Page.navigate', { url });
   for (let i = 0; i < 80; i++) { await sleep(100); try { if (await ev('document.readyState === "complete" && !!window.ssTabs && !!window.ssCallTest && !!window.ssCallTest.state().pid')) break; } catch (e) {} }
   await sleep(500);
+  // (call.js only sees the topics the stream sends after its own script has run, and on a loaded machine the first snapshot can come before that: this page gets them all again)
+  for (const c of clients) if (c.page === url.replace(/#.*$/, '')) c.write('data: ' + JSON.stringify({ engine: state.engine, topics: state.topics }) + '\n\n');
+  await sleep(200);
   const p = { id: t.id, cdp, ev, ws };
   // a button by its words inside a part of the page, clicked as a real mouse click
   p.press = async (label, scope = 'body') => {
@@ -170,8 +173,8 @@ await main.press('Messages', '.ckinds');
 
 // ---- the top bar's call controls ------------------------------------------------------------------------------------------------------------
 ok(await main.ev('(() => { const t = document.getElementById("sscall"); return !!t && t.parentNode.tagName === "HEADER" && t.previousElementSibling.id === "sspill"; })()'), 'the call controls sit in the top bar, after the status pill');
-ok(await main.has('Mic on', '#sscall') && await main.has('Deafen', '#sscall'), 'live audio running: Mic on and Deafen in the top bar');
-ok(await main.ev('document.getElementById("call").hidden') && await main.has('Video', '#sscall'), 'the video section starts put away, with Video to open it');
+ok(await until(async () => (await main.has('Mic on', '#sscall')) && (await main.has('Deafen', '#sscall'))), 'live audio running: Mic on and Deafen in the top bar');
+ok(await until(async () => (await main.ev('document.getElementById("call").hidden')) && (await main.has('Video', '#sscall'))), 'the video section starts put away, with Video to open it');
 await main.press('Mic on', '#sscall');
 ok(await until(() => actions.some((a) => a.topic === 'rtc' && a.t === 'la' && a.k === 'mute' && a.on === true)), 'Mic on: asks Live sync to mute me');
 rtcExtra = { live: true, la: { mute: true } }; pushRtc(); await sleep(300);
