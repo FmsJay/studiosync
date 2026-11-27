@@ -1,4 +1,4 @@
-/* The Try tab (tryfx.js, lib/hoptry.lua). Uses style.css's and pages.css's colours, so light/dark follow them. GPL-3.0-or-later. (rt-hopvst, rt-borrow) */
+/* The Try tab (tryfx.js, lib/hoptry.lua). Uses style.css's and pages.css's colours, so light/dark follow them. GPL-3.0-or-later. (rt-hopvst, rt-borrow, rt-ui10a) */
 .tfnote { font-size: 13px; margin: 4px 0 8px; }
 .tfsearch, .tffilter { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 6px 10px; width: 100%; box-sizing: border-box; }
 .tffilter { margin: 6px 0; font-size: 13px; }
@@ -30,3 +30,20 @@ button.tfyes { border-color: var(--accent); font-weight: 600; }
 .tftoast[hidden] { display: none; }
 .tfask { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; font-size: 13px; }
 .tfask > span { flex: 1 1 220px; min-width: 0; overflow-wrap: anywhere; }
+/* the Plug-ins tab's other subs: This project, Find a plug-in, Plug-in pack (rt-ui10a) */
+.tfp .tfinfo { flex: 1 1 260px; min-width: 0; overflow-wrap: anywhere; }
+.tfwarn { color: var(--warn); }
+.tfnotall .tfname { color: var(--dim); font-weight: normal; }
+.tfp .tfitem > .dim { flex: 1 1 140px; min-width: 0; overflow-wrap: anywhere; font-size: 13px; }
+.tfpicker { padding: 8px 10px; margin: 6px 0 10px; border: 1px solid var(--accent); border-radius: 10px; }
+.tfpicker[hidden], .tfp [hidden] { display: none; }
+.tfpicks { max-height: 40vh; overflow-y: auto; margin-top: 6px; }
+.tfkit { display: flex; flex-wrap: wrap; gap: 0 4px; margin: 6px 0; }
+.tfkit .pfield { flex: 1 1 200px; justify-content: space-between; margin-right: 0; }
+.tfkit input[type="number"] { font: inherit; width: 4.5em; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; }
+.tfp select { font: inherit; color: var(--text); background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 3px 6px; max-width: 100%; }
+.tfp .prow .tfsearch { flex: 1 1 180px; width: auto; }
+.tfmake summary, .tfp details summary { cursor: pointer; margin: 6px 0; }
+button.tfrm { color: var(--rec); }
+/* ?pop=plugins: the whole tab in its own window, its sub-tabs still there (a pop-out hides them otherwise) */
+body.sspop.tfpoptab .sstab[data-tab="plugins"] > .sssubs:not([hidden]) { display: flex; }
