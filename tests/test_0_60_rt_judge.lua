@@ -228,6 +228,16 @@ do
   -- through the judge: the same merge, in any order
   local s = judge.settled({ nudged, base, moved }, mirror.reader(RD), { mergeable = mirror.mergeable })
   assert(s.v and s.v.track == "T-GTR", "the judge's answer is that merge")
+  -- three edit leaves that all saw a deletion (a restore and two edits on it): the merge of two of them rests on the deletion itself, so it
+  -- can't be built, and that's no merge, not one on its way. Taken for missing, the answer stayed incomplete and a late joiner never had the
+  -- item (the soak's seed 5009). The newest leaf stands.
+  local gone = put({ id = "James-20261122-120200Z-5", rev = 4, hlc = 3000, user = "James", track = "T-BASS", gone = true, base_ev = nudged.id, base = 3 })
+  local restore = put({ id = "James-20261122-120210Z-6", rev = 5, hlc = 3100, user = "James", track = "T-BASS", state = item(33.25), base_ev = gone.id, base = 4 })
+  local on_r1 = put({ id = "Bee-20261122-120220Z-7", rev = 6, hlc = 3200, user = "Bee", track = "T-BASS", state = item(20), base_ev = gone.id, base = 4 })
+  local on_r2 = put({ id = "Cee-20261122-120221Z-8", rev = 6, hlc = 3300, user = "Cee", track = "T-BASS", state = item(21), base_ev = gone.id, base = 4 })
+  local s2 = judge.settled({ base, moved, nudged, gone, restore, on_r1, on_r2 }, mirror.reader(RD), { mergeable = mirror.mergeable })
+  assert(s2.complete, "a merge that can't be built isn't one on its way: complete")
+  assert(s2.v == on_r2, "the newest leaf stands: " .. tostring(s2.v and s2.v.id))
 end
 
 print("ok judge: " .. merges .. " merges, " .. gones .. " gone, " .. restores .. " restores, " .. incompletes .. " incomplete")

@@ -3784,8 +3784,11 @@ local function event_file(room_dir, evid, depth)
   if merged[key] then return merged[key] end
   depth = (depth or 0) + 1
   if depth > 12 then return nil end
-  local w, l = event_file(room_dir, w_id, depth), event_file(room_dir, l_id, depth)
-  if not (w and l) then return nil, true end -- (a side not here yet: the judge waits for it. rt-sync2b)
+  local w, w_lost = event_file(room_dir, w_id, depth)
+  local l, l_lost = event_file(room_dir, l_id, depth)
+  -- (a side that is itself a merge with a version not here yet: the judge waits for it. One that can't be built at all (its sides share only a
+  -- deletion, say) is no merge, not one on its way: taken for missing, the judge waited on it for good. rt-sync2b)
+  if not (w and l) then return nil, (w_lost or l_lost) or nil end
   if not (mirror.mergeable(w) and mirror.mergeable(l) and w.obj == l.obj) then return nil end
   local base_id, missing = common_base(room_dir, w, l)
   -- (a version one of them builds on isn't here yet, so where the two meet can't be told: no merge for now, and none remembered. With "the
