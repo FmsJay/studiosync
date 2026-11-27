@@ -199,4 +199,35 @@ local want = { E.id, G.id, R.id }
 table.sort(want)
 assert(table.concat(sup, ",") == table.concat(want, ","), "support: the leaves and the deletion: " .. table.concat(sup, ","))
 
+-- An item's track is merged as an attribute (lib/mirror.lua event_file, judge step 5): Bee moved the item to another track while James nudged
+-- it with a newer rev. Copied from the winner, the move was lost everywhere and each log said "both changes are kept" (item-track-merge).
+do
+  reaper = reaper or {}
+  local files = {}
+  local band = require("band")
+  local proxy = setmetatable({}, { __index = band })
+  proxy.read_json = function(path) local v = files[path]; if type(v) == "table" then return band.json_decode(band.json_encode(v)) end end
+  package.loaded.band = proxy
+  package.loaded.direct = package.loaded.direct or { path = function(_, dir, f) return dir .. "/" .. f end }
+  local mirror = require("mirror")
+  local RD = "C:/fake/Song/rooms/main"
+  local function item(pos) return "<ITEM\nPOSITION " .. pos .. "\nSNAPOFFS 0\nLENGTH 2\nLOOP 1\nNAME \"Bass 1\"\n<SOURCE WAVE\nFILE \"{media}/b.flac\"\n>\n>\n" end
+  local function put(v) v.type, v.obj, v.oid = "obj", "item", "I-B-1"; files[RD .. "/events/" .. v.id .. ".json"] = v; return v end
+  local base = put({ id = "James-20261122-120000Z-1", rev = 1, hlc = 1000, user = "James", track = "T-BASS", state = item(10) })
+  local moved = put({ id = "Bee-20261122-120100Z-2", rev = 2, hlc = 2000, user = "Bee", track = "T-GTR", state = item(10), base_ev = base.id, base = 1 })
+  local nudged = put({ id = "James-20261122-120130Z-3", rev = 3, hlc = 2500, user = "James", track = "T-BASS", state = item(33.25), base_ev = base.id, base = 1 })
+  local m = mirror.event_file(RD, mirror.merge_id(nudged.id, moved.id))
+  assert(m, "the two merge")
+  assert(m.track == "T-GTR", "the merge sits on the track Bee moved it to, not " .. tostring(m.track))
+  assert(m.state:find("POSITION 33.25", 1, true), "and has James's nudge")
+  assert(#(m.clashed or {}) == 0, "nothing clashed: both changes are really kept")
+  -- both moved it, each to another track: the winner's track, and a clash said
+  local other = put({ id = "James-20261122-120140Z-4", rev = 3, hlc = 2600, user = "James", track = "T-KEYS", state = item(10), base_ev = base.id, base = 1 })
+  local m2 = mirror.event_file(RD, mirror.merge_id(other.id, moved.id))
+  assert(m2.track == "T-KEYS" and m2.clashed[#m2.clashed] == "\0track", "both moved it: the winner's track, a clash")
+  -- through the judge: the same merge, in any order
+  local s = judge.settled({ nudged, base, moved }, mirror.reader(RD), { mergeable = mirror.mergeable })
+  assert(s.v and s.v.track == "T-GTR", "the judge's answer is that merge")
+end
+
 print("ok judge: " .. merges .. " merges, " .. gones .. " gone, " .. restores .. " restores, " .. incompletes .. " incomplete")

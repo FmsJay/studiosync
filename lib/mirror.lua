@@ -3837,6 +3837,13 @@ local function event_file(room_dir, evid, depth)
   if only_w then ws = bs elseif only_l then ls = bs end
   v.state, v.clashed = mirror.merge_state(w.obj, bs, ws, ls, l.user)
   if v.state == nil then return nil end
+  -- (which track an item sits on is one more attribute, merged three-way: copied from the winner, a loser's move to another track was lost
+  -- when the winner only nudged the item, and every log said "both changes are kept". Both moved it elsewhere: the winner's, a clash.
+  -- rt-sync2 judge step 5; the soak's scenario item-track-merge. rt-sync2b)
+  if w.obj == "item" and l.track ~= nil and l.track ~= b.track then
+    if w.track == b.track then v.track = l.track
+    elseif w.track ~= l.track then v.clashed = v.clashed or {}; v.clashed[#v.clashed + 1] = "\0track" end
+  end
   v.retimed, v.w_retimed, v.l_retimed = nil, only_w or nil, only_l or nil -- (the merge isn't the map's move alone; which side was: mirror.receive's words)
   v.id, v.rev, v.hash, v.base, v.base_ev, v.loser = evid, math.max(w.rev or 0, l.rev or 0), nil, b.rev or 0, base_id, l
   -- (and the files the loser's plug-ins load (a sampler's sample, an impulse): their plug-in is in the merge too, and with the winner's list

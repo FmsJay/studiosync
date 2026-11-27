@@ -2,7 +2,7 @@
  "name": "item-track-merge",
  "what": "rt-sync2 judge step 5 / Recommendation 2: an item moved to another track by one computer while another nudges it, both made apart. The merge (mirror.event_file) copies the winner's fields and merges only the state, and the track an item sits on is a field, not part of the state: when the nudge is the newer side (here a higher rev: James's nudge comes past SESSION_SECS, so it isn't rev 1 any more), the move is lost on every computer, and each log says \"both changes are kept\". Reproduced 2026-11-27 at bf500ba. The oracle can't see it (all three agree), so the check says what each person did must stand: Bass 1 on Gtr (Bee) at 33.25 s (James).",
  "phase": 2,
- "today": "fails",
+ "today": "passes",
  "signature": "intent:James: Bass # sits on Gtr (Bee's move) a",
  "seed": 1,
  "faults": "clean",
