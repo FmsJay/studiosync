@@ -13,6 +13,7 @@
 --  9. A rank an older StudioSync copied into a version (its Undo puts an old state back whole) isn't taken for the track's place.
 -- 10. With old computers in the room: the order list follows the ranks (old computers go to the newest list), and an older StudioSync's move
 --     merged with a new edit keeps its place.
+-- 11. The order comes from the versions held, not from a rank left on a track (a version recorded without being put in place: sync.set_back).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -340,6 +341,24 @@ do
   assert(S.names(A) == "Bass 2, Drums, Gtr, Keys" and S.names(B) == S.names(A), "both: the rename and the old computer's move (was: the move lost to the rank both had before): " ..
     S.names(A) .. " / " .. S.names(B))
   print("rt-rank 10: the order list follows the ranks for old computers, and an old computer's move merged with a new edit keeps its place")
+end
+
+-- ---- 11. the order comes from the versions held, not from the ranks left on the tracks ------------------------------------------------------
+do
+  local S, A, B = song("Rank11")
+  S.recv(B)
+  T = T + 5
+  S.move(A, "Keys", 0) -- (James: Keys to the top)
+  local mv = S.events(function(v) return v.obj == "track" and v.name == "Keys" and v.moved ~= nil end)[1]
+  -- Bee's computer records James's version without putting it in place, as a claimer's answer to a rename does (sync.set_back): the rank
+  -- left on her Keys is the old one
+  S.as(B)
+  mirror.set_back(B.F.proj, mv, "(test)")
+  reaper.SetProjExtState(B.F.proj, sync.APPLIED, mv.id, "1") -- (and marks it done, as sync.receive's set_back does)
+  S.keep(B); S.keep(A)
+  assert(S.names(B) == "Keys, Drums, Bass, Gtr" and S.names(A) == S.names(B), "Bee's goes by the version she holds: " .. S.names(B) .. " / " .. S.names(A))
+  assert(S.rank(B, "Keys") == mv.state.rank, "and the rank on her Keys is that version's again")
+  print("rt-rank 11: the order comes from the versions held, not from a rank left on a track")
 end
 
 print("ok rt-rank")

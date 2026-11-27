@@ -6504,7 +6504,7 @@ function mirror.keep_order(proj, cfg, song, room)
     local l = ranked and list_order(proj, room_dir, mirrored_order(proj))
     if ranked and table.concat(l or {}, ",") ~= table.concat(mirrored_order(proj), ",") then mirror.publish_order(proj, room_dir, cfg.user) end
   end
-  if ranked then want = mirror.rank_order(proj, room_dir) -- (the studio's order from the tracks' own ranks: lib/rank.lua. rt-sync2c)
+  if ranked then want = mirror.rank_order(proj, room_dir, nil, true) -- (the studio's order from the tracks' versions' ranks: lib/rank.lua. rt-sync2c)
   else
     want = list_order(proj, room_dir, here)
     if not want then -- (nobody's said yet: whoever's here first, and what they have then, is where everyone starts)
@@ -6559,18 +6559,28 @@ function mirror.ranked(proj)
   return false
 end
 -- The studio's track order by rank, as oids. `except`: one left out (a track being placed).
-function mirror.rank_order(proj, room_dir, except)
+-- A track's place as the version held here gives it (mirror.rank_from): its rank, or none and the track its version sits under. A track
+-- with no version yet (made here, not sent): the rank on it. The order is worked out from the versions every computer holds, not from what
+-- happens to be on each track: a claimer's answer to a rename (sync.set_back) records the bandmate's version without putting it in place, and
+-- the rank left on the track kept that computer in another order for good (the soak's 15005). rt-sync2c
+local function held_place(proj, room_dir, tr, oid)
+  local _, h, evid = mirror.known(proj, oid)
+  local ev = (evid or "") ~= "" and (h or "") ~= "" and event_file(room_dir, evid) or nil
+  if not ev then return mirror.rank_of(tr), "" end
+  local r = mirror.rank_from(room_dir, ev)
+  return r, not r and type(ev.state) == "table" and ev.state.after or ""
+end
+mirror.held_place = held_place
+-- The studio's track order by rank, as oids. `except`: one left out (a track being placed). `fix`: the rank on each track is set to the one
+-- its version gives it where they differ (mirror.keep_order, under its undo point).
+function mirror.rank_order(proj, room_dir, except, fix)
   local list = {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     local oid = not local_track(tr) and trk_oid(tr) or ""
     if oid ~= "" and oid ~= except then
-      local r, after = mirror.rank_of(tr), nil
-      if not r then
-        local _, _, evid = mirror.known(proj, oid)
-        local ev = evid and evid ~= "" and event_file(room_dir, evid)
-        after = ev and type(ev.state) == "table" and ev.state.after or ""
-      end
+      local r, after = held_place(proj, room_dir, tr, oid)
+      if fix and r ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r or "", true) end
       list[#list + 1] = { oid = oid, rank = r, after = after }
     end
   end
@@ -6581,7 +6591,7 @@ function mirror.rank_above(proj, room_dir, oid, r)
   local prev = ""
   for _, x in ipairs(mirror.rank_order(proj, room_dir, oid)) do -- (just above the first ranked track after it, as rank.order would place it)
     local tr = mirror.find(proj, "track", x)
-    local rx = tr and mirror.rank_of(tr)
+    local rx = tr and held_place(proj, room_dir, tr, x)
     if rx and (rank.less(r, rx) or r == rx and rank.less(oid, x)) then return prev end
     prev = x
   end
@@ -6608,8 +6618,8 @@ function mirror.rank_at(proj, room_dir, oid, above)
   local a, b, at = nil, nil, above == "" and 0 or nil
   for k, x in ipairs(order) do if x == above then at = k end end
   if not at then return nil end
-  for k = at, 1, -1 do local tr = mirror.find(proj, "track", order[k]); a = tr and mirror.rank_of(tr); if a then break end end
-  for k = at + 1, #order do local tr = mirror.find(proj, "track", order[k]); b = tr and mirror.rank_of(tr); if b then break end end
+  for k = at, 1, -1 do local tr = mirror.find(proj, "track", order[k]); a = tr and held_place(proj, room_dir, tr, order[k]); if a then break end end
+  for k = at + 1, #order do local tr = mirror.find(proj, "track", order[k]); b = tr and held_place(proj, room_dir, tr, order[k]); if b then break end end
   return rank.between(a, b)
 end
 -- The studio's order is here (`here`, as oids): each track with no rank yet that this person made and may change gets one, as one act
