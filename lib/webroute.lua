@@ -6,8 +6,9 @@
 --   Autostart takes over (a page asks for Health or the call every few seconds, and the log isn't for that). (James, rt-ui2)
 local band = require("band")
 local webroute = {}
--- (Studio: projects, what's new, studios, pins and stages through "home"; your profile; Ask..., Link and join requests; Open in REAPER / the browser)
-webroute.FREE = { home = true, profile = true, invite = true, nav = true }
+-- (Studio: projects, what's new, studios, pins and stages through "home"; your profile; Ask..., Link and join requests; Open in REAPER / the browser;
+-- Settings: lib/websettings.lua needs only cfg, and changes nothing unless the page is on this computer, rt-uifix1)
+webroute.FREE = { home = true, profile = true, invite = true, nav = true, settings = true }
 
 -- topic: an action's topic; live: a Live sync runs for the front tab. -> "run", "project" (it needs a project and there's none) or "unknown". Pure
 -- but for webui.ACTIONS, the topics Live sync takes.
@@ -28,6 +29,9 @@ function webroute.run(s, c)
   if r == "run" then
     if topic == "nav" then
       return require("webenv").nav_action(a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1, c.url)
+    end
+    if topic == "settings" then
+      return require("websettings").action({ proj = c.proj, cfg = c.cfg, b = c.b }, a, reaper.StudioSync_WebUIPollHere ~= nil and reaper.StudioSync_WebUIPollHere() == 1, reaper.time_precise())
     end
     if topic == "invite" then return require("invite").action(c.proj, c.cfg, c.b, a) end
     return require("webhome").action(c.proj, c.cfg, c.b, a)

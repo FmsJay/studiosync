@@ -299,6 +299,7 @@ function weblobby.tick()
   if busy then return end
   require("webhome").tick(front, cfg, b, publish, now) -- (profiles, home and lobby)
   require("invite").web_tick(front, cfg, b, publish, now) -- (join requests for you, Ask... and Link on the project cards)
+  require("websettings").tick({ proj = front, cfg = cfg, b = b }, publish, now) -- (Settings, while a page shows it; rt-uifix1)
 end
 function weblobby._reset() L, A, info_memo, LS = { said = nil }, { last = nil, hold = -math.huge, on = false, at = -math.huge, published = {}, served = false, seen = -math.huge }, {}, nil end
 

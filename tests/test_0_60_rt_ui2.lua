@@ -54,6 +54,7 @@ package.loaded.services = { ensure_syncthing = function() return true end,
   join_band = function() return "C:/Band", nil end }
 package.loaded.drive = { wanted = function() return false end }
 local weblobby, webroute = require("weblobby"), require("webroute")
+local settings -- (a stand-in for lib/websettings.lua: who it was asked by, and how often built)
 ext["BandSync/user"], ext["BandSync/sync_root"] = "James-Main", "C:/Chilio"
 
 -- ---- the pins file: pins and archive, per person, cleaned ---------------------------------------------------------------------------------
@@ -137,9 +138,13 @@ end
 -- ---- the route rule ------------------------------------------------------------------------------------------------------------------------
 do
   assert(webroute.rule("home", false) == "run" and webroute.rule("profile", false) == "run" and webroute.rule("invite", false) == "run" and webroute.rule("nav", false) == "run", "the Studio tab's topics run with no project")
+  assert(webroute.rule("settings", false) == "run", "Settings answers with no project (rt-uifix1)")
   assert(webroute.rule("daw", false) == "project" and webroute.rule("chat", false) == "project" and webroute.rule("health", false) == "project", "a project's topics need one")
   assert(webroute.rule("daw", true) == "run", "with Live sync running they run")
   assert(webroute.rule("nope", false) == "unknown" and webroute.rule(nil, false) == "unknown" and webroute.rule(5, true) == "unknown", "anything else is unknown")
+  settings = { acted = {}, ticks = 0 }
+  package.loaded.websettings = { action = function(c, a, h) settings.acted[#settings.acted + 1] = { c = c, a = a, here = h }; return "settings did it" end,
+    tick = function(c, publish) settings.ticks = settings.ticks + 1; publish("settings", { user = c.cfg.user }) end }
   local got = {}
   package.loaded.webhome = { action = function(_, c, b, a) got[#got + 1] = { "home", c.root, b.song, a.topic }; return "home did it" end, tick = function() end }
   package.loaded.invite = { action = function(_, _, _, a) got[#got + 1] = { "invite", a.ask and a.ask.to }; return nil end, web_tick = function() end }
@@ -149,6 +154,11 @@ do
   assert(got[2][1] == "invite" and got[2][2] == "Bo", "invite: Ask..., Link and join requests work with no project")
   assert(webroute.run('{"topic":"health","want":true}', c):find("needs a studio project", 1, true), "a project's topic: said")
   assert(webroute.run('{"topic":"health","want":true}', c) == nil, "once")
+  here = 0
+  assert(webroute.run('{"topic":"settings","want":true}', c) == "settings did it" and settings.acted[1].c.cfg == c.cfg and settings.acted[1].c.proj == c.proj and settings.acted[1].here == false, "settings: websettings' action, told a page on another device")
+  here = 1
+  webroute.run('{"topic":"settings","set":{"id":"lock","value":true}}', c)
+  assert(settings.acted[2].here == true and settings.acted[2].a.set.id == "lock", "and a page on this computer")
   assert(webroute.run('{"topic":"zap"}', c):find("doesn't know", 1, true) and webroute.run('{"topic":"zap"}', c) == nil, "an unknown topic: said, once")
   assert(webroute.run('{"topic":"z<a>p!"}', c):find("z?a?p?", 1, true), "its name made plain in the log")
   assert(webroute.run("{bad", c):find("no topic", 1, true), "not JSON: unknown")
@@ -179,6 +189,7 @@ do
   assert(#polls == 0, "the page's action taken")
   local t = topics()
   assert(t.env and t.presence and t.home and t.lobby, "env, presence, home and lobby published")
+  assert(t.settings == '{"user":"James-Main"}' and settings.ticks == 1, "Settings built too (it knows by itself whether a page shows it)")
   local env = band.json_decode(t.env)
   assert(env.front and env.front.project == nil and not env.front.shared and env.front.name == "Untitled 3.rpp" and env.studio == nil, "env: what's in front, no project, not shared, no studio (Chat needs Live sync)")
   assert(#env.studios == 2 and env.studios[1].role == "owner", "your studios in env")

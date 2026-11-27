@@ -243,6 +243,26 @@ assert(#sent == 1, "and not after the page stopped saying so")
 local okj = pcall(band.json_encode, ws.model(c, clock))
 assert(okj, "the topic encodes as JSON")
 
+-- ---- 8b. Autostart's router (no studio project open: rt-uifix1) --------------------------------------------------------------------------
+do
+  local webroute, here = require("webroute"), 1
+  reaper.StudioSync_WebUIPollHere = function() return here end
+  ws._reset()
+  local rc = { proj = "P0", cfg = cfg, b = { room = "main" }, url = "http://127.0.0.1:47281/" }
+  assert(webroute.rule("settings", false) == "run", "Settings runs with no studio project")
+  ext["BandSync/web ui focus"] = nil
+  webroute.run('{"topic":"settings","set":{"id":"focus","value":"behind"}}', rc)
+  assert(ext["BandSync/web ui focus"] == "behind", "a page on this computer changes a setting through Autostart")
+  here = 0
+  webroute.run('{"topic":"settings","set":{"id":"focus","value":"stay"}}', rc)
+  assert(ext["BandSync/web ui focus"] == "behind", "a page on another device changes nothing through Autostart")
+  webroute.run('{"topic":"settings","want":true}', rc)
+  local got = {}
+  ws.tick({ proj = "P0", cfg = cfg, b = rc.b }, function(topic, v) got[#got + 1] = topic end, clock)
+  assert(got[1] == "settings", "and its want is taken: the topic is built")
+  reaper.StudioSync_WebUIPollHere = nil
+end
+
 -- ---- 9. webui.lua's hooks, index.html -------------------------------------------------------------------------------------------------------
 local src = io.open("lib/webui.lua", "rb"):read("a")
 assert(src:find('webui.ACTIONS.settings = true', 1, true), "the settings topic is an action")
