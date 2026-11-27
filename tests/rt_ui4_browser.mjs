@@ -101,6 +101,9 @@ async function open(url, o = {}) {
   }
   await cdp('Page.navigate', { url: 'about:blank' }); // (a fresh document, not a hash change in the last one)
   for (let t = 0; t < 3000 && await ev('location.href') !== 'about:blank'; t += 50) await sleep(50);
+  // (the last page's event streams ended here: Chrome kept old ones open at times, and at its six connections a host the next page's files waited, rt-ui10a)
+  for (const c of clients) c.end();
+  clients.clear();
   await cdp('Storage.clearDataForOrigin', { origin: new URL(url).origin, storageTypes: 'local_storage' });
   await cdp('Page.navigate', { url });
   // (until the shell has shown its first page and had the first state: a loaded machine takes longer than an idle one)
@@ -113,7 +116,7 @@ const okSubs = async (tab) => (await list()).find((t) => t.name === tab).subs.fi
 const route = () => ev('ssTabs.route()');
 const visible = (sel) => ev('(() => { const e = document.querySelector(' + JSON.stringify(sel) + '); return !!e && e.getClientRects().length > 0; })()');
 const now = () => Math.floor(Date.now() / 1000);
-const until = async (f, ms = 2000) => { for (let t = 0; t < ms && !f(); t += 50) await sleep(50); return f(); }; // (a POST lands when it lands)
+const until = async (f, ms = 20000) => { for (let t = 0; t < ms && !f(); t += 50) await sleep(50); return f(); }; // (a POST lands when it lands)
 const PROJECT = { engine: true, topics: { env: { v: 1, studio: 'Chilio', front: { name: 'Cross Test.rpp', project: 'Cross Test', room: 'main', live: true, shared: true } },
   presence: { song: 'Cross Test', room: 'main', driver: 'James-Main', people: [{ user: 'James-Main', me: true, armed: [] }], claims: [] } } };
 const NOPROJECT = { engine: false, topics: { env: { v: 1 }, presence: null } };

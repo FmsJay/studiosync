@@ -103,6 +103,9 @@ async function open(url, o = {}) {
   }
   await cdp('Page.navigate', { url: 'about:blank' }); // (a fresh document, not a hash change in the last one)
   for (let t = 0; t < 3000 && await ev('location.href') !== 'about:blank'; t += 50) await sleep(50);
+  // (the last page's event streams ended here: Chrome kept old ones open at times, and at its six connections a host the next page's files waited, rt-ui10a)
+  for (const c of clients) c.end();
+  clients.clear();
   await cdp('Storage.clearDataForOrigin', { origin: new URL(url).origin, storageTypes: 'local_storage' });
   await cdp('Page.navigate', { url });
   // (until the shell has shown its first page and had the first state: a loaded machine takes longer than an idle one)
@@ -114,7 +117,7 @@ const route = () => ev('ssTabs.route()');
 const visible = (sel) => ev('(() => { const e = document.querySelector(' + JSON.stringify(sel) + '); return !!e && e.getClientRects().length > 0; })()');
 const text = (sel) => ev('(() => { const e = document.querySelector(' + JSON.stringify(sel) + '); return e ? e.textContent : null; })()');
 const click = (sel) => ev('(() => { const e = document.querySelector(' + JSON.stringify(sel) + '); if (e) e.click(); return !!e; })()');
-const until = async (f, ms = 2000) => { for (let t = 0; t < ms && !f(); t += 50) await sleep(50); return f(); }; // (a POST lands when it lands)
+const until = async (f, ms = 20000) => { for (let t = 0; t < ms && !f(); t += 50) await sleep(50); return f(); }; // (a POST lands when it lands)
 const last = (pred) => actions.filter(pred).pop();
 
 const sess = (o) => last((a) => a.topic === 'session' && (!o || Object.keys(o).every((k) => JSON.stringify(a[k]) === JSON.stringify(o[k]))));

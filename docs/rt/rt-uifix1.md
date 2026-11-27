@@ -19,3 +19,7 @@ How: `lib/webui/tabs.js` `ssTabs.room()` asks the other pages of this browser ov
 Not done: pages of another browser profile aren't counted (they don't share the channel), nor a REAPER window whose WebView2 profile differs from the browser's (the browser has its own pool then anyway); one shared stream (a SharedWorker) would lift the limit. Windows opened by the user by hand (a browser tab, Ctrl+N) aren't stopped, only counted.
 
 Test: `node tests/rt_uifix1_browser.mjs` (needs Chrome or Edge): the other pages are iframes of the page (same origin and channel, real page files); counts, refusal, the note, room again after one closes, a pop-out page counting the others, the call's Pop out.
+
+## 3. Browser test harness under load
+
+In every `tests/rt_*_browser.mjs` the wait helper's default is 20 s (`waitFor` in rt_ui3; `until` in the others, 2 s, 6 s or 8 s before): each returns as soon as the condition holds, so normal runs aren't slower; negative checks keep their own short explicit limits. rt_ui9's four explicit 8 s and 10 s waits are 20 s too. rt-ui10a's `open()` fix (692cab6: end the last page's event streams before opening the next page) is copied into rt_ui10b, rt_ui2, rt_ui3, rt_ui4 and rt_ui6 (rt_ui1 and rt_ui10a had it; rt_ui9 ends each page's own streams as it closes it; rt_p14, rt_ui7 and rt_share open one page or their own). Nothing any test asserts changed.

@@ -136,7 +136,7 @@ async function page(url, o = {}) {
   return p;
 }
 const ok = (c, m) => { if (!c) { fails++; console.log('FAIL ' + m); } else console.log('  ok ' + m); };
-async function until(fn, ms = 6000) { const t = Date.now() + ms; for (;;) { const v = await fn(); if (v || Date.now() > t) return v; await sleep(100); } }
+async function until(fn, ms = 20000) { const t = Date.now() + ms; for (;;) { const v = await fn(); if (v || Date.now() > t) return v; await sleep(100); } }
 const count = (f) => actions.filter(f).length;
 
 // ---- the main window: Chat, read once per newest message ------------------------------------------------------------------------------------
@@ -203,8 +203,8 @@ ok(await until(async () => (await main.ev('ssCallTest.state().holder')) === (awa
 ok(await until(async () => (await pchat.ev('ssCallTest.state().holder')) === (await pcall.ev('ssCallTest.state().pid'))), 'and so does the chat’s');
 const offers0 = count((a) => a.topic === 'rtc' && a.t === 'offer');
 await main.press('Call', '.call-people');
-ok(await until(async () => (await pcall.ev('ssCallTest.state().sessions.size')) === 1, 10000), 'Call in the main window: the call starts in the call’s window');
-ok(await until(() => count((a) => a.topic === 'rtc' && a.t === 'offer' && a.to === CHILIO) === offers0 + 1, 10000), 'one offer to chilio');
+ok(await until(async () => (await pcall.ev('ssCallTest.state().sessions.size')) === 1, 20000), 'Call in the main window: the call starts in the call’s window');
+ok(await until(() => count((a) => a.topic === 'rtc' && a.t === 'offer' && a.to === CHILIO) === offers0 + 1, 20000), 'one offer to chilio');
 ok(await main.ev('ssCallTest.state().sessions.size') === 0, 'none in the main window');
 ok(await until(async () => (await main.text('#sscall')).includes('Call: chilio') && (await main.text('#sscall')).includes('(another window)')), 'the main window’s top bar shows the call held in another window');
 ok(await until(async () => (await pchat.text('#sscall')).includes('Call: chilio')), 'so does the chat’s');
@@ -225,7 +225,7 @@ const CALL = 'b'.repeat(32);
 rtcMsgs.push({ t: 'offer', call: CALL, dev: CHILIO, user: 'chilio', kind: 'call', sdp, seq: ++seq }); pushRtc();
 ok(await until(async () => (await main.has('Answer', '#sscall')) && (await pchat.has('Answer', '#sscall')) && (await pcall.has('Answer', '#sscall'))), 'chilio calls: Answer in every window’s top bar');
 await main.press('Answer', '#sscall');
-ok(await until(async () => { const s = await pcall.ev('(() => { const s = ssCallTest.state().sessions.get("' + CALL + '"); return s ? s.state : null; })()'); return s && s !== 'ringing'; }, 10000), 'Answer in the main window: answered in the call’s window');
+ok(await until(async () => { const s = await pcall.ev('(() => { const s = ssCallTest.state().sessions.get("' + CALL + '"); return s ? s.state : null; })()'); return s && s !== 'ringing'; }, 20000), 'Answer in the main window: answered in the call’s window');
 ok(await until(() => actions.some((a) => a.topic === 'rtc' && a.t === 'answer' && a.call === CALL)), 'one answer sent');
 ok(await until(async () => !(await main.has('Answer', '#sscall')) && !(await pchat.has('Answer', '#sscall'))), 'the ring stops in the other windows');
 ok(await until(async () => (await main.text('#sscall')).includes('(another window)')), 'and the main window shows the call held there');
@@ -234,7 +234,7 @@ ok(await until(async () => (await pcall.ev('ssCallTest.state().sessions.size')) 
 
 // ---- the call's window closed: calls go back to the main window -----------------------------------------------------------------------------
 await pcall.close();
-ok(await until(async () => (await main.ev('ssCallTest.state().holder')) === (await main.ev('ssCallTest.state().pid')), 8000), 'its window closed: the main window does the calls again');
+ok(await until(async () => (await main.ev('ssCallTest.state().holder')) === (await main.ev('ssCallTest.state().pid')), 20000), 'its window closed: the main window does the calls again');
 ok(await until(async () => (await pchat.ev('ssCallTest.state().holder')) === (await main.ev('ssCallTest.state().pid'))), 'the chat’s window sends them there too');
 await pchat.close();
 await main.close();

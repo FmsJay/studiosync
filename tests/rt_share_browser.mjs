@@ -128,7 +128,7 @@ async function connect(t) {
   return { id: t.id, cdp, ev, ws };
 }
 const ok = (c, m) => { if (!c) { fails++; console.log('FAIL ' + m); } else console.log('  ok ' + m); };
-async function until(fn, ms = 8000) { const t = Date.now() + ms; for (;;) { const v = await fn(); if (v || Date.now() > t) return v; await sleep(100); } }
+async function until(fn, ms = 20000) { const t = Date.now() + ms; for (;;) { const v = await fn(); if (v || Date.now() > t) return v; await sleep(100); } }
 // a button by its words (in rings, the bar or the board), clicked as a real mouse click
 async function press(p, label, scope = 'body') {
   const xy = await p.ev('(() => { const b = [...document.querySelectorAll(' + JSON.stringify(scope + ' button') + ')].find((x) => x.textContent === ' + JSON.stringify(label) +
