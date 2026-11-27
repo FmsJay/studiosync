@@ -3042,6 +3042,30 @@ function mirror.first_diff(a, b)
     end
   end
 end
+-- What a track's deletion says went with it (`items`, bandmate data: at most ITEMS_MAX ids of at most 200 characters, no slashes), as a set
+-- of oids; nil when it doesn't say (a StudioSync before rt-sync2b, more than ITEMS_MAX, or malformed): then the old guess applies.
+mirror.ITEMS_MAX = 2000
+function mirror.named_items(ev)
+  local t = type(ev) == "table" and ev.items
+  if type(t) ~= "table" or #t > mirror.ITEMS_MAX then return nil end
+  local set = {}
+  for _, x in ipairs(t) do
+    if type(x) ~= "string" or #x > 200 or x:find("[/\\]") then return nil end
+    set[x:upper()] = true
+  end
+  return set
+end
+-- The items a track holds here, by oid (sorted), for its deletion's `items`; nil past ITEMS_MAX (the receivers' old guess then).
+function mirror.items_on(tr)
+  local out = {}
+  for i = 0, reaper.CountTrackMediaItems(tr) - 1 do
+    local io = itm_oid(reaper.GetTrackMediaItem(tr, i))
+    if io ~= "" then out[#out + 1] = io end
+  end
+  if #out > mirror.ITEMS_MAX then return nil end
+  table.sort(out)
+  return out
+end
 -- An item whose newest version is this computer's, from the last two minutes: a track deleted elsewhere may have gone before it arrived there
 -- (a take just recorded and sent), so it's kept here, not lost with the track. Review, 0.58.95
 function mirror.just_made_here(proj, io, now_ms)
@@ -3136,6 +3160,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       -- edit with its track. Round 3 review, 0.59.48)
       local elsewhere = mirror.unsent_elsewhere(proj)
       local room_dir = media_dir and media_dir:gsub("/media$", "")
+      local named = mirror.named_items(ev)
       for i = reaper.CountTrackMediaItems(p) - 1, 0, -1 do
         local it = reaper.GetTrackMediaItem(p, i)
         local io = itm_oid(it)
@@ -3149,10 +3174,17 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         local moot = asked and ev.user ~= nil and asked.who == ev.user and reaper.time_precise() - asked.at < 60 and mirror.known(proj, io) ~= nil
           and not mirror.new_here(proj, io, room_dir)
         if moot then mirror.unsent[tostring(proj) .. io], mirror.asked_of[tostring(proj) .. io] = nil, nil end
-        if io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or (mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir)) then
-          -- (kept as new work only, no edit of yours waiting in it: noted with the version it holds, so the deleter's own deletion of that very
-          -- version, which comes beside the track's, takes it after all: mirror.receive. rt-fix9)
-          if not (mirror.unsent[tostring(proj) .. io] or elsewhere[io]) then mirror.kept_new[tostring(proj) .. io] = { it = it, ev = select(3, mirror.known(proj, io)) } end
+        -- (new work of yours the deleter never saw: a fact since the deletion names what went with it (`items`, mirror.named_items): not named
+        -- there, and every version of it yours. From a StudioSync before that (or past ITEMS_MAX), the old guess: yours, from the last two
+        -- minutes, not a re-time. rt-sync2 section 1, rt-sync2b)
+        local mine_new = io ~= "" and mirror.known(proj, io) ~= nil
+        if mine_new and named then mine_new = not named[io] and mirror.new_here(proj, io, room_dir)
+        elseif mine_new then mine_new = mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir) end
+        if io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or mine_new then
+          -- (kept as new work only, no edit of yours waiting in it, from a deletion that doesn't name its items: noted with the version it holds,
+          -- so the deleter's own deletion of that very version, which comes beside the track's, takes it after all: mirror.receive. rt-fix9.
+          -- A deletion that names them never needs it: what it names went, and what it doesn't the deleter never had)
+          if not named and not (mirror.unsent[tostring(proj) .. io] or elsewhere[io]) then mirror.kept_new[tostring(proj) .. io] = { it = it, ev = select(3, mirror.known(proj, io)) } end
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
           -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -5247,6 +5279,16 @@ function W.gone(w)
   -- Cross Test's 3 tracks and 10 items for a project it read with its records and none of its objects: docs/rt/rt-reopen.md)
   local pk, now = tostring(proj), reaper.time_precise()
   for k in pairs(mirror.gone_why) do if k:sub(1, #pk) == pk and seen[k:sub(#pk + 1)] then mirror.gone_why[k] = nil end end
+  -- (what each deleted track held: its items, missing with it, named on the track's deletion (`items`), so each receiver keeps only work of
+  -- its own the deleter never saw. rt-sync2 section 1, rt-sync2b)
+  local held_items = {}
+  for _, g in ipairs(gone) do
+    if g.oid:sub(1, 1) == "I" and (g.evid or "") ~= "" then
+      local e = event_file(room_dir, g.evid)
+      local t = e and e.track
+      if type(t) == "string" then held_items[t] = held_items[t] or {}; table.insert(held_items[t], g.oid) end
+    end
+  end
   local hold_empty, guarded = false, 0
   if #gone == 0 then mirror.empty_since[pk] = nil
   else
@@ -5332,7 +5374,13 @@ function W.gone(w)
             prev = x
           end
         end
-        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act, unasked = unasked, was_after = was_after }
+        local items
+        if o.kind == "track" then
+          items = held_items[g.oid] or {}
+          table.sort(items)
+          if #items > mirror.ITEMS_MAX then items = nil end
+        end
+        local ev = { type = "obj", obj = o.kind, oid = g.oid, rev = mirror.next_rev(g.rev, mirror.owned(opts, me, name, last.pos, w.is_claimed)), base = g.rev or 0, base_ev = (g.evid or "") ~= "" and g.evid or nil, gone = true, track = o.track, name = name, pos = last.pos, act = w.act, unasked = unasked, was_after = was_after, items = items }
         local id = sync.post(cfg, song, room, ev)
         if o.kind == "track" and opts.sent then pcall(opts.sent, o, name, ev) end -- (Claims: your auto-claim on a track you deleted goes with it. rt-converge)
         remember(proj, g.oid, ev.rev, "", id, mirror.order_of(ev)) -- (with its order: a racing edit is settled alike everywhere)
@@ -6171,10 +6219,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       -- (a part: emptied on its track, which apply needs named. One that can't change now isn't sent: sent, this computer's chain went out
       -- again as a change of its own. 0.59.14, review)
       local was_after = kind == "track" and sat[p.oid] or nil -- (where it sat before this act, for its return: above)
+      local tr_here = kind == "track" and mirror.find(proj, "track", p.oid)
+      local items = tr_here and mirror.items_on(tr_here) or (kind == "track" and {} or nil) -- (what went with it: rt-sync2b)
       if not mirror.apply(proj, { obj = kind, oid = p.oid, gone = true, track = last and last.track }, media, opts.local_mix) then waiting = waiting + 1; return end
       mirror.hlc_seen(last and last.hlc)
       local gev = { type = "obj", obj = kind, oid = p.oid, rev = mirror.next_rev(rev, owned(last and last.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, gone = true, undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act,
-        name = last and last.name, track = last and last.track, pos = last and last.pos, was_after = was_after } -- (named: read later, it said "an unnamed track")
+        name = last and last.name, track = last and last.track, pos = last and last.pos, was_after = was_after, items = items } -- (named: read later, it said "an unnamed track")
       local id = sync.post(cfg, song, room, gev)
       remember(proj, p.oid, gev.rev, "", id, mirror.order_of(gev))
       done = done + 1

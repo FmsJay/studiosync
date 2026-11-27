@@ -164,6 +164,45 @@ do
   assert(shape(p) == WANT, "Bo: merged re-times, then the deletions: " .. shape(p))
 end
 
+-- rt-sync2b: a track's deletion names the items that went with it (`items`, rt-sync2 section 1). An item of yours the deleter never saw (not
+-- named there, every version yours) is kept on "(yours, not sent)" however old it is; one it names goes, however new. Without the list (an
+-- older StudioSync's deletion), the old guess: yours and from the last two minutes. Fails with apply's track deletion as it was (the guess
+-- for every deletion: the old item lost, the named one kept).
+do
+  local function make(id, oid, label, hlc) return ev({ id = id, obj = "item", oid = oid, track = T, rev = 1, base = 0, state = OLD:gsub('NAME "d"', 'NAME "' .. label .. '"'), user = "Xa", hlc = hlc }) end
+  local OLD_MINE = make("Xa-20261119-170000Z-00001-0001", "I-XA-1", "mine, ten minutes old", H0 - 600000)
+  local NEW_MINE = make("Xa-20261119-172557Z-00002-0001", "I-XA-2", "mine, just made", H0 - 1000)
+  local function on_track(items_field)
+    local GN = { id = "Al-20261119-172600Z-0000" .. (items_field and "7" or "8") .. "-0001", type = "obj", obj = "track", oid = T, rev = 2, base = 1, base_ev = V0.id,
+      gone = true, user = "Al", hlc = H0 + 300, name = "Drums", items = items_field }
+    files[R .. "/events/" .. GN.id .. ".json"] = GN
+    local p = start("Xa", true, nil)
+    local tr = P(p).tracks[1]
+    for _, e in ipairs({ OLD_MINE, NEW_MINE }) do
+      table.insert(tr.items, { track = tr, state = e.state, ext = { ["P_EXT:band_oid"] = e.oid } })
+      remember(p, e, "h:" .. e.id)
+    end
+    assert(mirror.receive(p, GN, MEDIA, false, "Xa") ~= false, "the deletion lands")
+    local kept = {}
+    for _, t in ipairs(P(p).tracks) do
+      for _, it in ipairs(t.items) do kept[#kept + 1] = (it.state:match('NAME "([^"]+)"')) .. " on " .. t.name end
+    end
+    table.sort(kept)
+    return table.concat(kept, "; ")
+  end
+  local got = on_track({ "I-XA-2" })
+  assert(got == "mine, ten minutes old on Drums (yours, not sent)", "named: the deleter saw I-XA-2 and it goes; I-XA-1 it never saw stays yours: " .. got)
+  got = on_track({})
+  assert(got == "mine, just made on Drums (yours, not sent); mine, ten minutes old on Drums (yours, not sent)", "it held nothing the deleter knew: both stay yours: " .. got)
+  got = on_track(nil)
+  assert(got == "mine, just made on Drums (yours, not sent)", "no list (an older StudioSync): the two-minute guess, as before: " .. got)
+  -- bandmate data: a malformed list is no list
+  assert(mirror.named_items({ items = { "I-1", "../x" } }) == nil and mirror.named_items({ items = { 5 } }) == nil, "a list with a path or a number: ignored")
+  local big = {}
+  for i = 1, mirror.ITEMS_MAX + 1 do big[i] = "I-" .. i end
+  assert(mirror.named_items({ items = big }) == nil and mirror.named_items({ items = { "i-a" } })["I-A"], "past ITEMS_MAX: ignored; ids upper-cased")
+end
+
 -- the tempo map that came with the delete-all stays: deleting the first track isn't a file opened again, so the timeline's "opened behind the song"
 -- look (which takes session.json's tempo, still the old one while Syncthing brings the new) doesn't run again. Live run 20261119-174839Z: B and
 -- C both had 130 back after A's 120, and step 1 was never seen. A file opened again in the same tab (a new master track) still gets the look.
