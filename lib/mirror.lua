@@ -3473,7 +3473,18 @@ function mirror.judge(proj, oid, room_dir, news, skip)
     for _ = 1, 4 do -- (an answer whose state can't be read as its kind's is left out, and the rest judged again)
       s = judge.settled(vs, rd, opt)
       local v = s.v
-      if not (v and not v.gone and not v.stub and type(v.state) ~= (READABLE[v.obj] or "string")) then break end
+      local want = v and (READABLE[v.obj] or "string")
+      if not (v and not v.gone and not v.stub and type(v.state) ~= want) then break end
+      -- (a light version reads its state from its file when asked, and a file can be unreadable for a moment (half-written by Syncthing as
+      -- the link's inbox copy goes): read whole once more, and if it still can't be read it waits, as a version on its way does. Left out,
+      -- heal put the version before it back over it, on that computer alone: the soak's seed 15017. Only a state of the wrong kind is
+      -- left out for good)
+      local whole = mirror.event_file(room_dir, v.id)
+      if whole and type(whole.state) == want then s.v = whole; break end
+      if v.state == nil and not (whole and whole.state ~= nil) and not opt.give_up then
+        s.complete, s.v, s.gone, s.missing = false, nil, nil, { v.id }
+        break
+      end
       for i = #vs, 1, -1 do if vs[i].id == v.id then table.remove(vs, i) end end
     end
     -- (a version held here and present, unreadable just now, beside another leaf: it can't be merged or weighed, so nothing lands over it

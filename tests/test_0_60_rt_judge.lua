@@ -246,6 +246,25 @@ do
   assert(mirror.plan_restore({ row(base), row(moved), row(nudged) }, 2)["I-B-1"].id == moved.id, "restore to before the nudge: the move")
   local late = put({ id = "Bee-20261122-120205Z-9", rev = 9, hlc = 3050, user = "Bee", track = "T-BASS", state = item(40), base_ev = nudged.id, base = 3 })
   assert(mirror.plan_restore({ row(base), row(moved), row(nudged), row(gone), row(late) }, 5)["I-B-1"] == false, "after a deletion and a newer edit that didn't see it: gone")
+  -- A version whose file can't be read just now (Syncthing's copy half-written as the link's inbox copy goes) waits as one on its way does:
+  -- left out of what the judge weighed, heal put the version before it back over it, on that computer alone (the soak's seed 15017).
+  local real_tp = reaper.time_precise
+  reaper.time_precise = function() return 5 end
+  local evindex = require("evindex")
+  local function put2(v) v.type, v.obj, v.oid = "obj", "item", "I-C-1"; return put(v) end
+  local c1 = { id = "Cee-20261122-120300Z-11", rev = 1, hlc = 100, user = "Cee", track = "T-BASS", state = item(1) }
+  local c2 = { id = "Cee-20261122-120310Z-12", rev = 2, hlc = 200, user = "Cee", track = "T-BASS", state = item(2), base_ev = c1.id, base = 1 }
+  c1, c2 = put2(c1), put2(c2)
+  local c3 = { id = "Bee-20261122-120400Z-10", type = "obj", obj = "item", oid = "I-C-1", rev = 3, hlc = 300, user = "Bee", track = "T-BASS", base_ev = c2.id, base = 2,
+    path_ = RD .. "/events/Bee-20261122-120400Z-10.json" } -- (light, its file not readable: no state)
+  evindex.add(RD, c3, "Bee-20261122-120400Z-10.json")
+  local js = mirror.judge(nil, "I-C-1", RD, { c1, c2 })
+  assert(not js.complete and js.v == nil and js.missing[1] == c3.id, "its state can't be read now: incomplete, naming it (" .. tostring(js.v and js.v.id) .. ")")
+  put2({ id = c3.id, rev = 3, hlc = 300, user = "Bee", track = "T-BASS", state = item(41), base_ev = c2.id, base = 2 })
+  js = mirror.judge(nil, "I-C-1", RD, { c1, c2 })
+  assert(js.complete and js.v.id == c3.id and js.v.state:find("POSITION 41", 1, true), "once it reads: that version")
+  evindex.forget(RD)
+  reaper.time_precise = real_tp
 end
 
 -- A tempo map never moves an item to another track (lib/mirror.lua only_map_moved): an item moved to another track with its position
