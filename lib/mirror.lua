@@ -4006,7 +4006,11 @@ function mirror.only_map_moved(proj, o, last)
   if o.kind == "env" then
     return mirror.env_same_but_times(o.state, last.state) and (not named or select(2, mirror.on_map(proj, last)) == true)
   end
-  return o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state) and mirror.map_moved(proj, last, o.state)
+  -- (and on the track the band has it on: a tempo map never moves an item to another track. Moved there with its position unchanged, it read
+  -- as the map's move after a tempo change, was recorded as it was and never sent: the item sat on another track on that computer alone, which
+  -- the soak's oracle can't see (it hashes an item's text). Found by rt-sync2b's track check: seeds 5000, 9001, 9002, 9006)
+  return o.kind == "item" and (last.track == nil or o.track == nil or last.track == o.track) and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state)
+    and mirror.map_moved(proj, last, o.state)
 end
 -- A tempo map that wasn't made here is put in place by `set` (a bandmate's change, or the studio's map as a project opens): what REAPER moves
 -- for it isn't this computer's edit. Every item and automation is read before and after; one that was as the studio has it and now differs

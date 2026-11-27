@@ -248,4 +248,20 @@ do
   assert(mirror.plan_restore({ row(base), row(moved), row(nudged), row(gone), row(late) }, 5)["I-B-1"] == false, "after a deletion and a newer edit that didn't see it: gone")
 end
 
+-- A tempo map never moves an item to another track (lib/mirror.lua only_map_moved): an item moved to another track with its position
+-- unchanged, in the seconds after a tempo change, read as the map's move, was recorded as it was and never sent, so it sat on another track
+-- on that computer alone (the soak's oracle hashes an item's text, not its track; rt-sync2b's track check found it in seeds 5000, 9001,
+-- 9002, 9006). The same item moved by the map alone on its own track still reads as the map's.
+do
+  local mirror = require("mirror")
+  local real_tp = reaper.time_precise
+  reaper.time_precise = function() return 100 end
+  mirror.tempo_until["PMAP"] = 1e9 -- (a tempo change in the last seconds)
+  local st = "<ITEM\nPOSITION 4\nLENGTH 2\n>\n"
+  local last = { state = st, track = "T-KEYS" }
+  assert(mirror.only_map_moved("PMAP", { kind = "item", state = st, track = "T-KEYS" }, last), "on its own track: the map's move (as before)")
+  assert(not mirror.only_map_moved("PMAP", { kind = "item", state = st, track = "T-GTR" }, last), "on another track: a hand's move, sent")
+  mirror.tempo_until["PMAP"], reaper.time_precise = nil, real_tp
+end
+
 print("ok judge: " .. merges .. " merges, " .. gones .. " gone, " .. restores .. " restores, " .. incompletes .. " incomplete")
