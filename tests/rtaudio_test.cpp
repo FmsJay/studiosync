@@ -22,6 +22,7 @@
 #include <thread>
 #include <vector>
 #include "../extension/rtaudio.h"
+#include "../extension/pace.h" // (the light law's golden trace: pace_lite_test)
 #include "../plugin/hop_shm.h" // (Play: the test writes a Hop's send ring as the live out track's plug-in does)
 
 // The test's clock (rt-audio4): the simulated one (extension/rtaudio.h rt_sim: no threads or sockets, the same numbers every run, the
@@ -1634,6 +1635,78 @@ struct RRoom {
   }
 };
 
+// ---- one controller (rt-audio4): the light law (extension/pace.h pace::Lite: extension/webui.cpp's guest rings) and the pages' JS copy
+// (lib/webui/guestworklet.js ssPace, the same text in sharemix.js and listen.js) pinned to one golden trace, tests/fixtures/pace_lite.json:
+// a level that drifts, wobbles, jumps 50 ms, holds its packets (age past LITE_AGE once) and starts again twice. This checks the C++ against
+// it; tests/pace_lite_check.py checks the JS. "rtaudio_test pacegen" writes it anew from the C++ (only when the law itself is changed).
+static void pace_trace_inputs(std::vector<double> &fill, std::vector<double> &age)
+{
+  fill.clear(); age.clear();
+  for (int i = 0; i < 1000; ++i) {
+    const double t = i * 0.04, hold = fmod(t, 7.0);
+    double f = 0.12 + 0.0004 * t + 0.005 * sin(t * 3.1) + (t >= 15 ? 0.05 : 0), a = 0.004;
+    if (hold > 6.5) { a = (hold - 6.5) * (t > 30 ? 3.0 : 1.0); f -= (hold - 6.5) * 0.9; } // (a hold: the age grows, the buffer drains; one past LITE_AGE)
+    char b[2][32];
+    snprintf(b[0], 32, "%.12g", f); snprintf(b[1], 32, "%.12g", a);
+    fill.push_back(strtod(b[0], nullptr)); age.push_back(strtod(b[1], nullptr));
+  }
+}
+static const int PACE_AGAIN[2] = { 400, 777 }, PACE_EVERY = 5;
+static std::vector<double> pace_trace_rates(const std::vector<double> &fill, const std::vector<double> &age)
+{
+  pace::Lite p;
+  std::vector<double> out;
+  for (size_t i = 0; i < fill.size(); ++i) {
+    if ((int)i == PACE_AGAIN[0] || (int)i == PACE_AGAIN[1]) p.again();
+    const double r = p.step(fill[i], 0.12, 0.04, age[i]);
+    if (i % PACE_EVERY == 0) out.push_back(r);
+  }
+  return out;
+}
+static std::vector<double> json_nums(const std::string &j, const char *key) // (every number after "key": up to its array's end, nested or not)
+{
+  std::vector<double> v;
+  size_t i = j.find(std::string("\"") + key + "\":");
+  if (i == std::string::npos) return v;
+  i = j.find('[', i);
+  int depth = 0;
+  for (; i < j.size(); ++i) {
+    const char c = j[i];
+    if (c == '[') ++depth;
+    else if (c == ']') { if (--depth == 0) break; }
+    else if (c == '-' || (c >= '0' && c <= '9')) { char *e = nullptr; v.push_back(strtod(j.c_str() + i, &e)); i = (size_t)(e - j.c_str()) - 1; }
+  }
+  return v;
+}
+static void pace_gen()
+{
+  std::vector<double> fill, age;
+  pace_trace_inputs(fill, age);
+  const std::vector<double> rates = pace_trace_rates(fill, age);
+  FILE *f = fopen("tests/fixtures/pace_lite.json", "wb");
+  if (!f) { printf("  FAIL pacegen: run from the repo's root\n"); ++fails; return; }
+  fprintf(f, "{\"what\":\"the light pace law's golden trace (extension/pace.h pace::Lite, lib/webui/*.js ssPace): tests/rtaudio_test.cpp pacegen\",\n\"dt\":0.04,\"target\":0.12,\"every\":%d,\"again\":[%d,%d],\n\"steps\":[", PACE_EVERY, PACE_AGAIN[0], PACE_AGAIN[1]);
+  for (size_t i = 0; i < fill.size(); ++i) fprintf(f, "%s[%.12g,%.12g]", i ? "," : "", fill[i], age[i]);
+  fprintf(f, "],\n\"rates\":[");
+  for (size_t i = 0; i < rates.size(); ++i) fprintf(f, "%s%.17g", i ? "," : "", rates[i]);
+  fprintf(f, "]}\n");
+  fclose(f);
+  printf("     pacegen: tests/fixtures/pace_lite.json written (%zu steps, %zu rates)\n", fill.size(), rates.size());
+}
+static void pace_lite_test()
+{
+  std::string j;
+  if (FILE *f = fopen("tests/fixtures/pace_lite.json", "rb")) { char b[4096]; size_t n; while ((n = fread(b, 1, sizeof b, f)) > 0) j.append(b, n); fclose(f); }
+  const std::vector<double> steps = json_nums(j, "steps"), want = json_nums(j, "rates");
+  std::vector<double> fill, age;
+  for (size_t i = 0; i + 1 < steps.size(); i += 2) { fill.push_back(steps[i]); age.push_back(steps[i + 1]); }
+  const std::vector<double> got = pace_trace_rates(fill, age);
+  double worst = got.size() == want.size() && !got.empty() ? 0 : 1, lo = 1, hi = 1;
+  for (size_t i = 0; i < got.size() && i < want.size(); ++i) { worst = std::max(worst, std::fabs(got[i] - want[i])); lo = std::min(lo, got[i]); hi = std::max(hi, got[i]); }
+  printf("     pace: the light law over the golden trace: %zu rates (%+.0f to %+.0f ppm), worst difference %.3g\n", got.size(), (lo - 1) * 1e6, (hi - 1) * 1e6, worst);
+  check(!j.empty() && worst < 1e-12, "pace: extension/pace.h's light law gives the golden trace's rates (tests/fixtures/pace_lite.json; run from the repo's root)");
+}
+
 static void relay_test()
 {
   if (g_real) { printf("     relay: skipped (SS_RT_REAL=1: it runs on the simulated network)\n"); return; }
@@ -1780,6 +1853,8 @@ int main(int argc, char **argv)
   if (argc > 1 && strcmp(argv[1], "startorder") == 0) { start_order_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "sim") == 0) { sim_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "relay") == 0) { relay_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "pace") == 0) { pace_lite_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
+  if (argc > 1 && strcmp(argv[1], "pacegen") == 0) { pace_gen(); pace_lite_test(); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   if (argc > 1 && strcmp(argv[1], "hubload") == 0) { hub_loads(true); printf(fails ? "fails %d\n" : "ok, fails 0\n", fails); return fails ? 1 : 0; }
   const int SR = 48000, LEN = 256, PA = 47391, PB = 47392, PC = 47393;
   const double PI = 3.14159265358979;
@@ -2147,6 +2222,7 @@ int main(int argc, char **argv)
   }
   sim_test(); // (the simulated clock and network themselves: rt-audio4)
   relay_test(); // (the relay: forwarding instead of mixing, the lease. rt-audio4)
+  pace_lite_test(); // (the light pace law against its golden trace: rt-audio4)
   not_here_test();
   start_order_test(); // (the four-computer test's start order: a hub whose list leaves a computer out)
   drift_tests(); // (the four-computer test's underruns: drift, a buffer left high, a hub switch)

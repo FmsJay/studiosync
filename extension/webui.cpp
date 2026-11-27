@@ -48,6 +48,7 @@ typedef int sock_t;
 #include <thread>
 #include "direct.h"
 #include "webui.h"
+#include "pace.h"
 
 // ---- the pure parts ---------------------------------------------------------------------------------------------------------------------
 static std::string lower(std::string s) { for (char &c : s) if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a'); return s; }
@@ -830,30 +831,10 @@ void mix_stream(sock_t s)
 // guest's sound comes again: to the hold that did it and a step, when that was longer than its size (`gap`), and not at all after a wait
 // of GUP_HOLD_MAX or more (a pause, not the link).
 const unsigned long long GMIX_N = 1ull << 17;
-const double GPACE_WIN = 0.5, GPACE_KP = 0.2, GPACE_P = 0.001, GPACE_R = 0.01, GPACE_I = 0.05, GFRESH_OVER = 0.06;
-const double GPACE_JUMP = 0.03, GPACE_AGE = 1;
-const int GPACE_BACK = 4;
-struct GPace { // (the audio thread's)
-  double sum = 0, t = 0, r = 0, p = 0, rate = 1, he[GPACE_BACK] = {}, hp[GPACE_BACK] = {};
-  int n = 0;
-  void again() { sum = t = p = 0; n = 0; rate = 1 + r; } // (a start or a cut: the level anew, R kept)
-  double step(double fill, double target, double dt, double age)
-  {
-    fill += std::max(0.0, std::min(GPACE_AGE, age)); // (the level as a time: what waits plus how long ago the newest piece came)
-    sum += fill * dt; t += dt;
-    if (t < GPACE_WIN) return rate;
-    const double e = sum / t - target, T = t, was = std::fabs(p) * T;
-    sum = t = 0;
-    if (n > 0 && std::fabs(e - he[n - 1]) > GPACE_JUMP) n = 0; // (a jump between two windows isn't a rate: R learns nothing from it)
-    double did = was;
-    for (int i = 1; i < n; ++i) did += hp[i];
-    if (n >= 2 && std::fabs(e) > std::fabs(he[0]) - 0.5 * did) r = std::max(-GPACE_R, std::min(GPACE_R, r + GPACE_KP * GPACE_KP / 4 * std::max(-GPACE_I, std::min(GPACE_I, e)) * T));
-    if (n == GPACE_BACK) { std::copy(he + 1, he + GPACE_BACK, he); std::copy(hp + 1, hp + GPACE_BACK, hp); --n; }
-    he[n] = e; hp[n++] = was;
-    p = std::max(-GPACE_P, std::min(GPACE_P, GPACE_KP * e));
-    return rate = 1 + r + p;
-  }
-};
+const double GFRESH_OVER = 0.06;
+// gpace itself: the light law, written once in extension/pace.h (pace::Lite; the pages' ssPace is pinned to it by tests/fixtures/pace_lite.json). rt-audio4
+using GPace = pace::Lite;
+const double GPACE_R = pace::LITE_R, GPACE_P = pace::LITE_P;
 short g_gmix[GMIX_N * 2];
 std::atomic<unsigned long long> g_gmix_w{ 0 };
 std::atomic<double> g_gmix_sr{ 0 };
