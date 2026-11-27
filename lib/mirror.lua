@@ -6188,6 +6188,14 @@ function mirror.sits_there(proj, ev, plan)
 end
 
 mirror.REVERT_AT_ONCE, mirror.REVERT_SLICE = 120, 0.1 -- (changes; seconds per pass)
+-- A track StudioSync's Undo or Restore made again: what it holds is judged in the next receive pass, as for a track that came back in one
+-- (sync.contents_due, mirror.lands). An item a bandmate made on it while it was deleted here was recorded gone with it, and stayed gone on
+-- this computer alone: the soak's 5023. rt-sync2c
+local function contents_owed(proj, room_dir, toid)
+  local due = require("sync").contents_due
+  local pk = tostring(proj)
+  for _, c in ipairs(require("evindex").contents(room_dir, toid)) do due[pk] = due[pk] or {}; due[pk][c] = true end
+end
 function mirror.revert(proj, cfg, song, room, plan, opts)
   local sync = require("sync")
   mirror.last_act[tostring(proj)] = nil -- (what a look finds after this isn't the rest of the act before it: mirror.watch. rt-edits)
@@ -6333,7 +6341,9 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     elseif p.t and (opts.undoes or opts.redoes) and last and last.gone and last.user ~= cfg.user then
       gone_since = gone_since + 1
     elseif mine_gone then
+      local made = p.t.obj == "track" and not mirror.find(proj, "track", p.oid)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
+      if ok and made then contents_owed(proj, room_dir, p.oid) end
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil,
@@ -6352,7 +6362,9 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         and opts.soft(name, (p.t and p.t.pos) or last.pos) ~= nil) or sync.maker_may(p.t and p.t.obj == "track" and p.oid or (p.t and p.t.track) or p.oid, cfg.user, name, p.t and p.t.pos or nil, opts.mode, p.t and p.t.obj == "item" and p.oid or nil)) then
       refused = refused + 1
     elseif p.t then
+      local made = p.t.obj == "track" and not mirror.find(proj, "track", p.oid)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
+      if ok and made then contents_owed(proj, room_dir, p.oid) end
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil,

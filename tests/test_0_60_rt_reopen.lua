@@ -4,6 +4,10 @@
 --  1. Track 1 deleted with a knob turned on another track's plug-in, inside the minute after that chain landed: the knob goes out. The
 --     project's instance is told by its master track, not its first track (the soak's 5028 class: deleting track 1 read as a reopen, the
 --     chain's knobs were noted afresh as loading, and the knob was never sent, on that computer alone).
+--  2. The file opened again in its tab inside the minute after a chain landed, with a knob turned since: the knob goes out (5010).
+--  3. A record whose object no look of this session saw is no deletion of this person's (section 6 (2b)).
+--  4. Deleting half the song's tracks or more asks first (James's decision 2).
+--  5. A track StudioSync's Undo brings back gets what a bandmate made on it while it was gone (the soak's 5023).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -252,6 +256,27 @@ do
   S.edit(B, function() reaper.DeleteTrack(S.track(B, "Gtr")) end)
   assert(bee_gone(S) == 1 and not claimask.big_pending(B.F.proj), "a third of the tracks goes without asking")
   print("rt-reopen 4: deleting half the song's tracks or more asks first; Yes sends, No or no answer puts them back")
+end
+
+-- ---- 5. a track StudioSync's Undo brings back brings what a bandmate made on it while it was gone (the soak's 5023) ---------------------------
+do
+  local S, A, B = song("Reopen5")
+  T = T + 5
+  S.edit(B, function() reaper.DeleteTrack(S.track(B, "Gtr")) end) -- (Bee deletes Gtr)
+  -- James, not having seen it, records a take on Gtr
+  T = T + 1
+  S.edit(A, function(F) F.add_item(S.track(A, "Gtr"), table.concat({ "<ITEM", "POSITION 2", "LENGTH 1", 'NAME "James take"', "<SOURCE MIDI",
+    "HASDATA 1 960 QN", "E 960 b0 7b 00", ">", ">" }, "\n") .. "\n") end)
+  S.recv(B) -- (it reaches Bee: Gtr is gone here, so the take is recorded gone with it)
+  T = T + 1
+  S.as(B)
+  local said = require("undo").step(B.F.proj, B.cfg, S.b, false, {})
+  S.settle(B)
+  assert(S.track(B, "Gtr"), "Bee's Undo brings Gtr back: " .. tostring(said))
+  S.recv(B)
+  local t = S.track(B, "Gtr")
+  assert(t and #t.items == 1, "and the next pass puts James's take on it (was: gone on Bee's alone until heal): " .. (t and #t.items or -1))
+  print("rt-reopen 5: a track StudioSync's Undo brings back gets what a bandmate made on it while it was gone")
 end
 
 print("ok rt-reopen")
