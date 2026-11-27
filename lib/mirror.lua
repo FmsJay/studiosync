@@ -4480,7 +4480,9 @@ function W.order(w)
   end
   -- (a track this person moved, or made here, gets a rank between its neighbours' as REAPER has them now, so every computer sorts it there:
   -- lib/rank.lua. Only in a room with ranks (the first look of an opening is the file's order, nobody's move). rt-sync2c)
-  if not first_here and mirror.ranked(proj) then
+  local ranked = false -- (mirror.ranked, from the states this look already read: not two REAPER calls a track every look. rt-sync2c)
+  for _, o in ipairs(objs) do if o.kind == "track" and type(o.state) == "table" and o.state.rank then ranked = true; break end end
+  if not first_here and ranked then
     local list, need = {}, {}
     for _, o in ipairs(objs) do
       if o.kind == "track" and o.ptr and type(o.state) == "table" then
