@@ -329,8 +329,10 @@ assert(rec and #gtr.fx == 4 and gtr.fx[4].name:find("Hop", 1, true) and gtr.fx[1
 assert(rec.held[gtr.fx[1].guid] == "0 0 0" and rec.held[gtr.fx[2].guid] == "1 0 0", "the band's states now")
 table.remove(gtr.fx, 4)
 tick()
-rec = hops.offload_of("P1", gtr)
-assert(rec and rec.held[gtr.fx[1].guid] == "0 0 0", "a Hop deleted by hand: back, and the chain still comes back on, not bypassed")
+-- (deleting the Hop is bringing them back now: findings 2026-11-27 item 8, rt-borrow)
+assert(not hops.offload_of("P1", gtr) and not gtr.fx[1].off and gtr.fx[2].off and gtr.fx[3].off and logs[#logs]:find("its StudioSync Hop was removed", 1, true),
+  "a Hop deleted by hand: back here, each plug-in on or bypassed as the band has it")
+offload()
 gtr.fx = { plugin(eq.name), plugin("VST3: Other (Z)") }
 gtr.ext.band_local_fx = ""
 tick()

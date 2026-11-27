@@ -73,6 +73,8 @@ never depends on it:
 - The Hop gone **and** its tag gone is still the band's chain replacing the track's (mirror empties `band_local_fx` when it sets the band's
   chain): the Hop goes back in, as before. That's how the two are told apart.
 - `hops.stop` now cleans the tag even when the Hop wasn't found (it was left behind before).
+- After the band replaces a chain, the song's plug-ins have new ids: a hop's record now follows its plug-in's new id (`rec.of`), so Auto and
+  the freeze keep finding it (before, `hops.of_fx` from the plug-in lost it the same way).
 - **The owner's side**: deleting a try's hidden track by hand is `hoptry.end_use` (their Stop: the bandmate is told, the yes goes). A lost
   "stop" message is still covered by the idle drop (30 s without the requester's audio or asks).
 
@@ -206,6 +208,10 @@ Allow without a click is as in rt-hop2 round 2 (the laptop's own web UI over `ss
   answer an ask, as for claim asks.
 
 ## Left
+
+- `prints.hop_plays` reads Live sync's hop state, so a `prints.choose` run from the panel's own Lua (the Parts play radio buttons) doesn't
+  see hops: a part with a live hop can switch to its print there until Live sync chooses it again (its next look of that item, or the hop's
+  next start/stop). `shortcut: in-process state; publish S.stand through ExtState if the panel's choice matters.`
 
 - Borrowing a plug-in whose state is over 48 KB (needs paging or a file).
 - Owner-side window edits on a borrowed plug-in's hidden copy aren't frozen into the song.

@@ -275,8 +275,10 @@ tick()
 assert(hops.S.stand[amp.guid] == "GGG", "a plug-in a hop plays here is known (prints.hop_plays)")
 -- the band's chain replaced the track's (mirror empties this computer's list): the Hop goes back in, as before
 table.remove(gtr.fx, 3); gtr.ext.band_local_fx = ""
+amp.guid = "{AMP-AFTER-REPLACE}" -- (a replaced chain's plug-ins have new ids)
 tick()
 assert(hops.records("P1")["1"] and hops.is_hop_name(gtr.fx[3].name), "replaced by the band: put back")
+assert(hops.records("P1")["1"].of == amp.guid and hops.S.stand[amp.guid] == "GGG", "and the record follows its plug-in's new id (Auto, the freeze)")
 -- deleted by hand (the list still names it): stopped, on both sides, nothing left
 hop_guid = gtr.fx[3].guid
 table.remove(gtr.fx, 3)

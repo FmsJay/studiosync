@@ -501,7 +501,8 @@ function hoptry.model(proj, cfg, b)
     sel = sel and select(2, reaper.GetTrackName(sel)) or nil, ended = ended, live = hp.available() }
 end
 function hoptry.web_tick(proj, cfg, b, publish, now)
-  publish("tryask", { asks = hoptry.asks() }) -- (on every page, whichever tab: the toast in tryfx.js. Sent only when it changes)
+  local asks = hoptry.asks() -- (on every page, whichever tab: the toast in tryfx.js. Only while there are some, and once more when they're gone)
+  if #asks > 0 or web.asked then web.asked = #asks > 0; publish("tryask", { asks = asks }) end
   if now > web.want or now - web.at < hoptry.BUILD_EVERY then return end
   web.at = now
   local ok, m = pcall(hoptry.model, proj, cfg, b)

@@ -863,16 +863,20 @@ function hops.tick(cfg, b, proj)
         S.keep[rec.token] = nil
         if rec.borrowed then S.dirty[rec.token] = now end
       end
-      if not rec.offload and not guid_at(tr, rec.hop) then -- (the band's chain replaced this track's, own FX and all: the Hop goes back in)
+      local moved = not rec.offload and not guid_at(tr, rec.hop)
+      if moved then -- (the band's chain replaced this track's, own FX and all: the Hop goes back in)
         local i = rec.try and reaper.TrackFX_GetCount(tr) - 1 or select(2, find_fx(proj, rec.oid, rec.fxi, rec.fx)) -- (a try's at the end)
         local idx = add_hop(tr, i + 1, id, math.floor(tonumber(rec.latency) or hops.LATENCY), 1)
-        if idx then
-          rec.hop = reaper.TrackFX_GetFXGUID(tr, idx)
-          band.set_track_ext(tr, "band_local_fx", band.track_ext(tr, "band_local_fx") .. rec.hop .. hops.TAG)
-          local now_recs = hops.records(proj) -- (read again: another hop stopped earlier in this loop would come back with the copy)
-          now_recs[key] = rec
-          save(proj, now_recs)
-        end
+        if idx then rec.hop = reaper.TrackFX_GetFXGUID(tr, idx) else moved = false end
+      end
+      -- (a replaced chain gives the song's plug-in a new id: the record follows it, or Auto and the freeze would lose it. rt-borrow)
+      local g = fi and reaper.TrackFX_GetFXGUID(tr, fi) -- (the Hop goes in after it: fi still points at it)
+      if g and g ~= rec.of then rec.of, moved = g, moved or "of" end
+      if moved then
+        if moved ~= "of" then band.set_track_ext(tr, "band_local_fx", band.track_ext(tr, "band_local_fx") .. rec.hop .. hops.TAG) end
+        local now_recs = hops.records(proj) -- (read again: another hop stopped earlier in this loop would come back with the copy)
+        now_recs[key] = rec
+        save(proj, now_recs)
       end
       if not linked then linked = hops.ensure_link(cfg, secret) end
       local st = status(id)
