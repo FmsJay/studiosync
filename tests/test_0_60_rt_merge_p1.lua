@@ -113,7 +113,7 @@ do
     "a one-second tick rewrites each ask's seconds left")
   local n = 0
   for _ in body:gmatch("askTill%(%a%.till%)") do n = n + 1 end
-  assert(n == 2 and not body:find("Math.round(", 1, true), "both kinds of ask (on you, and yours) show a ticking count, none a fixed one")
+  assert(n == 3 and not body:find("Math.round(", 1, true), "every kind of ask (on you, yours, and StudioSync's own: rt-askweb) shows a ticking count, none a fixed one")
   print("rt-p1: the web page's claim asks count down every second")
 end
 print("ok rt-p1 merge")
