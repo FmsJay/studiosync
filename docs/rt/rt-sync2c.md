@@ -294,6 +294,11 @@ All on the real computers after a release with these files. Keep a copy of the t
 9. **An old-version computer in the room** (one computer kept on the previous release): moves made there land on the new computers at the same
    place and stay; moves made on a new computer land there; after a minute of quiet all three show one order.
 10. **Undo of a move:** move a track, StudioSync Undo, Redo: every computer follows each step.
+11. **Tracks put in order as changes land:** while the laptop moves tracks, keep editing on the desktop: its tracks move into place right after
+   each move lands, never while you hold the mouse button or while playing (then at the next stop). Report if a move under your hands is jarring.
+12. **A track brought back by StudioSync's Undo** (41980c2): the desktop deletes a track; within a few seconds the laptop (not yet seeing it)
+   records a short take on it; the desktop presses StudioSync's Undo: the track comes back on all three, with the laptop's take on it, on the
+   desktop too.
 
 ## What phase 5 should know
 
