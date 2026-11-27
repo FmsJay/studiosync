@@ -103,7 +103,7 @@ async function open(url, o = {}) {
   await cdp('Storage.clearDataForOrigin', { origin: new URL(url).origin, storageTypes: 'local_storage' });
   await cdp('Page.navigate', { url });
   // (until the shell has shown its first page and had the first state: a loaded machine takes longer than an idle one)
-  for (let t = 0; t < 8000; t += 100) { await sleep(100); try { if (await ev('location.href === ' + JSON.stringify(url) + ' && !!(window.ssTabs && (ssTabs.route() || ssEnv.pop)) && document.readyState === "complete"')) break; } catch (e) {} }
+  for (let t = 0; t < 8000; t += 100) { await sleep(100); try { if (await ev('location.href === ' + JSON.stringify(url) + ' && !!(window.ssTabs && (ssTabs.route() || (ssEnv.pop && document.body.classList.contains("sspop")))) && document.readyState === "complete"')) break; } catch (e) {} }
   await sleep(400);
 }
 const tabsShown = () => ev('[...document.querySelectorAll("#sstabs .tab:not(.ssmore)")].filter((b) => !b.hidden).map((b) => b.textContent).join(",")');
@@ -133,7 +133,8 @@ const HIST = { users: ['Bo'], cols: [false], kinds: ['take', 'edit', 'mix', 'mid
 const HH = { sws: true, driver: true, tracks: [['T-A', 'Guitar']], then: { t: T0 + 150, state: 'ready', file: '0123456789abcdef0123456789abcdef', len: 90 } };
 const WITH = (extra) => ({ engine: true, topics: Object.assign({}, PROJECT.topics, { hchanges: CH, hmixes: MX, hist: HIST, hhear: HH }, extra || {}) });
 const mark = () => actions.length;
-const waitFor = async (js, ms = 3000) => { for (let t = 0; t < ms; t += 100) { if (await ev(js)) return true; await sleep(100); } return false; };
+// (a loaded machine's first topic can take a few seconds)
+const waitFor = async (js, ms = 8000) => { for (let t = 0; t < ms; t += 100) { if (await ev(js)) return true; await sleep(100); } return false; };
 const sent = (m, f) => actions.slice(m).filter((a) => a.topic === 'history' && f(a));
 const click = (sel, text) => ev('(() => { const b = [...document.querySelectorAll(' + JSON.stringify(sel) + ')].find((x) => x.textContent === ' + JSON.stringify(text) + ' && !x.closest("[hidden]")); if (!b) return false; b.click(); return true; })()');
 const texts = (sel) => ev('[...document.querySelectorAll(' + JSON.stringify(sel) + ')].filter((x) => !x.closest("[hidden]")).map((x) => x.textContent).join("|")');
