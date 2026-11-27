@@ -3938,7 +3938,6 @@ mirror.fx_load_knobs = mirror.fx_load_knobs or {} -- chain -> its knobs at the s
 -- When each track last had a plug-in window open, looked at once a second: a change inside a plug-in's own window often moves no knob.
 mirror.fx_open_at = {}
 mirror.fx_open_text = mirror.fx_open_text or {} -- chain whose data the hash can't see -> its text when a window of it was first seen open
-mirror.cc_seen = {}
 mirror.master_seen = {} -- project -> its master track at the last look (W.order: a file opened again in the same tab has a new one)
 mirror.fx_quiet = mirror.fx_quiet or {}
 mirror.fx_last = mirror.fx_last or {} -- proj .. chain oid -> its knobs when it last landed here or went out from here (mirror.receive's unseen-edit check)
@@ -4400,11 +4399,10 @@ function W.order(w)
   -- every 2 s for good (laptop, undoing bandmates' new tracks, 0.42.3). So a track that differs only by its place is a
   -- change only on the look where the list has changed and nothing from the band landed since the last look.
   local order_key, order = tostring(proj), {}
-  do -- (a file opened again in the same tab keeps the tab's address, and Live sync runs on through it: its tracks are all new. Then it's a first look.
-    -- Deleting the first track reads the same: a first look does no harm)
-    local had = mirror.cc_seen[order_key]
-    if had and not reaper.ValidatePtr2(proj, had, "MediaTrack*") then mirror.order_seen[order_key] = nil end
-    mirror.cc_seen[order_key] = reaper.GetTrack(proj, 0)
+  do -- (a file opened again in the same tab keeps the tab's address, and Live sync runs on through it: its tracks are all new. Then it's a first
+    -- look: mirror.watch forgets order_seen on a new opening, told by the master track (mirror.on_open). It was told by the first track's
+    -- pointer going, so deleting track 1 read as a reopen too: every chain's knobs were noted afresh as "loading", and a knob turned in that
+    -- moment was never sent, on that computer alone (the soak's 5028 class). rt-sync2c)
     -- (the timeline's "opened behind the song" look only for a file opened again, told by its new master track, as sync.settled_for does. On a
     -- deleted first track it ran too, and the band's delete-all with a tempo change, landed over the link before session.json had come through
     -- Syncthing, had its new tempo put back to the old one on every other computer. Cross test step 1, James, rt)
@@ -5799,7 +5797,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   -- the tab kept the old project's edit count as "you edited", and W.gone took what the file lacked for a deletion. rt-guard)
   local opened_now = mirror.on_open(proj)
   if opened_now then
-    mirror.edit_seen[pk], mirror.looks[pk] = nil, nil
+    mirror.edit_seen[pk], mirror.looks[pk], mirror.order_seen[pk] = nil, nil, nil -- (order_seen: W.order's first look. rt-sync2c)
     for k in pairs(mirror.gone_why) do if k:sub(1, #pk) == pk then mirror.gone_why[k] = nil end end
   end
   mirror.hold_colours()
