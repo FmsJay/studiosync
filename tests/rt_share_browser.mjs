@@ -220,8 +220,12 @@ ok(await until(async () => (await text(pb, '.call-note')).includes('James said n
 ok(!ext.on, 'and nothing was granted');
 await press(pb, 'Ask for control', '.board-bar');
 ok(await until(() => has(pa, 'Allow', '.ring')), 'asked a third time');
-const aid = await pa.ev('[...window.ssCallTest.state().sessions.values()].find((s) => s.asking).id');
-A.answers = [{ call: aid, yes: true, seq: 1, time: now() }];
+const aid = await pa.ev('[...window.ssCallTest.state().sessions.values()].find((s) => s.asking).askId');
+ok(A.actions.some((a) => a.t === 'ctlask' && a.call === aid && a.on === true), 'the bar is told this ask, by its own id');
+A.answers = [{ call: A.actions.filter((a) => a.t === 'ctlask' && a.call !== aid)[0].call, yes: true, seq: 1, time: now() }];
+await sleep(600);
+ok(!ext.on, 'a yes to an earlier ask doesn’t answer this one');
+A.answers = [{ call: aid, yes: true, seq: 2, time: now() }];
 ok(await until(() => ext.on && ext.who === 'chilio'), 'the panel’s Allow (through Live sync’s model) grants it too');
 ok(await until(async () => (await bSession(pb)).ctl.you), 'B is in control again');
 A.answers = [];
