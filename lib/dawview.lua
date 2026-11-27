@@ -107,7 +107,21 @@ local function item_out(it)
 end
 local function item_sig(it)
   return table.concat({ r3(it.pos), r3(it.len), it.rgb or "", it.mute and 1 or 0, it.name or "", it.midi and ("x" .. (it.nh or #(it.notes or {}))) or (it.peaks or ""),
-    it.vid and (it.vid.id .. "@" .. it.vid.o .. "x" .. it.vid.r) or "", r3(it.fi or 0), it.fis or 0, r3(it.fo or 0), it.fos or 0 }, "|")
+    it.vid and (it.vid.id .. "@" .. it.vid.o .. "x" .. it.vid.r) or "", r3(it.fi or 0), it.fis or 0, r3(it.fo or 0), it.fos or 0, it.lane or "" }, "|")
+end
+-- A track's fixed lanes that hold shown items (lib/dawview.lua items_of: the lanes that play), in order -> REAPER's lane -> its row on the page
+-- (0-based), and how many rows; nil when there's one row or none (the page draws it as a plain track). Pure. rt-ui7
+function dawview.lane_rows(items)
+  local seen, order = {}, {}
+  for _, it in ipairs(items or {}) do
+    local l = it.lane
+    if l and not seen[l] then seen[l] = true; order[#order + 1] = l end
+  end
+  if #order < 2 then return nil end
+  table.sort(order)
+  local at = {}
+  for k, l in ipairs(order) do at[l] = k - 1 end
+  return at, #order
 end
 function dawview.build(raw, per)
   per = per or dawview.CHUNK_TRACKS
@@ -115,13 +129,20 @@ function dawview.build(raw, per)
   for i, tr in ipairs(raw.tracks or {}) do
     pause()
     -- (e: how many envelopes it has, so the page offers its automation lanes: stage 3, lib/dawmidi.lua)
+    -- (h: its height in REAPER's arrange, px, so the page draws tall and short tracks as REAPER does; nl: rows of fixed lanes, each item's ln
+    -- its row. rt-ui7)
+    local rows, nl = dawview.lane_rows(tr.items)
     tracks[i] = { n = tr.name, c = tr.rgb, d = tr.depth > 0 and tr.depth or nil, f = tr.folder and 1 or nil, m = tr.mute and 1 or nil, s = tr.solo and 1 or nil,
-      e = (tr.envs or 0) > 0 and tr.envs or nil }
+      e = (tr.envs or 0) > 0 and tr.envs or nil, h = (tonumber(tr.h) or 0) > 0 and math.floor(tr.h) or nil, nl = nl }
     local k = (i - 1) // per + 1
     local ch = chunks[k]
     if not ch then ch = { sig = {}, t = { key = raw.key, k = k - 1, from = i - 1, tr = {} } }; chunks[k] = ch end
     local list = {}
-    for j, it in ipairs(tr.items or {}) do list[j] = item_out(it); ch.sig[#ch.sig + 1] = item_sig(it) end
+    for j, it in ipairs(tr.items or {}) do
+      list[j] = item_out(it)
+      if rows then list[j].ln = rows[it.lane] end
+      ch.sig[#ch.sig + 1] = item_sig(it)
+    end
     ch.t.tr[#ch.t.tr + 1] = list
     ch.sig[#ch.sig + 1] = "/"
   end
@@ -130,7 +151,7 @@ function dawview.build(raw, per)
   -- (i: REAPER's own number for it, which an edit from the page names it by: lib/dawedit.lua)
   for i, m in ipairs(raw.markers or {}) do markers[i] = { p = r3(m.pos), e = m.region and r3(m.rend) or nil, n = m.name ~= "" and m.name or nil, c = m.rgb, i = m.num } end
   local header = { key = raw.key, len = r3(raw.len), tracks = tracks, markers = markers, bars = raw.bars or {}, sigs = raw.sigs or {},
-    tempo = raw.tempo or {}, grid = raw.grid, per = per, snap = raw.snap and 1 or nil }
+    tempo = raw.tempo or {}, grid = raw.grid, per = per, snap = raw.snap and 1 or nil, rf = raw.rf }
   return header, chunks
 end
 -- Which chunks to publish: the ones whose fingerprint moved since `state.sigs`, and the topics of chunks no longer there (published once as
@@ -329,12 +350,14 @@ end
 -- (peaks REAPER hasn't built yet, or a video item, which the look offers again each time).
 local function read_items(tr, now, budget_end)
   local items, pending, again = {}, false, false
+  local fixed = reaper.GetMediaTrackInfo_Value(tr, "I_FREEMODE") == 2 -- (fixed lanes: each item's lane, so the page draws them in rows. rt-ui7)
   for _, it in ipairs(dawview.items_of(tr)) do
     local pos, len = reaper.GetMediaItemInfo_Value(it, "D_POSITION"), reaper.GetMediaItemInfo_Value(it, "D_LENGTH")
     local take = reaper.GetActiveTake(it)
     local o = { pos = pos, len = len, mute = reaper.GetMediaItemInfo_Value(it, "B_MUTE") ~= 0, name = "",
       rgb = native_rgb(reaper.GetMediaItemInfo_Value(it, "I_CUSTOMCOLOR")),
-      fi = reaper.GetMediaItemInfo_Value(it, "D_FADEINLEN"), fo = reaper.GetMediaItemInfo_Value(it, "D_FADEOUTLEN") }
+      fi = reaper.GetMediaItemInfo_Value(it, "D_FADEINLEN"), fo = reaper.GetMediaItemInfo_Value(it, "D_FADEOUTLEN"),
+      lane = fixed and math.floor(reaper.GetMediaItemInfo_Value(it, "I_FIXEDLANE")) or nil }
     -- (the shapes only where there's a fade: two calls fewer an item on a song with none)
     if (o.fi or 0) > 0 then o.fis = math.floor(reaper.GetMediaItemInfo_Value(it, "C_FADEINSHAPE")) end
     if (o.fo or 0) > 0 then o.fos = math.floor(reaper.GetMediaItemInfo_Value(it, "C_FADEOUTSHAPE")) end
@@ -399,7 +422,8 @@ function dawview.read(proj, key, now, budget_end, tc, full)
     if dawview.shown(tr) then
       local name = select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false))
       local t = { name = name, rgb = native_rgb(band.track_colour(tr)), depth = indent, folder = fd == 1, mute = reaper.GetMediaTrackInfo_Value(tr, "B_MUTE") ~= 0,
-        solo = reaper.GetMediaTrackInfo_Value(tr, "I_SOLO") ~= 0, items = {}, envs = tonumber(reaper.CountTrackEnvelopes(tr)) or 0 }
+        solo = reaper.GetMediaTrackInfo_Value(tr, "I_SOLO") ~= 0, items = {}, envs = tonumber(reaper.CountTrackEnvelopes(tr)) or 0,
+        h = tonumber(reaper.GetMediaTrackInfo_Value(tr, "I_TCPH")) } -- (its height in the arrange, px: rt-ui7)
       raw.tracks[#raw.tracks + 1] = t
       local place = #raw.tracks - 1
       local oid = mirror.track_oid(tr)
@@ -453,7 +477,19 @@ function dawview.read(proj, key, now, budget_end, tc, full)
   end
   raw.grid = select(2, reaper.GetSetProjectGrid(proj, false))
   raw.snap = reaper.GetToggleCommandStateEx(0, band.FRONT_TOGGLES.snap) == 1 -- (the page snaps a drag as REAPER would; dawedit snaps it again)
+  raw.rf = dawview.ruler_mode()
   return raw, pending, places
+end
+-- The ruler's time format, so the page's ruler and time read as REAPER's do: format_timestr_pos with -1 writes a position in the project's own
+-- format; matched against the modes it names (0 m:ss, 1 bars.beats and m:ss, 2 bars.beats, 3 seconds, 4 samples, 5 h:m:s:f). -> 0..5, or nil
+-- (another format, or no answer). rt-ui7
+function dawview.ruler_mode()
+  local f = reaper.format_timestr_pos
+  if not f then return nil end
+  local own = f(61.25, "", -1)
+  if type(own) ~= "string" or own == "" then return nil end
+  for m = 0, 5 do if f(61.25, "", m) == own then return m end end
+  return nil
 end
 
 -- ---- Live sync's tick (through lib/webui.lua) -------------------------------------------------------------------------------------------

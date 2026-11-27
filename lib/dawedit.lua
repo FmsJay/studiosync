@@ -15,6 +15,11 @@ local dawedit = {}
 dawedit.NAME_MAX = 100 -- characters of a marker's or region's name
 dawedit.MIN_LEN = 0.01 -- seconds: the shortest an item trims to
 dawedit.TOL = 0.002    -- seconds: still where the page drew it (positions go to the page rounded to ms)
+-- The Project page's View / Edit switch (rt-ui7): the page puts `edit = true` in every edit it sends while it's in Edit, and an edit without it
+-- (a page in View, a stale tab, an older page) is refused here and in lib/dawmidi.lua. A UI safety, not a security check: who may edit what is
+-- unchanged.
+dawedit.VIEW_WHY = "the Project page is in View: switch to Edit to change things there"
+function dawedit.edit_flag(e) return type(e) == "table" and e.edit == true end
 dawedit.reply = nil    -- the last edit's answer, published by dawview.tick
 dawedit.asking = nil   -- whom the edit being made asks for what they claimed (lib/claimask.lua), else nil
 
@@ -281,6 +286,7 @@ end
 function dawedit.action(proj, cfg, b, raw)
   local e, why, id = dawedit.parse(raw)
   dawedit.asking, dawedit.asking_at = nil, nil
+  if e and not dawedit.edit_flag(raw) then id, why, e = e.id, dawedit.VIEW_WHY, nil end
   if e then id = e.id; why = apply(proj, cfg, b, e) end
   local ask = not why and dawedit.asking or nil
   -- (only when mirror.watch will ask: an edit that merges with an auto-claimer's change goes out. lib/claimask.lua web_ask, rt-p1)

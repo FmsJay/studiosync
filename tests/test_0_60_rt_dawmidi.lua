@@ -227,9 +227,10 @@ local function song()
 end
 local b = { song = "S", room = "main" }
 local function as(user) return { root = "R", user = user } end
-local function note(user, e) return dawview.action("P", as(user), b, { topic = "daw", note = e }), dawedit.reply end
-local function auto(user, e) return dawview.action("P", as(user), b, { topic = "daw", auto = e }), dawedit.reply end
-local function send(user, e) return dawview.action("P", as(user), b, { topic = "daw", send = e }), dawedit.reply end
+local function ed(e) if type(e) == "table" and e.edit == nil then e.edit = true end return e end -- (the page in Edit: rt-ui7, tests/test_0_60_rt_ui7.lua has View)
+local function note(user, e) return dawview.action("P", as(user), b, { topic = "daw", note = ed(e) }), dawedit.reply end
+local function auto(user, e) return dawview.action("P", as(user), b, { topic = "daw", auto = ed(e) }), dawedit.reply end
+local function send(user, e) return dawview.action("P", as(user), b, { topic = "daw", send = ed(e) }), dawedit.reply end
 local function keys() return fake.tracks[1].items[1].takes[1].notes end
 local KEYS = { lane = 0, idx = 0, p = 4, l = 8 }
 

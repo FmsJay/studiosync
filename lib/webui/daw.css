@@ -94,3 +94,17 @@
   .pbar label { font-size: 0; } /* (the controls say it) */
   .pbar select, .pbar input, .pbar button { font-size: 12px; }
 }
+/* View / Edit (rt-ui7): the switch at the left of the Project bar (and the Mixer's), the orange frame while editing, the edit row's
+   changing controls only in Edit */
+.dmode { display: inline-flex; align-items: center; gap: 0; }
+.dmode button { padding: 4px 10px; border-radius: 0; }
+.dmode button:first-child { border-radius: 6px 0 0 6px; }
+.dmode button:nth-child(2) { border-radius: 0 6px 6px 0; margin-left: -1px; }
+.dmode button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.dmode .dme[aria-pressed="true"] { background: #e8590c; border-color: #e8590c; }
+.dmnote { margin-left: 8px; font-size: 13px; font-weight: 600; color: #e8590c; white-space: nowrap; }
+.dmnote[hidden] { display: none; }
+.song.ssediting .dbar, .song.ssediting .dwrap, .mixer.ssediting { box-shadow: inset 0 0 0 2px #e8590c; }
+.song:not(.ssediting) .dedit .eonly { display: none; }
+.mixer > .dmode { margin: 0 0 6px; }
+@media (max-width: 320px) { .dmode button { padding: 2px 7px; font-size: 12px; } .dmnote { font-size: 0; } .dmnote::before { content: "Editing"; font-size: 11px; } }

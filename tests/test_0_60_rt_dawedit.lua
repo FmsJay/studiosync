@@ -136,6 +136,7 @@ end
 local b = { song = "S", room = "main" }
 local function as(user) return { root = "R", user = user } end
 local function act(user, edit)
+  if type(edit) == "table" and edit.edit == nil then edit.edit = true end -- (the page in Edit: rt-ui7, tests/test_0_60_rt_ui7.lua has View)
   local said = dawview.action("P", as(user), b, { topic = "daw", edit = edit })
   return said, dawedit.reply
 end

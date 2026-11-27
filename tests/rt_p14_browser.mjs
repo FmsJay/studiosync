@@ -121,7 +121,9 @@ await sleep(600);
 await ev('[...document.querySelectorAll(".tabs .tab")].find((b) => b.textContent === "Project").click(); 1');
 await sleep(300);
 ok(await ev('!!window.ssDaw && !!window.ssDaw.head && window.ssDaw.head.tracks.length === 3'), 'the page drew the stand-in project');
-ok((await text('.dfollow')).startsWith('View') && await ev('document.querySelector(".dfollow select").getAttribute("aria-label")') === 'Watch a bandmate', 'the watch select reads as P7 words it');
+ok((await text('.dfollow')).startsWith('Follow') && await ev('document.querySelector(".dfollow select").getAttribute("aria-label")') === 'Watch a bandmate', 'the watch select reads as P7 words it (Follow: rt-ui7)');
+await ev('document.querySelector(".dmode .dme").click(); 1'); // (the page opens in View: these checks edit. rt-ui7, tests/rt_ui7_browser.mjs has View)
+ok(await ev('window.ssDaw.editing()'), 'switched to Edit');
 
 // ---- delete ---------------------------------------------------------------------------------------------------------------------------
 {

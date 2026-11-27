@@ -457,7 +457,9 @@ function dawmidi.action(proj, cfg, b, a)
   if a.send ~= nil then parse, apply, ops = dawmidi.parse_send, send_apply, SEND_OPS
   elseif a.note == nil then parse, apply, ops = dawmidi.parse_auto, auto_apply, AUTO_OPS end
   if not (type(a.note) == "table" and a.note.step == true and a.note.op == "add") then dawmidi.step_flush(proj, now, true) end -- (any other edit ends a step run first)
-  local e, why, id = parse(a.note or a.auto or a.send)
+  local raw = a.note or a.auto or a.send
+  local e, why, id = parse(raw)
+  if e and not dawedit.edit_flag(raw) then id, why, e = e.id, dawedit.VIEW_WHY, nil end -- (the page's View / Edit switch: lib/dawedit.lua. rt-ui7)
   if e then id = e.id; why = apply(proj, cfg, b, e) end
   dawedit.reply = { id = id, ok = not why or nil, why = why }
   S.built = nil -- (looked at again at once, whatever the change count)
