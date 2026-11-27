@@ -47,12 +47,15 @@ reaper = setmetatable({
   MIDIEditor_GetTake = function() return midi_take end,
   GetFocusedFX2 = function() return 0, -1, -1, -1 end,
   JS_Mouse_GetState = function() return mouse end,
+  SNM_GetIntConfigVar = false, JS_Window_FindChildByID = false, -- (no SWS or js_ReaScriptAPI here: the vertical view stays as it is)
+  GetMediaTrackInfo_Value = function() return 0 end,
   CountProjectMarkers = function() return #markers end,
   EnumProjectMarkers3 = function(_, i) local m = markers[i + 1]; return 1, m.rgn, m.pos, m.rend, m.name end,
   DeleteProjectMarkerByIndex = function(_, i) table.remove(markers, i + 1) end,
   AddProjectMarker2 = function(_, rgn, pos, rend, name, _, col) markers[#markers + 1] = { rgn = rgn, pos = pos, rend = rend, name = name, col = col } end,
   ColorToNative = function(r, g, b) return (b << 16) | (g << 8) | r end,
   GetOS = function() return "Win64" end, GetExePath = function() return "C:/REAPER" end, GetResourcePath = function() return "C:/res" end,
+  GetProjExtState = function() return 1, "" end, SetProjExtState = function() end,
 }, { __index = function(_, k) error("fake reaper has no " .. tostring(k)) end })
 local logged = {}
 local band = require("band")
@@ -64,6 +67,8 @@ package.loaded.presence = { peers = function() return peers end, followed = func
 package.loaded.sync = { driver_name = "Bo" }
 package.loaded.direct = { live_available = function() return true end, send_live = function(_, kind, d) sent[#sent + 1] = { kind = kind, d = d } end }
 local painted = 0
+package.loaded.persons = {} -- (no folding here: each computer its own person. lib/follow.lua fold)
+package.loaded.live = { realtime_on = function() return false end }
 package.loaded.people = { colours = function(_, list) return { [list[1]] = 0x112233 } end, parity = function() return true end,
   paint = function() painted = painted + 1 end }
 local follow = require("follow")
@@ -111,7 +116,7 @@ local bass, keys_t = T("Bass", "T1"), T("Keys", "T2")
 local riff, pad = I(bass, "I1", 4, 2), I(keys_t, "I2", 8, 4)
 follow.tick(P, cfg, b, -math.huge)
 assert(#sent == 0, "nobody follows, nothing edited: nothing sent")
-followed_by = true
+peers[1].follow = "James" -- (Bo follows you: lib/follow.lua followers)
 bass.sel, riff.sel = true, true
 clock = clock + 1
 follow.tick(P, cfg, b, -math.huge)
@@ -126,7 +131,7 @@ assert(#sent == 1, "unchanged: only every KEEP")
 clock = clock + 1
 follow.tick(P, cfg, b, -math.huge)
 assert(#sent == 2, "KEEP: again, for a new follower")
-followed_by = false
+peers[1].follow = nil
 bass.sel, riff.sel = false, false
 sent = {}
 
@@ -233,7 +238,7 @@ assert(pm.mate == "Bo" and pm.paused and pm.seen == "Paused: Bo: Bass selected",
 pm = webpages.play_model({ side = "", cursor = "1", mate = "", paused = false, seen = "" })
 assert(pm.mate == nil and pm.paused == nil and pm.seen == nil, "nobody")
 ext["follow driver"] = "1"
-assert(webpages.action(P, cfg, b, { topic = "play", mate = "Bo" }):find("watching Bo") and ext["follow " .. P] == "Bo" and ext["follow driver"] == "",
+assert(webpages.action(P, cfg, b, { topic = "play", mate = "Bo" }):find("following Bo") and ext["follow " .. P] == "Bo" and ext["follow driver"] == "",
   "the web page watches Bo, as the panel's Follow does")
 assert(webpages.action(P, cfg, b, { topic = "play", mate = "Mallory" }):find("left as it is") and ext["follow " .. P] == "Bo", "nobody by that name here: left")
 assert(webpages.action(P, cfg, b, { topic = "play", mate = "James" }):find("left as it is"), "not yourself")

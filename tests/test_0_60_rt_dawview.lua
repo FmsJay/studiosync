@@ -398,7 +398,7 @@ local html, app, js, css = read("lib/webui/index.html"), read("lib/webui/app.js"
 assert(html:find('<link rel="stylesheet" href="daw.css">', 1, true) and html:find('<script src="daw.js" defer></script>', 1, true), "index.html links daw.css and daw.js")
 assert(app:find("dispatchEvent(new CustomEvent('ss-state'", 1, true), "app.js hands the state on")
 for _, want in ipairs({ "addEventListener('ss-state'", "fetch('api/state')", "'X-StudioSync': '1'", "topic: 'daw'", "T.daw", "'dawc' + k", "t.dawcur", "t.dawhist",
-    "{ want: true, history: histOn }", "{ play: 'start', skip: ", "{ play: 'stop' }", "{ restore: v.f }", "touch-action", "'wheel'", "pointerdown" }) do
+    "{ want: true, history: histOn, watch: watched() }", "{ play: 'start', skip: ", "{ play: 'stop' }", "{ restore: v.f }", "touch-action", "'wheel'", "pointerdown" }) do
   assert((js .. css):find(want, 1, true), "the Song page has " .. want)
 end
 assert(not js:find("innerHTML%s*=%s*[^'\n]*%+") , "no data put in as HTML")

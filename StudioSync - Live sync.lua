@@ -853,6 +853,7 @@ function P.status(t)
   if followed then info.mix = require("presence").my_mix(proj) end -- (someone follows you: they hear your mix. lib/presence.lua)
   if (followed or watched) and not info.playing then info.cursor = math.floor(reaper.GetCursorPositionEx(proj) * 1000 + 0.5) / 1000 end -- (followers' cursors go here: lib/presence.lua)
   info.dawview = require("dawview").watching() or nil -- (a page here shows the Song page: bandmates send their view and cursor meanwhile)
+  info.watch = require("dawview").watched_user() -- (whose view that page follows: they send it over the link meanwhile. lib/follow.lua, rt-follow)
   -- (what live audio you're in, for the little icons on your card: Real time mode or Time-sync, and the call. James, 0.59.8)
   info.live = live.realtime_on(proj) and "rt" or (live.ninjam_master(proj) and select(2, reaper.GetProjExtState(proj, band.SECTION, "live_mode")) ~= "jam" and "ts")
     or (require("streams").in_time_on(proj) and "ts") or nil -- (Home's built-in In time: rt-audit §2)
@@ -1158,7 +1159,8 @@ local function tick_body() -- returns true to keep going
         "sonobus for listeners", "outbox", "live owner", "ping", "slow tick", "last here", "draw", "live began", "takelanes",
         -- (and these: a new tab at the same address showed a count-in, a producer, a SonoBus trouble or a drift that were the closed tab's. Review, 0.59.14)
         "end session", "produced by", "producer controls", "timing", "produce ctl", "last_at", "stamping", "together_at", "rt group", "rt silent", "rt silent who", "rt trouble", "driver_away", "mirror drift", "apart",
-        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track", "tick stats" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46)
+        "ninjam shown", "ninjam off", "ninjam start", "ninjam connect", "ninjam host", "unsent", "last_track", "tick stats",
+        "follow person", "follow pinned", "follow state", "follow seen", "follow paused" }) do reaper.DeleteExtState(band.SECTION, k .. " " .. key, false) end -- (unsent, last_track: Round 2 review, 0.59.46; follow person ... paused: the one Follow's, rt-follow)
     return band.log("live sync stopped: '" .. b.song .. "'" .. (b.room ~= "main" and (", side room '" .. b.room .. "',") or "") .. " was closed (it starts again by itself when you reopen it)")
   end
   local now_b = band.binding(proj)
@@ -1299,7 +1301,7 @@ local function tick_body() -- returns true to keep going
       transport.lag_set = true
     end
     if transport.type == "start" and transport.pre == nil then -- (this computer's own Record pre-roll: it presses Record that much sooner, so its playhead is where everyone's is. rt-fix6b)
-      transport.pre = transport.rec and not (transport.follow and theirs) and together.armed(proj) and together.preroll(proj, (transport.pos or 0) - (transport.countin or 0)) or 0
+      transport.pre = transport.rec and not (transport.follow and theirs and not require("follow").records_along()) and together.armed(proj) and together.preroll(proj, (transport.pos or 0) - (transport.countin or 0)) or 0
     end
     local fire = transport.type == "stop" and ((transport.at or 0) + (theirs and (transport.lag or 0) or 0)) or together.plan(transport, cfg.user, nil)
     if transport.type == "stop" and transport.follow and theirs and transport.pos then fire = fire + 2 end -- the position decides; time is a backstop
@@ -1343,7 +1345,9 @@ local function tick_body() -- returns true to keep going
         if reaper.GetPlayStateEx(proj) ~= 0 then reaper.OnStopButtonEx(proj) end
         reaper.SetEditCurPos2(proj, from, false, false)
         if transport.click and (transport.countin or 0) > 0 then click_until(transport.pos or from) end
-        together_take = transport.rec and not (transport.follow and theirs) -- (a take started together may be stopped together)
+        -- (a take started together may be stopped together. Following someone who records: you record with them on your armed tracks, unless
+        -- you said to play along (lib/follow.lua records_along); nothing armed plays along below. rt-follow)
+        together_take = transport.rec and not (transport.follow and theirs and not require("follow").records_along())
         local no_arm = together_take and not together.armed(proj) -- (nothing armed: REAPER's modal "No tracks are armed" box held LinuxBox 75 s. rt-fix5)
         if no_arm then together_take = nil; reaper.OnPlayButtonEx(proj) end -- (plays along instead: together.NO_ARM)
         if together_take then -- side by side: the one who records records, the rest listen
@@ -1355,7 +1359,7 @@ local function tick_body() -- returns true to keep going
           if together.play(proj, transport) then side.skip = transport.skip end -- (a start that skips a time selection skips it here too, and REAPER's jump over it isn't a seek: lib/together.lua. James, 2026-11-21)
         end
         local said = no_arm and together.NO_ARM or transport.remote and string.format("%s from %.2f s: %s started it (they're producing you)", transport.rec and "recording" or "playing", from, tostring(transport.lead))
-          or transport.rec and transport.follow and theirs
+          or transport.rec and transport.follow and theirs and not together_take
           and string.format("playing along with %s's recording from %.2f s (%.0f ms after the planned moment)", tostring(transport.user), from, (tnow - fire) * 1000)
           or string.format("%s together from %.2f s (%s; %.0f ms after the planned moment)", transport.rec and "recording" or "playing",
             from, tostring(transport.user or transport.lead), (tnow - fire) * 1000)

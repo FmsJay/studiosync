@@ -39,8 +39,12 @@ function webpages.health_model(rows, gone, ver, ext)
 end
 -- st: { side (ProjExtState "side": "" off, else bars behind), rt (Real time mode on), refusal (why this user may not start or stop, or nil),
 -- cursor (the edit cursor's bar), regions = { { name, bar } }, due (seconds to a start, or nil), last (the last start or stop, in words),
--- ninjam, sonobus, liveaudio (the studio's own live audio runs here), mate (the bandmate this tab follows, "" nobody), paused (following them is paused), seen (what you see of them) }.
--- -> the Play together topic: from = start-from labels (1: the edit cursor, then each region), as the panel's.
+-- ninjam, sonobus, liveaudio (the studio's own live audio runs here), mate (the bandmate this tab follows, "" nobody), paused (following them is paused), seen (what you see of them),
+-- choice (the one Follow: "" nobody, "*" everyone, "@driver", a person's key), people ({ { key, users, active } }: lib/follow.lua people), pinned (the
+-- computer you picked of theirs, "" their active one), state (follow state: "waiting" | "live" | "paused" | "slow" | ""), norec (play along when they record),
+-- line (what following is, in words: follow.words) }.
+-- -> the Play topic: from = start-from labels (1: the edit cursor, then each region), as the panel's. (rt-follow: the page shows only Follow now;
+-- from, due and the rest stay for an older page.)
 function webpages.play_model(st)
   local from = { "the edit cursor (bar " .. tostring(st.cursor) .. ")" }
   for _, r in ipairs(st.regions or {}) do from[#from + 1] = tostring(r.name) .. " (bar " .. tostring(r.bar) .. ")" end
@@ -48,7 +52,9 @@ function webpages.play_model(st)
   return { follow = on, bars = on and tonumber(st.side) or nil, rt = st.rt and true or nil, may = not st.refusal, why = st.refusal, from = from,
     due = st.due and st.due > 0 and math.floor(st.due * 10 + 0.5) / 10 or nil, last = st.last ~= "" and st.last or nil,
     ninjam = st.ninjam and true or nil, sonobus = st.sonobus and true or nil, liveaudio = st.liveaudio and true or nil,
-    mate = (st.mate or "") ~= "" and st.mate or nil, paused = st.paused and true or nil, seen = (st.seen or "") ~= "" and st.seen or nil }
+    mate = (st.mate or "") ~= "" and st.mate or nil, paused = st.paused and true or nil, seen = (st.seen or "") ~= "" and st.seen or nil,
+    choice = st.choice or "", people = st.people or {}, pinned = (st.pinned or "") ~= "" and st.pinned or nil, state = (st.state or "") ~= "" and st.state or nil,
+    norec = st.norec and true or nil, line = st.line }
 end
 -- A number of bars from a page: whole, 0..MAX_BARS; nil when it isn't one.
 function webpages.bars(v)
@@ -77,18 +83,27 @@ local function play_state(proj, cfg, b, who)
   local regions = {}
   for i, r in ipairs(together.regions(proj)) do regions[i] = { name = r.name, bar = together.bar_of(r.pos) } end
   local due = tonumber(reaper.GetExtState(band.SECTION, "together_at " .. tostring(proj)))
-  return { side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side")), rt = live.realtime_on(proj),
+  local follow, key = require("follow"), tostring(proj)
+  local choice, computer = follow.choice_of(proj)
+  local people = follow.people(require("presence").peers(cfg, b.song, b.room), cfg.user, computer, follow.fold(cfg))
+  local multi, label = false, nil
+  for _, p in ipairs(people) do if p.key == choice then multi, label = #p.users > 1, p.label end end
+  local side, state, seen = select(2, reaper.GetProjExtState(proj, band.SECTION, "side")), reaper.GetExtState(band.SECTION, "follow state " .. key), reaper.GetExtState(band.SECTION, "follow seen " .. key)
+  return { side = side, rt = live.realtime_on(proj),
     refusal = require("dawview").transport_refusal(cfg, b, who), cursor = together.bar_of(reaper.GetCursorPositionEx(proj)), regions = regions,
     due = due and due - together.now() or nil, last = reaper.GetExtState(band.SECTION, "together " .. tostring(proj)),
     ninjam = live.fx(proj, false) ~= nil, sonobus = live.fx(proj, false, live.SONOBUS) ~= nil, liveaudio = live.builtin_audio(cfg.root),
     mate = reaper.GetExtState(band.SECTION, "follow " .. tostring(proj)), seen = reaper.GetExtState(band.SECTION, "follow seen " .. tostring(proj)),
-    paused = reaper.GetExtState(band.SECTION, "follow paused " .. tostring(proj)) ~= "" }
+    paused = reaper.GetExtState(band.SECTION, "follow paused " .. tostring(proj)) ~= "",
+    choice = choice, people = people, pinned = reaper.GetExtState(band.SECTION, "follow pinned " .. key), state = state, norec = not follow.records_along(),
+    line = follow.words({ choice = choice, state = state, seen = seen, computer = computer, multi = multi, label = label, rt = live.realtime_on(proj), bars = tonumber(side) }) }
 end
 
 -- ---- what the pages send ---------------------------------------------------------------------------------------------------------------
 -- a: { topic = "health", want } or { topic = "play", want, follow (on/off), bars (behind), go = "play" | "record" | "stop", from (0: the edit
--- cursor, n: the nth region), countin, click, lag (bars later for listeners: Time-sync), mate (follow this bandmate, "" nobody), resume }.
--- -> words for the log, or nil.
+-- cursor, n: the nth region), countin, click, lag (bars later for listeners: Time-sync), mate (follow this bandmate, "" nobody), resume,
+-- choice (the one Follow, lib/follow.lua set_choice) with computer (one of theirs, or "" their active one), norec }. mate, follow and go are an
+-- older page's: still taken. -> words for the log, or nil.
 function webpages.action(proj, cfg, b, a)
   local now = reaper.time_precise()
   if a.want then S.want[a.topic], S.at[a.topic] = now + webpages.WANT_FOR, -math.huge end
@@ -98,16 +113,19 @@ function webpages.action(proj, cfg, b, a)
     return "checking other scripts and extensions, from the web page"
   end
   if a.topic ~= "play" then return end
-  if type(a.mate) == "string" then -- (Follow a bandmate, as the panel's Follow on their card: only someone this room has. lib/follow.lua)
-    local key = "follow " .. tostring(proj)
+  if a.norec ~= nil then -- (following someone who records: play along instead of recording on your armed tracks. lib/follow.lua, rt-follow)
+    reaper.SetExtState(band.SECTION, "follow no rec", a.norec == true and "1" or "", true)
     S.at.play = -math.huge
-    if a.mate == "" then reaper.DeleteExtState(band.SECTION, key, false); return "stopped watching, from the web page" end
-    local known = false
-    for _, st in ipairs(require("presence").all(cfg, b.song, b.room) or {}) do known = known or st.user == a.mate end
-    if not known or a.mate == cfg.user then return "the web page's Watch was left as it is: nobody called that is in this room" end
-    reaper.SetExtState(band.SECTION, key, a.mate, false)
-    reaper.SetExtState(band.SECTION, "follow driver", "", true)
-    return "watching " .. a.mate .. ", from the web page"
+    if a.choice == nil then return a.norec == true and "following: you play along when they record (web page)" or "following: you record with them on your armed tracks (web page)" end
+  end
+  -- (the one Follow: a person (their active computer, or one picked), everyone, the driver, or nobody. Only someone this room has. An older
+  -- page's "mate" (a computer's name, "" nobody) goes the same way. lib/follow.lua set_choice, rt-follow)
+  local choice = type(a.choice) == "string" and a.choice or type(a.mate) == "string" and a.mate or nil
+  if choice then
+    S.at.play = -math.huge
+    local said, why = require("follow").set_choice(proj, cfg, require("presence").peers(cfg, b.song, b.room), choice,
+      type(a.computer) == "string" and a.computer ~= "" and a.computer or nil, webpages.bars(a.bars))
+    return said and (said .. ", from the web page") or ("the web page's Follow was left as it is: " .. tostring(why))
   end
   if a.resume then S.at.play = -math.huge; reaper.DeleteExtState(band.SECTION, "follow paused " .. tostring(proj), false); return end
   if a.follow ~= nil or a.bars ~= nil then

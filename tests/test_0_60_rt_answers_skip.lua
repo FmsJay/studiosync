@@ -142,13 +142,13 @@ assert(cpp:find("#ifndef REAPERSONA\n  if (command == PLAY_SKIP_SEL)", 1, true),
 local function src(path) local fh = assert(io.open(path, "rb")); local s = fh:read("a"); fh:close(); return s end
 local live = src("StudioSync - Live sync.lua")
 assert(live:find("together.play(proj, transport)", 1, true), "Live sync starts a start's play through together.play")
-assert(src("lib/page_play.lua"):find("play_along and lag_bars or 0, skip_sel)", 1, true), "the panel's Play together carries the skip when ticked")
+-- (rt-follow: the panel's and the web Play page's Play together are gone; REAPER's own Play (skip time selection) goes to followers below)
+assert(not src("lib/page_play.lua"):find('"Play together"', 1, true), "the panel's Play page: Follow only")
 assert(live:find("together.pressed_skip(proj, pos)", 1, true) and live:find("together.skip_jump(side.skip,", 1, true) and live:find("together.restore_own(proj)", 1, true)
   and live:find("if together.play(proj, transport) then side.skip = transport.skip end", 1, true),
   "(round 2) Live sync: a press of REAPER's own action carries the skip, its jump isn't a seek, your own selection comes back")
 -- (round 2) the web UI's Play page and Song page ask for it too
-assert(src("lib/webui/play.js"):find("skip: what === 'play' && skip.checked", 1, true) and src("lib/webpages.lua"):find("webpages.bars(a.lag) or 0, a.skip == true)", 1, true),
-  "the Play page's box")
+assert(src("lib/webpages.lua"):find("webpages.bars(a.lag) or 0, a.skip == true)", 1, true), "an older Play page's box is still taken")
 assert(src("lib/webui/daw.js"):find("act({ play: 'start', skip: q('.dskip input').checked })", 1, true) and src("lib/dawview.lua"):find("false, 1, true, 0, d.skip)", 1, true),
   "the Song page's box")
 local dv = require("dawview")

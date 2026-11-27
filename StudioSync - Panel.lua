@@ -2778,12 +2778,12 @@ end
 tools.follow_button = function(name)
   local key = "follow " .. tostring(proj)
   local on = reaper.GetExtState(band.SECTION, key) == name
-  if on then ImGui.PushStyleColor(ctx, ImGui.Col_Button, ACCENT) end
-  if ImGui.SmallButton(ctx, (on and "Following" or "Follow") .. "##follow" .. name) then
-    if on then reaper.DeleteExtState(band.SECTION, key, false) else
-      reaper.SetExtState(band.SECTION, key, name, false)
-      reaper.SetExtState(band.SECTION, "follow driver", "", true)
-    end
+  -- (Following only once it is: "Connecting..." until their view arrives naming you and your transport is where theirs is. lib/follow.lua state, rt-follow)
+  local st = on and reaper.GetExtState(band.SECTION, "follow state " .. tostring(proj)) or ""
+  if on then ImGui.PushStyleColor(ctx, ImGui.Col_Button, st == "waiting" and YELLOW or ACCENT) end
+  if ImGui.SmallButton(ctx, (on and (st == "waiting" and "Connecting..." or "Following") or "Follow") .. "##follow" .. name) then
+    local said, why = require("follow").set_choice(proj, cfg, require("presence").peers(cfg, b.song, b.room), on and "" or name, (not on) and name or nil)
+    band.log(said or ("Follow was left as it is: " .. tostring(why)))
   end
   if on then ImGui.PopStyleColor(ctx) end
   -- (a scroll or zoom of yours pauses following their view, cursors and selection: Live sync says so here. lib/follow.lua, James, rt)
@@ -2794,7 +2794,7 @@ tools.follow_button = function(name)
     return
   end
   ImGui.SetItemTooltip(ctx, on and ("You follow " .. name .. ": their play, pause, stop and record, their view, cursors and selection, and their mix. Click to stop: your own mix and selection come back.")
-    or ("Follow " .. name .. ": your playhead goes with theirs (play, pause, stop, jumps; when they record you play along), your view goes where theirs is,\n" ..
+    or ("Follow " .. name .. ": your playhead goes with theirs (play, pause, stop, jumps; when they record you record on your armed tracks, or play along), your view goes where theirs is,\n" ..
       "and you hear their mix (faders, pan, what they've soloed; mutes are everyone's already). Your own mix comes back when you stop."))
 end
 

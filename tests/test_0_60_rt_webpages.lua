@@ -64,6 +64,7 @@ local rt_on, mode, manages = false, "claims", false
 package.loaded.live = { realtime_on = function() return rt_on end, builtin_audio = function() return true end, fx = function(_, _, fx) if not fx then return "master", 0 end end, SONOBUS = "SonoBus" }
 package.loaded.sync = { authority = function() return function() end, { mode = mode, driver = "Andie" } end }
 package.loaded.groups = { may_manage = function() return manages end }
+package.loaded.presence, package.loaded.persons = { peers = function() return {} end }, {} -- (nobody here; no folding: lib/follow.lua, rt-follow)
 local sent = {}
 local together = require("together")
 together.go = function(_, _, _, ev) sent[#sent + 1] = ev end

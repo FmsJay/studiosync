@@ -149,8 +149,10 @@ end
 -- The cursors: me = { user, playing, rec, pos, cursor, view = { a, z }, rate }; peers: presence's statuses (cursor and view only while someone
 -- watches them, below); colours: user -> 0xRRGGBB; editing: user -> what they're editing right now (lib/follow.lua). -> the dawcur topic's table.
 local function hexof(rgb) return rgb and dawview.hex(rgb >> 16, rgb >> 8, rgb) or nil end
-function dawview.cursor_model(key, me, peers, colours, editing)
-  colours = colours or {}
+-- live: user -> their fresh link view (lib/follow.lua live_view: { v, c, top = { oid, px } }), which wins over the status file's; places: a track's
+-- oid -> its place on the page, so `top` (the track at the top of their arrange view) can scroll the page as theirs is. rt-follow
+function dawview.cursor_model(key, me, peers, colours, editing, live, places)
+  colours, live, places = colours or {}, live or {}, places or {}
   local view = type(me.view) == "table" and { r3(me.view[1]), r3(me.view[2]) } or nil
   local out = { key = key, play = { on = me.playing and 1 or nil, rec = me.rec and 1 or nil, pos = r3(me.pos), rate = me.rate ~= 1 and me.rate or nil },
     me = { user = me.user, cur = r3(me.cursor), view = view, col = hexof(colours[me.user]) }, people = {} }
@@ -158,8 +160,11 @@ function dawview.cursor_model(key, me, peers, colours, editing)
   for _, st in ipairs(peers or {}) do
     if type(st) == "table" and type(st.user) == "string" and st.user ~= me.user then
       local v = type(st.view) == "table" and tonumber(st.view[1]) and tonumber(st.view[2]) and { r3(st.view[1]), r3(st.view[2]) } or nil
-      list[#list + 1] = { user = st.user, cur = tonumber(st.cursor) and r3(st.cursor) or nil, view = v, on = st.playing and 1 or nil,
-        rec = st.recording and 1 or nil, last = tonumber(st.last_at) and r3(st.last_at) or nil, col = hexof(colours[st.user]), ed = editing and editing[st.user] or nil }
+      local lv = type(live[st.user]) == "table" and live[st.user] or nil
+      if lv then v = { r3(lv.v[1]), r3(lv.v[2]) } end
+      list[#list + 1] = { user = st.user, cur = lv and tonumber(lv.c) and r3(lv.c) or tonumber(st.cursor) and r3(st.cursor) or nil, view = v, on = st.playing and 1 or nil,
+        rec = st.recording and 1 or nil, last = tonumber(st.last_at) and r3(st.last_at) or nil, col = hexof(colours[st.user]), ed = editing and editing[st.user] or nil,
+        top = lv and lv.top and places[lv.top[1]] or nil, live = lv and 1 or nil }
     end
   end
   table.sort(list, function(a, z) return a.user:lower() < z.user:lower() end)
@@ -235,6 +240,8 @@ function dawview.parse(a)
   local out = { want = a.want == true or nil, history = a.history == true or nil, nohistory = a.history == false or nil }
   if a.play == "start" or a.play == "stop" then out.play = a.play end
   out.skip = a.play == "start" and a.skip == true or nil -- (the Song page's "skip selection": lib/together.lua. James, 2026-11-21)
+  -- (whose view the page follows: a name, "" nobody. They send it over the link meanwhile: lib/follow.lua followers. rt-follow)
+  if type(a.watch) == "string" and #a.watch <= 64 and not a.watch:find("%c") then out.watch = a.watch end
   -- (a saved version's file name, as recall names them: nothing that could point anywhere else)
   if type(a.restore) == "string" and #a.restore <= 200 and a.restore:match("^[%w][%w%-_ %.]*%.json$") and not a.restore:find("%.%.") then out.restore = a.restore end
   return out
@@ -452,9 +459,11 @@ end
 local S = { want_until = -math.huge, hist_until = -math.huge }
 -- A page is looking at the Song page (lib/webui.lua puts it in this computer's status, so bandmates send their cursor and view meanwhile).
 function dawview.watching(now) return (now or reaper.time_precise()) < S.want_until end
+-- Whose view a page here follows on the Project page (it says so with its "I'm looking"), or nil.
+function dawview.watched_user(now) return S.watch ~= "" and (now or reaper.time_precise()) < (S.watch_until or -math.huge) and S.watch or nil end
 -- Everything goes again (the tab in front changed: another tab's topics may be on the server).
 function dawview.reset()
-  S = { want_until = S.want_until, hist_until = S.hist_until }
+  S = { want_until = S.want_until, hist_until = S.hist_until, watch = S.watch, watch_until = S.watch_until }
   if package.loaded.dawmidi then package.loaded.dawmidi.reset() end
 end
 local function scripts_dir() return (debug.getinfo(1, "S").source:match("^@?(.*)[/\\]lib[/\\][^/\\]+$")) end
@@ -473,6 +482,7 @@ function dawview.action(proj, cfg, b, a)
   if d.want then S.want_until = now + dawview.WANT_FOR end
   if d.want and d.history then S.hist_until = now + dawview.WANT_FOR end
   if d.want and d.nohistory then S.hist_until = -math.huge end
+  if d.watch then S.watch, S.watch_until = d.watch, now + dawview.WANT_FOR end
   if d.play then
     local why = dawview.transport_refusal(cfg, b)
     if why then return "the web page's " .. (d.play == "start" and "Play" or "Stop") .. " together was refused: " .. why .. " in this room" end
@@ -561,8 +571,15 @@ function dawview.tick(proj, cfg, b, publish, who, now)
   local rate = reaper.Master_GetPlayRate(proj)
   local was = S.cur
   local jumped = was and playing and was.playing and math.abs(pos - (was.pos + (now - was.at) * was.rate)) > 0.25
+  -- (bandmates' views over the link, a few times a second while this page follows one: lib/follow.lua live_view. rt-follow)
+  local follow, live, live_fp = require("follow"), {}, {}
+  for _, st in ipairs(require("presence").peers(cfg, b.song, b.room)) do
+    local lv = type(st.user) == "string" and follow.live_view(st.user)
+    if lv then live[st.user] = lv; live_fp[#live_fp + 1] = st.user .. band.json_encode({ lv.v, lv.c, lv.top }) end
+  end
+  live_fp = table.concat(live_fp, "|")
   local moved = not was or was.playing ~= playing or was.rec ~= (ps & 4 == 4) or jumped or (playing and now - was.at >= dawview.CUR_EVERY)
-    or (now - was.at >= dawview.CUR_MIN and (math.abs(was.cursor - cur) > 1e-3 or math.abs(was.a - a) > 0.05 or math.abs(was.z - z) > 0.05))
+    or (now - was.at >= dawview.CUR_MIN and (math.abs(was.cursor - cur) > 1e-3 or math.abs(was.a - a) > 0.05 or math.abs(was.z - z) > 0.05 or live_fp ~= (S.live_fp or "")))
     or now - (S.peers_at or -math.huge) >= 1
   if moved then
     local presence = require("presence")
@@ -571,9 +588,9 @@ function dawview.tick(proj, cfg, b, publish, who, now)
     for _, st in ipairs(peers) do if type(st.user) == "string" then names[#names + 1] = st.user end end
     local colours = require("people").colours(cfg.root, names)
     S.cur = { playing = playing, rec = ps & 4 == 4, pos = pos, at = now, rate = rate, cursor = cur, a = a, z = z }
-    S.peers_at = now
+    S.peers_at, S.live_fp = now, live_fp
     publish("dawcur", dawview.cursor_model(key, { user = cfg.user, playing = playing, rec = ps & 4 == 4, pos = pos, cursor = cur, view = { a, z }, rate = rate },
-      peers, colours, require("follow").words_by_user()))
+      peers, colours, follow.words_by_user(), live, S.places))
   end
   -- history, while it's showing: recall's reading a little each tick (its cache, shared with the panel's Restore page), built every HIST_EVERY s
   if now < S.hist_until then

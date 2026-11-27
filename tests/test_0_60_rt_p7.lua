@@ -7,10 +7,10 @@ for _, p in ipairs({ "lib/webui/play.js", "lib/page_play.lua", "lib/webpages.lua
   local s = read(p)
   assert(not s:find("Follow each other:", 1, true) and not s:find("Follow each other was", 1, true), p .. " still says Follow each other")
 end
+-- (rt-follow, 2026-11-27: the three are one Follow now, a person, everyone or the driver; tests/test_0_60_rt_follow2.lua has its words)
 local js = read("lib/webui/play.js")
-assert(js:find("Play and stop together: press play", 1, true) and js:find("'Watch a bandmate'", 1, true) and js:find("'Watch ' + u", 1, true) and js:find("'Watching ' + at", 1, true), "the web page's words")
-assert(not js:find("'Follow a bandmate'", 1, true) and not js:find("'Following '", 1, true), "no old view wording")
-assert(read("lib/page_play.lua"):find("Play and stop together: press play", 1, true), "the panel's words")
+assert(js:find("'Everyone (whoever plays)'", 1, true) and js:find("'Follow'", 1, true) and not js:find("'Watch a bandmate'", 1, true), "the web page's words")
+assert(read("lib/page_play.lua"):find("Everyone (whoever plays)", 1, true), "the panel's words")
 
 -- ---- keep_open_mode vs Autostart's copy: the plan on disk wins ----
 local now, projects, plan, mode = 0, {}, nil, 1

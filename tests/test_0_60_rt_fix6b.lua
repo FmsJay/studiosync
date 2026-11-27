@@ -55,8 +55,8 @@ fire, from = together.plan(ev, "James", nil)
 assert(math.abs(fire - (1000 - pre)) < 1e-9 and from == 4, "with it: that much sooner, from the same place (REAPER plays the pre-roll first)")
 fire, from = together.plan(ev, "James", 1000 - pre + 0.25)
 assert(math.abs(from - 4.25) < 1e-9, "late by 0.25 s: from 0.25 s further in, as the others are")
-assert(live:find("transport.pre = transport.rec and not (transport.follow and theirs) and together.armed(proj) and together.preroll(proj,", 1, true),
-  "Live sync sets the pre-roll only where it presses Record itself (not a play-along follower, not one with nothing armed)")
+assert(live:find('transport.pre = transport.rec and not (transport.follow and theirs and not require("follow").records_along()) and together.armed(proj) and together.preroll(proj,', 1, true),
+  "Live sync sets the pre-roll only where it presses Record itself (a follower who records with them too, rt-follow; not one playing along, not one with nothing armed)")
 
 -- 3. Syncthing 1.27 has no fswatcher-timeouts ("No help topic", exit 3): skipped quietly, the rest (versioning: staggered) still done
 local services = require("services")

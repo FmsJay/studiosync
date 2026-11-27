@@ -16,8 +16,6 @@ end
 local live_mode, live_send, live_server = "synced", true, nil
 local srv_at, srv_up, srv_by, srv_addr = 0, false, nil, nil
 local LIVE_MODES = { { "synced", "Time-sync (play along, in time with the project)" }, { "listen", "Real time (SonoBus, lowest delay)" }, { "jam", "Jam (NINJAM intervals)" } }
-local countin, lag_bars, bars = 1, 0, 1
-local skip_sel = false -- (Play together skips the time selection, as REAPER's Play (skip time selection): lib/together.lua. James, 2026-11-21)
 local server_at = 0
 -- Reach the server: curl connects, and with nothing to say it runs out of time (28) or ends clean (0); it can't connect otherwise. (Blocks up to 3 s: only on a click.)
 local function test_server(addr)
@@ -278,98 +276,84 @@ function M.time_sync(on) -- -> true when it is as asked
   band.log(string.format("Time-sync on: the others hear you in time with the project, %d bar%s behind (one NINJAM interval)", one, one == 1 and "" or "s"))
 end
 
-local function go(ev) together.go(E.proj(), E.cfg(), E.b(), ev) end -- post it for the band, and fire it here through our own Live sync
-local start_from, click_on, side_bars_edit = 0, true, 2 -- start_from: 0 = edit cursor, n = the nth region
-local function regions() return together.regions(E.proj()) end
+-- The one Follow (rt-follow, findings 2026-11-27 items 5 and 12: Start, Stop and Record together, Play and stop together and Watch were
+-- folded into it). You follow a person (their active computer, or one you pick), everyone (whoever plays) or the driver: their play, pause,
+-- stop, jumps and Record, and their REAPER view. Recording together: the one you follow arms and presses Record; you record with them on your
+-- armed tracks (or play along: the box), and with nothing armed you play along. lib/follow.lua keeps the choice and says what it really is.
+local side_bars_edit = 2
 function M.section_together()
-  local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()
+  local b, cfg, proj = E.b(), E.cfg(), E.proj()
+  local follow = require("follow")
   together.tick()
-  if ui.want_lag then lag_bars, side_bars_edit, ui.want_lag = ui.want_lag, ui.want_lag, nil end
+  if ui.want_lag then side_bars_edit, ui.want_lag = ui.want_lag, nil end
   local key = tostring(proj)
-  -- Side by side: everyone's normal transport buttons drive everyone
-  ImGui.SeparatorText(ctx, "Play, stop and record together") -- (was "Side by side", which said nothing about what it does: UX review, 0.58.62)
-  -- kept in the project (until 0.11.3 it was per tab and lost when the tab was closed and reopened)
+  ImGui.SeparatorText(ctx, "Follow")
+  local peers = require("presence").peers(cfg, b.song, b.room)
+  local choice, computer = follow.choice_of(proj)
+  local list = follow.people(peers, cfg.user, computer, follow.fold(cfg))
+  local opts, person = { { "", "Nobody" }, { "*", "Everyone (whoever plays)" }, { "@driver", "The driver" } }, nil
+  for _, p in ipairs(list) do opts[#opts + 1] = { p.key, p.label }; if p.key == choice then person = p end end
+  local label
+  for _, o in ipairs(opts) do if o[1] == choice then label = o[2] end end
+  local function pick(c, user)
+    local said, why = follow.set_choice(proj, cfg, peers, c, user, side_bars_edit)
+    band.log(said or ("Follow was left as it is: " .. tostring(why)))
+  end
+  ImGui.SetNextItemWidth(ctx, 200)
+  if ImGui.BeginCombo(ctx, "##followpick", label or (choice .. " (not here now)")) then
+    for _, o in ipairs(opts) do if ImGui.Selectable(ctx, o[2], o[1] == choice) then pick(o[1]) end end
+    ImGui.EndCombo(ctx)
+  end
+  ImGui.SetItemTooltip(ctx, "Who you follow: their play, pause, stop, jumps and Record, and their view (zoom, scroll, cursor, selection, MIDI editor).\n" ..
+    "Everyone: whoever presses play. Your own mix and selection come back when you stop following.")
+  if person and #person.users > 1 then -- (a person's computers are one choice: their active one, or one you pick)
+    local pinned = reaper.GetExtState(band.SECTION, "follow pinned " .. key)
+    ImGui.SameLine(ctx)
+    ImGui.SetNextItemWidth(ctx, 200)
+    if ImGui.BeginCombo(ctx, "##followpc", pinned ~= "" and pinned or ("their active one (" .. tostring(person.active) .. ")")) then
+      if ImGui.Selectable(ctx, "their active computer", pinned == "") then pick(person.key) end
+      for _, u in ipairs(person.users) do if ImGui.Selectable(ctx, u, pinned == u) then pick(person.key, u) end end
+      ImGui.EndCombo(ctx)
+    end
+  end
+  local state = reaper.GetExtState(band.SECTION, "follow state " .. key)
+  if state == "paused" then
+    ImGui.SameLine(ctx)
+    if ImGui.SmallButton(ctx, "Resume##followresume") then reaper.DeleteExtState(band.SECTION, "follow paused " .. key, false) end
+    ImGui.SetItemTooltip(ctx, "You scrolled or zoomed, so your view stopped following theirs (their play and stop still come). Resume: back to theirs.")
+  end
   local side = select(2, reaper.GetProjExtState(proj, band.SECTION, "side"))
-  local rt_now = same_room_on() -- (Real time mode is following at 0 bars: switch it off on Home. Review, 0.59.8)
-  ImGui.BeginDisabled(ctx, rt_now)
-  local ch, on = check("Play and stop together: press play, stop and record as usual", side ~= "")
-  ImGui.EndDisabled(ctx)
-  if rt_now then ch = false end
-  if ch then
-    reaper.SetProjExtState(proj, band.SECTION, "side", on and tostring(side_bars_edit) or "")
+  local rt_now = same_room_on() -- (Real time mode is following everyone at 0 bars: switch it off on Home. Review, 0.59.8)
+  if choice == "*" then
+    ImGui.SetNextItemWidth(ctx, 118)
+    ImGui.BeginDisabled(ctx, rt_now)
+    local lc, lv = ImGui.InputInt(ctx, "bars behind whoever plays", tonumber(side) or side_bars_edit)
+    if lc then side_bars_edit = math.max(0, math.min(16, lv)); reaper.SetProjExtState(proj, band.SECTION, "side", tostring(side_bars_edit)) end
+    ImGui.EndDisabled(ctx)
+    ImGui.SetItemTooltip(ctx, rt_now and "Real time mode is on (Home): everyone follows at the same spot, 0 bars behind. Switch it off there to follow later." or
+      "With Time-sync: 1-2 bars, so you hear them in time with the project.\nWith Real time: 0, everyone at the same spot.")
   end
-  ImGui.SetItemTooltip(ctx, "Whoever presses play, stop or record (or jumps somewhere while playing), everyone in side by side follows.\n" ..
-    "The one who records records; the others hear it. Edits land as usual, every half second.")
-  ImGui.SetNextItemWidth(ctx, 118)
-  local rt = same_room_on() -- (Real time mode is following at 0 bars: changing it here would quietly switch Real time off)
-  ImGui.BeginDisabled(ctx, rt)
-  local lc, lv = ImGui.InputInt(ctx, "bars behind whoever plays", side_bars_edit)
-  if lc then
-    side_bars_edit = math.max(0, lv)
-    if side ~= "" then reaper.SetProjExtState(proj, band.SECTION, "side", tostring(side_bars_edit)) end
-  end
-  ImGui.EndDisabled(ctx)
-  ImGui.SetItemTooltip(ctx, rt and "Real time mode is on (Home): everyone follows at the same spot, 0 bars behind. Switch it off there to follow later." or
-    "With Time-sync: 1-2 bars, so you hear them in time with the project.\nWith Real time: 0, everyone at the same spot.")
-  if side ~= "" then
-    local n = tonumber(side) or 0
-    local live_mode_note = live.fx(proj, false) and "Time-sync / Jam is connected." or (live.fx(proj, false, live.SONOBUS) and "Real time is on."
-      or live.builtin_audio(cfg.root) and "You hear each other through the studio's live audio." or "To hear each other, connect on Play.")
-    ImGui.PushTextWrapPos(ctx, 0)
-    ImGui.TextDisabled(ctx, string.format("On: you follow %s behind whoever plays. %s", n == 0 and "right along" or (n .. (n == 1 and " bar" or " bars")), live_mode_note))
+  local rc, rv = ImGui.Checkbox(ctx, "Record with them on my armed tracks", follow.records_along())
+  if rc then reaper.SetExtState(band.SECTION, "follow no rec", rv and "" or "1", true) end
+  ImGui.SetItemTooltip(ctx, "When the one you follow presses Record, you record too on the tracks you have armed (nothing armed: you play along).\nOff: you always play along.")
+  local multi, plabel = person ~= nil and #person.users > 1, person and person.label
+  ImGui.PushTextWrapPos(ctx, 0)
+  local line = follow.words({ choice = choice, state = state, seen = reaper.GetExtState(band.SECTION, "follow seen " .. key), computer = computer, multi = multi, label = plabel, rt = rt_now, bars = tonumber(side) })
+  if state == "waiting" then ImGui.TextColored(ctx, YELLOW, line) else ImGui.Text(ctx, line) end
+  ImGui.TextDisabled(ctx, "Press play, pause, stop or record as usual: whoever follows you does the same and sees your view. To record together, arm your tracks and " ..
+    "press Record: everyone following you who has a track armed records with you; the others play along.")
+  if choice == "*" or rt_now then
+    ImGui.TextDisabled(ctx, live.fx(proj, false) and "Time-sync / Jam is connected." or (live.fx(proj, false, live.SONOBUS) and "Real time is on."
+      or live.builtin_audio(cfg.root) and "You hear each other through the studio's live audio." or "To hear each other, connect on Play."))
     local cm = live.fx(proj, false) and live.channel_mode()
     if cm and cm ~= "session" then
       ImGui.TextColored(ctx, YELLOW, "ReaNINJAM is sending in " .. (cm == "normal" and "Normal" or "Voice Chat") ..
         " mode: the others won't hear you in time with the project. In its window, click the mode button under your channel and pick \"Session mode channel\".")
     end
-    ImGui.PopTextWrapPos(ctx)
   end
-
-  ImGui.SeparatorText(ctx, "Start together")
-  M.start_together(true)
-end
--- Everyone starts at one moment, from one spot. `play_along`: with the Play tab's "bars later for listeners".
-function M.start_together(play_along)
-  local b, cfg, proj, view, wide, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.who()
-  together.tick()
-  local key = tostring(proj)
-  local rg = regions()
-  local names = { "the edit cursor (bar " .. bar_of(reaper.GetCursorPositionEx(proj)) .. ")" }
-  for _, r in ipairs(rg) do names[#names + 1] = r.name .. " (bar " .. bar_of(r.pos) .. ")" end
-  if M.reset_start then start_from, M.reset_start = 0, nil end
-  if start_from > #rg then start_from = 0 end
-  ImGui.SetNextItemWidth(ctx, math.max(120, math.min(260, ImGui.GetContentRegionAvail(ctx) - 90)))
-  if ImGui.BeginCombo(ctx, "start from", names[start_from + 1]) then
-    for i, n in ipairs(names) do if ImGui.Selectable(ctx, n, start_from == i - 1) then start_from = i - 1 end end
-    ImGui.EndCombo(ctx)
-  end
-  ImGui.SetNextItemWidth(ctx, 118)
-  local _, c = ImGui.InputInt(ctx, "count-in bars", countin); countin = math.max(0, c)
-  ImGui.SameLine(ctx)
-  local _, ck = ImGui.Checkbox(ctx, "click", click_on); click_on = ck
-  ImGui.SetItemTooltip(ctx, "The metronome plays during the count-in, then goes back off.")
-  if play_along then
-    ImGui.SetNextItemWidth(ctx, 118)
-    local _, l = ImGui.InputInt(ctx, "bars later for listeners", lag_bars); lag_bars = math.max(0, l)
-    ImGui.SetItemTooltip(ctx, "Time-sync only: the others start this many bars after you\n(one NINJAM interval), so what they hear of you lines up.\nLeave 0 for everything else.")
-  end
-  local pos = start_from > 0 and rg[start_from].pos or reaper.GetCursorPositionEx(proj)
-  local function start(rec) together.start(proj, cfg, b, pos, rec, countin, click_on, play_along and lag_bars or 0, skip_sel) end
-  local _, sk = ImGui.Checkbox(ctx, "skip the time selection", skip_sel); skip_sel = sk
-  ImGui.SetItemTooltip(ctx, "As REAPER's Play (skip time selection): Play together jumps over the time selection on every computer\n" ..
-    "(to hear the song without the verse, say). Bandmates on an older StudioSync play through it.")
-  if ImGui.Button(ctx, "Play together") then start(false) end
-  next_to("Record together")
-  if ImGui.Button(ctx, "Record together") then start(true) end
-  ImGui.SetItemTooltip(ctx, "Everyone records on the tracks they have armed.")
-  next_to("Stop together")
-  if ImGui.Button(ctx, "Stop together") then go({ type = "stop" }) end
-  local due = tonumber(reaper.GetExtState(band.SECTION, "together_at " .. key))
-  if due and due - together.now() > 0 then
-    ImGui.TextColored(ctx, YELLOW, string.format("Starting in %.1f s...", due - together.now()))
-  else
-    ImGui.TextDisabled(ctx, string.format("From bar %s, %d s after the click, on every computer with this project open.", bar_of(pos), together.LEAD))
-  end
+  ImGui.PopTextWrapPos(ctx)
+  local due = tonumber(reaper.GetExtState(band.SECTION, "together_at " .. key)) -- (a start from someone's older StudioSync: its count-down)
+  if due and due - together.now() > 0 then ImGui.TextColored(ctx, YELLOW, string.format("Starting in %.1f s...", due - together.now())) end
   local last_go = reaper.GetExtState(band.SECTION, "together " .. key)
   if last_go ~= "" then ImGui.TextDisabled(ctx, "Last: " .. last_go) end
 end
