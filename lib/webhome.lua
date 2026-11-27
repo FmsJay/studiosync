@@ -270,12 +270,22 @@ function webhome.build(proj, cfg, b, now)
   local persons = require("persons")
   local me_key = persons.of(cfg.root, cfg.user)
   local function key_of(u) local k = persons.of(cfg.root, u); return k == me_key and "\0me" or k end
+  -- (the Studio tab's organising: your pins and archive, each project's folder and rooms. lib/weblobby.lua, rt-ui2)
+  local weblobby = require("weblobby")
+  local pins, pinned, archived = weblobby.pins(cfg), {}, {}
+  for _, s in ipairs(pins.pins) do pinned[s] = true end
+  for _, s in ipairs(pins.archived) do archived[s] = true end
   for _, song in ipairs(band.songs(cfg)) do
     if #projects >= webhome.PROJECTS then break end
     local sdir = band.song_dir(cfg, song)
     local names = band.subdirs(sdir .. "/rooms")
     if #names == 0 then names = { "main" } end
-    local p = { name = song, stage = extras.stage(cfg.root, song), current = song == b.song or nil, rooms = #names, online = {} }
+    local p = { name = song, stage = extras.stage(cfg.root, song), current = song == b.song or nil, rooms = #names, online = {},
+      folder = weblobby.folder_of(cfg, song), pinned = pinned[song], archived = archived[song] }
+    if #names > 1 then
+      p.roomnames = {}
+      for i, r in ipairs(names) do if i <= weblobby.ROOMS_MAX then p.roomnames[i] = r end end
+    end
     for _, room in ipairs(names) do
       local last, tk, changes = room_news(cfg, song, room, song == b.song and room == b.room, now)
       if last and (not p.last or last.time > p.last.time) then p.last = last end
@@ -359,6 +369,7 @@ function webhome.build(proj, cfg, b, now)
   local cok, computers = pcall(persons.computers, cfg.root, cfg.user)
   return { me = cfg.user, studio = band.info(cfg.root).name, song = b.song, room = b.room ~= "main" and b.room or nil,
     projects = projects, online = online, takes = takes, bounces = bounces, recap = recap, computers = cok and computers or nil,
+    folders = weblobby.folders(cfg.root, projects), stages = extras.STAGES,
     opened = S.opened and os.time() - S.opened.at < 60 and S.opened or nil,
     unread = S.chat.unread, unread_at = S.chat.unread_at, unread_by = S.chat.unread_by, mentions = S.chat.mentions, todos = S.chat.todos, recent = S.chat.recent }
 end
@@ -385,6 +396,8 @@ function webhome.open(cfg, o)
   end
   local id = reaper.AddRemoveReaScript(true, 0, scripts_dir() .. "/StudioSync - Open session.lua", true)
   if not id or id <= 0 then return "couldn't register 'StudioSync - Open session' as an action (is the Scripts folder read-only?)" end
+  -- (Open session opens from the studio this computer works in: the Studio tab may show another, as the panel's Projects page. rt-ui2)
+  if cfg.root ~= reaper.GetExtState(band.SECTION, "sync_root") then band.use_band(cfg.root) end
   reaper.SetExtState(band.SECTION, "open project", o.song .. "|" .. room, false)
   -- (a page asked, perhaps from a phone nobody at this computer is watching: the script's own boxes ("still arriving", "open that room first") would
   -- sit there blocking REAPER's window. With this flag it says them to the log and to ExtState "open said" instead, and the page is told. rt-p5)
@@ -417,7 +430,14 @@ function webhome.action(proj, cfg, b, a)
       S.since = m
     end
   end
-  if a.open ~= nil then return webhome.open(cfg, a.open) end
+  -- (the studio the Studio tab shows: the one this computer works in, which may not be this project's. lib/weblobby.lua, rt-ui2)
+  local sok, shown = pcall(require("weblobby").cfg, cfg)
+  shown = sok and shown or cfg
+  if type(a.lobby) == "table" then -- (switch, start or join a studio; pin, archive, stage, folder; share the tab in front)
+    S.at = -math.huge
+    return require("weblobby").action(shown, a.lobby)
+  end
+  if a.open ~= nil then return webhome.open(shown, a.open) end
   if type(a.computer) == "table" then -- ({ user, on }: one of the studio's computers is yours, or isn't. lib/persons.lua, rt-people)
     S.at = -math.huge
     local said, why = require("persons").set(cfg.root, a.computer.user, a.computer.on == true)
@@ -438,8 +458,15 @@ function webhome.tick(proj, cfg, b, publish, now)
   end
   if S.want > now and now - S.at >= webhome.EVERY then
     S.at = now
-    local ok, m = pcall(webhome.build, proj, cfg, b, now)
+    -- (the studio shown: this project's, or the one picked in Your studios; another's projects have none current. rt-ui2)
+    local weblobby = require("weblobby")
+    local sok, shown = pcall(weblobby.cfg, cfg)
+    shown = sok and shown or cfg
+    if shown.root ~= S.root then S.root, S.chat = shown.root, nil end
+    local ok, m = pcall(webhome.build, proj, shown, shown.root == cfg.root and b or { room = "main" }, now)
     publish("home", ok and m or { me = cfg.user, error = tostring(m) })
+    local lok, l = pcall(weblobby.build, shown, now)
+    publish("lobby", lok and l or { me = cfg.user, studios = {}, error = tostring(l) })
   end
 end
 function webhome._reset() S = { want = -math.huge, at = -math.huge, chat_at = -math.huge, chat = nil, prof_at = -math.huge, reply = nil }; scans, takes_memo, mtimes, stamps, stamps_n = {}, {}, {}, {}, 0 end

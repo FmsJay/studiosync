@@ -145,6 +145,7 @@ local function guarded(fn)
   end
 end
 local good_at -- (when this copy is kept as the last that started fine: band.save_last_good)
+local lobby_ok = false -- (a look has found this isn't the hidden renderer: lib/weblobby.lua answers the web UI from then on. rt-ui2)
 local function loop_body()
   -- the toolbar button stopped a minimized panel: it opens again, full (Panel's atexit asks; 0.58.98). Looked at every pass: a click wants it now
   local tip = tonumber(reaper.GetExtState(band.SECTION, "tooltip until")) -- (the panel's closing words: taken away here, 0.58.99)
@@ -158,6 +159,8 @@ local function loop_body()
       if id > 0 and reaper.GetToggleCommandState(id) ~= 1 then reaper.Main_OnCommand(id, 0) end
     end
   end
+  -- (the web UI with no studio project in front: Autostart answers it, every pass so a click isn't held 2 s. lib/weblobby.lua, rt-ui2)
+  if lobby_ok then band.try("weblobby.tick", require("weblobby").tick) end
   if reaper.time_precise() - at < 2 then return end -- every 2 s is plenty (guarded defers it again)
   -- (a gap here means a box held all of REAPER, this too: a Record Warning left two minutes, and every Live sync's beat was old. Restarted then,
   -- each replaced one saved a kept "end of session" in the middle of a session. Mac, 0.58.45. So a look after a gap waits half a minute)
@@ -171,6 +174,7 @@ local function loop_body()
     if not p then break end
     if (fn or ""):find("bandsync-render", 1, true) then return "stop" end
   end
+  lobby_ok = true -- (not the hidden renderer: it may answer the web UI)
   if not keys_set then -- (Ctrl+Z never rolls back a bandmate's work: lib/undo.lua. Not in the hidden renderer, above)
     keys_set, BANDSYNC_AUTOSTART_STARTED = true, true
     band.try("undo.auto_keys", require("undo").auto_keys, dir)

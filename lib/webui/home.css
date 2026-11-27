@@ -36,7 +36,7 @@ main.has-home { grid-template-columns: minmax(300px, 1.25fr) minmax(280px, 1fr);
 .hcards { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
 .hcards[hidden], .hcard[hidden] { display: none; }
 .hcard { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; min-width: 0; }
-.hcard.hprojects, .hcard.hfor, .hcard.honline { grid-column: 1 / -1; }
+.hcard.hprojects, .hcard.hfor, .hcard.honline, .hcard.hstudios, .hnewh { grid-column: 1 / -1; }
 .hcard h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; }
 .hcard h4 { font-size: 12px; color: var(--dim); margin: 8px 0 4px; font-weight: 600; }
 .hempty { margin: 2px 0; font-size: 13px; }
@@ -129,3 +129,47 @@ main.has-home { grid-template-columns: minmax(300px, 1.25fr) minmax(280px, 1fr);
 .hbanner { padding: 8px 12px; margin: 0 0 8px; border-radius: 8px; background: var(--accent, #2a6df4); color: #fff; cursor: pointer; overflow-wrap: anywhere; }
 .hnote { margin: 0 0 8px; }
 .hsince { margin-top: 2px; font-size: .85em; color: var(--accent, #2a6df4); }
+
+/* rt-ui2: the Studio tab. Your studios, the Projects bar (search, Recent / Folders / Stage, New folder), project cards with Open, Ask..., Link
+   and a ⋯ menu (pin, stage, folder, rooms, archive), the Archived fold, no studio project open, a tab in front that isn't shared yet */
+.hnewh { margin: 6px 0 -2px; font-size: 12px; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
+.hlobby { margin: 0 0 8px; padding: 8px 12px; border-radius: 8px; background: var(--theirs); }
+.hshare { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; margin: 0 0 8px; padding: 8px 12px; border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); background: color-mix(in srgb, var(--accent) 10%, var(--panel)); }
+.hshare[hidden], .hlobby[hidden], .hform[hidden], .hstudforms[hidden] { display: none; }
+.hstudlist li { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; padding: 6px 0; border-top: 1px solid var(--line); }
+.hstudlist li:first-child { border-top: 0; }
+.hsname { font-weight: 650; }
+.hstud.current .hsname { color: var(--accent); }
+.hsmeta { font-size: 12px; flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.hsaid { font-size: 13px; margin: 6px 0 0; }
+.hsaid.bad { color: var(--rec); }
+.hstudforms { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.hform { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; margin: 4px 0; }
+.hform input, .hform textarea, .hptools input, .hpmenu input, .hpmenu select { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+  border-radius: 8px; padding: 5px 9px; min-width: 0; }
+.hform input, .hform textarea { flex: 1 1 220px; }
+.hptools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-bottom: 8px; }
+.hpsearch { flex: 1 1 180px; }
+.hseg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.hseg button { border: 0; border-radius: 0; font-size: 13px; padding: 4px 10px; background: transparent; }
+.hseg button[aria-pressed="true"] { background: var(--accent); color: #fff; }
+.hgroup { margin: 10px 0 4px; }
+.hprojlist { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.hproj, .hproj:first-child { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--bg); min-width: 0; }
+.hproj.current { border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); }
+.hproj.pinned { box-shadow: inset 3px 0 0 var(--accent); }
+.hpin { font-size: 12px; }
+.hpfolder { font-size: 12px; }
+.hpfolder::before { content: "▸ "; }
+.hpacts { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.hpinv { display: contents; }
+.hpmore { position: relative; margin-left: auto; }
+.hpmorebtn { list-style: none; cursor: pointer; padding: 2px 9px; border: 1px solid var(--line); border-radius: 8px; user-select: none; }
+.hpmorebtn::-webkit-details-marker { display: none; }
+.hpmenu { position: absolute; right: 0; z-index: 5; display: flex; flex-direction: column; gap: 6px; min-width: 210px; margin-top: 4px; padding: 8px;
+  border: 1px solid var(--line); border-radius: 10px; background: var(--panel); box-shadow: 0 6px 20px rgba(0, 0, 0, .25); }
+.hprow { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 13px; }
+.harch { margin-top: 10px; }
+.harch > summary { cursor: pointer; margin-bottom: 6px; }
+@media (max-width: 640px) { .hprojlist { grid-template-columns: 1fr; } }
