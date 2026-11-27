@@ -139,6 +139,8 @@ What is possible, and is now automatic:
   `prints.track_plays` through a hop (not for printing); old per-track choices cleared once; the actions gone; the page's new strings.
   **Against HEAD's lib it fails** (no `hops.block_lines`).
 - `tests/test_0_60_rt_hops.lua`, `tests/test_0_60_rt_hoptry.lua`, the prints tests: unchanged and passing.
+- `tests/test_0_60_rt_sharedcpu.lua`: its "a Hop deleted by hand" step expected the offload to stay (the Hop put back); it now expects item
+  8's behaviour (handed back, each plug-in on or bypassed as the band has it), then offloads again for the steps after.
 - Headless Chrome (no media devices) against a stand-in `ssTabs` around the real `tryfx.js`: the toast shows the ask, Allow sends
   `{allow}`, the toast hides; a try's head has Add to track / Print / Stop, a borrowed one's Stop the hop; Add to track sends `{keep}`; Your
   plug-ins hidden with nothing in it.
