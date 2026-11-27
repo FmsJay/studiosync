@@ -2,6 +2,7 @@
 -- This file's top half is pure (chunk normalizing, hashing, ordering, merging) so it runs under any Lua.
 local mirror = {}
 local merges = require("mirror_merge") -- (pure: the three-way merges, rt-sync2 phase 1)
+local judge = require("judge") -- (pure: what each object is, from its own versions: rt-sync2 phase 2)
 
 -- Lines in an item chunk that are this machine's business only: selection, REAPER's own ids (regenerated on
 -- apply), MIDI pooling (a copy is its own item), MIDI editor view state, which take is active (wet/dry is each
@@ -681,28 +682,8 @@ mirror.sessions = {} -- proj .. oid -> { rev, at }: our last change to it
 -- What equal revisions are settled by, an "order": "<ms>|<user>" since 0.58.43, a hybrid logical clock (milliseconds, never behind any change
 -- this computer has seen, so a clock that's minutes off can't win ties it shouldn't: docs/clashes.md), or "<YYYY-MM-DDTHH:MM:SSZ><user>" from
 -- before. -> milliseconds (UTC), the rest. Pure.
--- (UTC by arithmetic: os.time works in local time, and a time zone offset taken once was an hour out across a daylight saving change. Review, 0.58.47)
-local function utc_secs(y, mo, d, h, mi, s)
-  y = mo <= 2 and y - 1 or y
-  local era = (y >= 0 and y or y - 399) // 400
-  local yoe = y - era * 400
-  local doy = (153 * (mo + (mo > 2 and -3 or 9)) + 2) // 5 + d - 1
-  local days = era * 146097 + yoe * 365 + yoe // 4 - yoe // 100 + doy - 719468
-  return days * 86400 + h * 3600 + mi * 60 + s
-end
-mirror.utc_secs = utc_secs
-function mirror.order_parts(o)
-  o = o or ""
-  local ms, rest = o:match("^(%d+)|(.*)$")
-  if ms then return tonumber(ms), rest end
-  local y, mo, d, h, mi, s, after = o:match("^(%d%d%d%d)-(%d%d)-(%d%d)T(%d%d):(%d%d):(%d%d)Z(.*)$")
-  if y then return utc_secs(tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi), tonumber(s)) * 1000, after end
-  return 0, o
-end
-function mirror.order_of(ev)
-  if tonumber(ev.hlc) then return string.format("%d|%s", tonumber(ev.hlc), ev.user or "") end
-  return (ev.time or "") .. (ev.user or "")
-end
+local utc_secs = judge.utc_secs
+mirror.utc_secs, mirror.order_parts, mirror.order_of = judge.utc_secs, judge.order_parts, judge.order_of
 -- The clock: never behind the newest change seen (kept in non-persistent ExtState: Live sync and the panel each post changes)
 function mirror.hlc_seen(v)
   v = tonumber(v)
@@ -713,17 +694,8 @@ function mirror.hlc_next()
   reaper.SetExtState("BandSync", "hlc", string.format("%d", v), false)
   return v
 end
--- Which of two revisions of one object wins: higher rev, then the later order, then the larger user name (so every
--- machine picks the same one). `time` holds an order (or a plain time, with `user` beside it).
-function mirror.newer(a, b)
-  if not b then return true end
-  if not a then return false end
-  if (a.rev or 0) ~= (b.rev or 0) then return (a.rev or 0) > (b.rev or 0) end
-  local am, au = mirror.order_parts(a.time)
-  local bm, bu = mirror.order_parts(b.time)
-  if am ~= bm then return am > bm end
-  return au .. (a.user or "") > bu .. (b.user or "")
-end
+-- Which of two revisions of one object wins: higher rev, then the later order, then the larger user name (lib/judge.lua).
+mirror.newer = judge.newer
 
 -- The merges themselves (merge_item, merge_midi, merge_env, merge_track, merge_fx, side3, note_changes, pieces, pieces_changed) are pure and
 -- live in lib/mirror_merge.lua (rt-sync2 phase 1); which versions may be merged, and merge_state's choice of merge, stay here.
@@ -3410,25 +3382,10 @@ function mirror.wins(proj, oid, rev, order)
   return mirror.newer({ rev = rev, time = order }, krev and { rev = krev, time = korder } or nil)
 end
 
--- When versions were made, from their ids ("<user>-YYYYMMDD-HHMMSSZ-...": a merged one names several): the earliest and the latest, in seconds.
-local function id_span(id)
-  local lo, hi
-  for y, mo, d, h, mi, s in tostring(id or ""):gmatch("(%d%d%d%d)(%d%d)(%d%d)%-(%d%d)(%d%d)(%d%d)Z") do
-    local t = utc_secs(tonumber(y), tonumber(mo), tonumber(d), tonumber(h), tonumber(mi), tonumber(s))
-    lo, hi = math.min(lo or t, t), math.max(hi or t, t)
-  end
-  return lo, hi
-end
--- Two versions of an item, one started from a version over a month older than the newer of them: someone away that long (lib/trim.lua takes
--- such old versions away). Merged only on computers that still had the old one, the projects came apart (review, D5). So never merged,
--- decided from the ids alone, the same everywhere: the newer stands, and the other is on the Restore page (and its author's Use mine).
-function mirror.too_old_to_merge(a, b)
-  local _, newest_a = id_span(a.id)
-  local _, newest_b = id_span(b.id)
-  local base_a, base_b = id_span(a.base_ev), id_span(b.base_ev)
-  local newest, base = math.max(newest_a or 0, newest_b or 0), math.min(base_a or math.huge, base_b or math.huge)
-  return newest - base > mirror.MERGE_DAYS * 86400
-end
+local id_span = judge.id_span
+-- Two versions of an item, one started from a version over a month older than the newer of them: never merged, decided from the ids alone
+-- (lib/judge.lua). MERGE_DAYS stays here: lib/trim.lua keeps history twice as long.
+function mirror.too_old_to_merge(a, b) return judge.too_old_to_merge(a, b, mirror.MERGE_DAYS) end
 mirror.MERGE_DAYS = 30 -- (lib/trim.lua keeps history twice as long)
 
 -- An item's deletion racing an edit (one of a and b is a deletion, the other not): the deletion wins over a version that doesn't build on it (made
@@ -3506,21 +3463,7 @@ function mirror.merge_for(proj, ev, room_dir)
   end
   return merged_ev
 end
--- Versions made apart, as one merged version's id, the same whatever order they're given in: oldest first, each newer one winning over
--- what came before. `leaves`: { { id, rev, order } }. Pure.
-function mirror.merge_order(leaves)
-  local t = {}
-  for i, x in ipairs(leaves) do t[i] = x end
-  table.sort(t, function(a, b)
-    if a.id == b.id then return false end
-    local an, bn = mirror.newer({ rev = a.rev, time = a.order }, { rev = b.rev, time = b.order }), mirror.newer({ rev = b.rev, time = b.order }, { rev = a.rev, time = a.order })
-    if an ~= bn then return bn end -- (a older than b: first)
-    return a.id < b.id
-  end)
-  local acc = t[1] and t[1].id
-  for i = 2, #t do acc = mirror.merge_id(t[i].id, acc) end
-  return acc
-end
+mirror.merge_order = judge.merge_order -- (versions made apart as one merged version's id, in any order: lib/judge.lua)
 
 -- Does `ev` land over the version held here because that one was made without seeing a deletion ev builds on (mirror.beaten_by)? For
 -- sync.receive's undo point, which asks before mirror.receive does.
@@ -3841,83 +3784,14 @@ end
 -- A merged version of an item (mirror.merge_item) has the id "m(<winner>&<loser>)" (either may be one itself). It's nowhere on disk: every computer
 -- rebuilds it the same way from the two events and the version both came from, so all agree with nobody sending it.
 -- -> it like an event (the winner's fields; rev, base, state its own), or nil when an event or a base (base_ev: 0.58.43 on) isn't there.
-function mirror.merge_id(winner, loser) return "m(" .. winner .. "&" .. loser .. ")" end
-function mirror.split_merge(id)
-  if type(id) ~= "string" or id:sub(1, 2) ~= "m(" or id:sub(-1) ~= ")" then return nil end
-  local inner, depth = id:sub(3, -2), 0
-  for i = 1, #inner do
-    local c = inner:sub(i, i)
-    if c == "(" then depth = depth + 1 elseif c == ")" then depth = depth - 1
-    elseif c == "&" and depth == 0 then return inner:sub(1, i - 1), inner:sub(i + 1) end
-  end
-end
--- Does version `v` (an event or a merged version) build on the version with id `of` (or is it that one)? Followed through the versions each
--- started from (base_ev), and both sides of a merge. Not by revision number: one edit's quick nudges share a number (watch), so numbers don't
--- tell versions apart. A plain change's clock is later than everything it builds on, so the walk stops below `of`'s clock.
--- -> true, false, or nil when it can't tell: a version on the way isn't here (yet). Two quick edits arriving out of order looked "made apart"
--- and were merged for good (review, 0.58.47). A walk too long to finish counts as building on it. Pure but for reading events.
-function mirror.descends(room_dir, v, of, of_hlc)
-  if not v or not of then return false end
-  of_hlc = tonumber(of_hlc)
-  local todo, seen, steps, missing = { v }, {}, 0, false
-  while #todo > 0 do
-    steps = steps + 1
-    if steps > 400 then return true end
-    local x = table.remove(todo)
-    if x.id == of then return true end
-    local w, l = mirror.split_merge(x.id)
-    if not seen[x.id or ""] and (w or not (of_hlc and tonumber(x.hlc) and tonumber(x.hlc) < of_hlc)) then
-      seen[x.id or ""] = true
-      for _, id in ipairs(w and { w, l } or { x.base_ev }) do
-        if id == of then return true end
-        local y = id and mirror.event_file(room_dir, id)
-        if y then todo[#todo + 1] = y elseif id then missing = true end
-      end
-    end
-  end
-  if missing then return nil end
-  return false
-end
--- Two versions made apart: neither builds on the other. -> true, false, or nil (can't tell yet).
-function mirror.apart(room_dir, a, b)
-  if not (a and b) or a.id == b.id then return false end
-  local ab, ba = mirror.descends(room_dir, a, b.id, b.hlc), mirror.descends(room_dir, b, a.id, a.hlc)
-  if ab or ba then return false end
-  if ab == nil or ba == nil then return nil end
-  return true
-end
--- What a version builds on, nearest first (both sides of a merge).
-local function parents(x) local w, l = mirror.split_merge(x.id); return w and { w, l } or { x.base_ev } end
--- The version two versions both build on, nearest to them: everything one builds on, then the first of those the other reaches. "The older of the
--- two bases" lost what one side changed in between (both made two changes apart: review, 0.58.47). -> its id, or nil.
--- (-> nil, true when none was found and a version one of them builds on couldn't be read here: it may only be on its way. rt-converge)
-local function common_base(room_dir, a, b)
-  local behind, todo, steps, missing = {}, { a }, 0, false
-  while #todo > 0 and steps < 400 do
-    steps = steps + 1
-    for _, id in ipairs(parents(table.remove(todo, 1))) do
-      if not behind[id] then
-        behind[id] = true
-        local y = mirror.event_file(room_dir, id)
-        if y then todo[#todo + 1] = y else missing = true end
-      end
-    end
-  end
-  local seen
-  todo, steps, seen = { b }, 0, {}
-  while #todo > 0 and steps < 400 do
-    steps = steps + 1
-    for _, id in ipairs(parents(table.remove(todo, 1))) do
-      if behind[id] then return id end
-      if not seen[id] then
-        seen[id] = true
-        local y = mirror.event_file(room_dir, id)
-        if y then todo[#todo + 1] = y else missing = true end
-      end
-    end
-  end
-  return nil, missing
-end
+mirror.merge_id, mirror.split_merge = judge.merge_id, judge.split_merge
+-- Ancestry, read from a room's versions (lib/judge.lua: descends, apart, common_base): true, false, or nil while a version on the way isn't here.
+local function reader(room_dir) return function(id) return (mirror.event_file(room_dir, id)) end end
+mirror.reader = reader
+function mirror.descends(room_dir, v, of, of_hlc) return judge.descends(reader(room_dir), v, of, of_hlc) end
+function mirror.apart(room_dir, a, b) return judge.apart(reader(room_dir), a, b) end
+local parents = judge.parents
+local function common_base(room_dir, a, b) return judge.common_base(reader(room_dir), a, b) end
 local merged = {} -- room dir \0 id -> the version (events never change, so neither do their merges)
 local function event_file(room_dir, evid, depth)
   local w_id, l_id = mirror.split_merge(evid)
