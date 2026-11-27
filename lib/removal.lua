@@ -47,15 +47,19 @@ function removal.publish(root, user, id, ts, keep)
   local okk, key = pcall(function() return require("signed").key() end)
   key = okk and key or (type(d) == "table" and d.device == id and d.key) or nil
   local same_key = type(d) == "table" and d.key == key
-  if said_device(root, user) == id and not foreign and (not ts or had[ts[1]] == ts[2]) and same_nat and same_key then return end -- (what's there, checked or not: one naming another computer is written over)
+  -- (and this person's other computers, as this one says (lib/persons.lua): both computers saying so folds them into one person. rt-people)
+  local oks, same = pcall(function() return require("persons").same_for(root) end)
+  same = oks and same or nil
+  local same_same = band.json_encode(type(d) == "table" and d.device == id and d.same or false) == band.json_encode(same or false)
+  if said_device(root, user) == id and not foreign and (not ts or had[ts[1]] == ts[2]) and same_nat and same_key and same_same then return end -- (what's there, checked or not: one naming another computer is written over)
   local names = {}
   for k, v in pairs(had) do if type(k) == "string" and type(v) == "string" and k == keep then names[k] = v end end
   if ts then names[ts[1]] = ts[2] end
   reaper.RecursiveCreateDirectory(devices(root), 0)
-  local out = { user = user, device = id, ts = next(names) and names or nil, nat = n, key = key }
+  local out = { user = user, device = id, ts = next(names) and names or nil, nat = n, key = key, same = same }
   -- (fields this version doesn't know, from this computer's own earlier file: another StudioSync version on the same computer, in another
   -- studio, may write the file too; nothing it adds is stripped. rt-nat3)
-  if type(d) == "table" and d.device == id then for k, v in pairs(d) do if out[k] == nil and k ~= "ts" and k ~= "nat" then out[k] = v end end end
+  if type(d) == "table" and d.device == id then for k, v in pairs(d) do if out[k] == nil and k ~= "ts" and k ~= "nat" and k ~= "same" then out[k] = v end end end
   band.write_json(path, out)
 end
 -- This computer's entry in every studio's devices file, at most every 30 s, on a gate of its own (rt-nat3). It used to run inside

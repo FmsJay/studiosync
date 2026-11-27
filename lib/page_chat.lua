@@ -458,17 +458,75 @@ function chat.names_of(cfg)
   local ok, all = pcall(function() return require("profile").all(cfg.root) end)
   local me = ok and type(all) == "table" and all[cfg.user] or nil
   if type(me) == "table" and type(me.name) == "string" and me.name ~= "" and me.name ~= cfg.user then names[#names + 1] = me.name end
+  -- (and your person's name, your computers folded into one: "@James" is James-Laptop and James-Main. lib/persons.lua, rt-people)
+  local okp, p = pcall(function() return require("persons").map(cfg.root)[cfg.user] end)
+  if okp and type(p) == "table" and type(p.name) == "string" and p.name ~= "" and not chat.has(names, p.name) then names[#names + 1] = p.name end
   for _, n in ipairs(chat.EVERYONE) do names[#names + 1] = n end
   return names
 end
 -- A scope's messages (its own folder) newer than you last read it, not yours: how many, and how many of those mention you.
 chat.MENTION_READS = 200
+-- ---- read on another of your computers (rt-people) ---------------------------------------------------------------------------------------
+-- With computers folded into one person (lib/persons.lua), what you read on one counts as read on the others: each writes what it marked
+-- seen to _band/seen/<name>.json ({ user, at, seen = { [seen key] = stamp } }, its own file, only while it has other computers), and each
+-- reads its other computers' files, counted only when Syncthing says that computer wrote it (trust.own_file_ok). And your own messages from
+-- another of your computers aren't unread to you.
+chat.SEEN_KEYS = 300
+local function seen_rel(user) return "_band/seen/" .. (tostring(user):gsub("[^%w%-_ ]", "")) .. ".json" end
+local function my_others(cfg)
+  local ok, p = pcall(function() return require("persons").map(cfg.root)[cfg.user] end)
+  local out = {}
+  for _, u in ipairs(ok and type(p) == "table" and p.users or {}) do if u ~= cfg.user then out[#out + 1] = u end end
+  return out
+end
+local function share_seen(cfg, moved)
+  if #my_others(cfg) == 0 then return end
+  local path = cfg.root .. "/" .. seen_rel(cfg.user)
+  local cur = band.read_json(path)
+  local seen, list = type(cur) == "table" and type(cur.seen) == "table" and cur.seen or {}, {}
+  for k, s in pairs(moved) do if type(seen[k]) ~= "string" or seen[k] < s then seen[k] = s end end
+  for k, s in pairs(seen) do if type(k) == "string" and type(s) == "string" then list[#list + 1] = { k, s } end end
+  table.sort(list, function(x, y) return x[2] > y[2] end)
+  local keep = {}
+  for i = 1, math.min(#list, chat.SEEN_KEYS) do keep[list[i][1]] = list[i][2] end
+  reaper.RecursiveCreateDirectory(cfg.root .. "/_band/seen", 0)
+  band.write_json(path, { user = cfg.user, at = os.time(), seen = keep })
+end
+local others_c = {} -- root .. user -> { at, seen }
+function chat.others_seen(cfg)
+  local k = cfg.root .. "\0" .. cfg.user
+  local c = others_c[k]
+  if c and reaper.time_precise() - c.at < 10 then return c.seen end
+  local out = {}
+  for _, u in ipairs(my_others(cfg)) do
+    local d = band.read_json(cfg.root .. "/" .. seen_rel(u))
+    if type(d) == "table" and d.user == u and type(d.seen) == "table" then
+      local ok, said = pcall(require("trust").own_file_ok, cfg.root, seen_rel(u), u, d.at)
+      if ok and said == true then
+        local n = 0
+        for key, s in pairs(d.seen) do
+          n = n + 1
+          if n > chat.SEEN_KEYS then break end
+          if type(key) == "string" and type(s) == "string" and s:match("^%d%d%d%d%d%d%d%d%-%d%d%d%d%d%d$") and (out[key] or "") < s then out[key] = s end
+        end
+      end
+    end
+  end
+  others_c[k] = { at = reaper.time_precise(), seen = out }
+  return out
+end
 function chat.unread_in(cfg, b, sc)
-  local seen = reaper.GetExtState(band.SECTION, seen_key(b, sc)) -- (each scope has its own: reading one doesn't clear the others)
-  local dir, mine, n, at = chat.dir(cfg, b, sc) .. "/msgs", "-" .. (cfg.user:gsub("[^%w]", "_")) .. "-", 0, 0
+  local key = seen_key(b, sc)
+  local seen = reaper.GetExtState(band.SECTION, key) -- (each scope has its own: reading one doesn't clear the others)
+  local other = chat.others_seen(cfg)[key]
+  if other and other > seen then seen = other end
+  local dir, n, at = chat.dir(cfg, b, sc) .. "/msgs", 0, 0
+  local mine = { "-" .. (cfg.user:gsub("[^%w]", "_")) .. "-" }
+  for _, u in ipairs(my_others(cfg)) do mine[#mine + 1] = "-" .. (u:gsub("[^%w]", "_")) .. "-" end
+  local function is_mine(f) for _, m in ipairs(mine) do if f:find(m, 1, true) then return true end end return false end
   local names = chat.names_of(cfg)
   for _, f in ipairs(band.files(dir, ".json")) do
-    if f:sub(1, 15) > seen and not f:find(mine, 1, true) then
+    if f:sub(1, 15) > seen and not is_mine(f) then
       n = n + 1
       if n <= chat.MENTION_READS then
         local v = band.read_json(dir .. "/" .. f)
@@ -483,14 +541,43 @@ function chat.count_unread(cfg, b)
   for _, sc in ipairs(SCOPES) do n = n + chat.unread_in(cfg, b, sc[1]) end
   return n
 end
--- You've read a scope: its newest message counts as seen (the panel's Messages tab does the same as it's drawn).
-function chat.mark_seen(cfg, b, sc)
+-- The other scopes whose every message a scope's view shows, by their seen keys: This project shows each room's chat, Studio every project's
+-- and room's (chat.sources). Reading those views read them too. (They stayed unread: a room's messages read under This project, where Chat
+-- starts, still counted on the tab, Home and the phone, as only This project's own key moved. rt-people, James's findings 2026-11-27)
+local function covered(cfg, b, sc)
+  local out = {}
+  local function rooms_of(song)
+    for _, room in ipairs(band.subdirs(band.song_dir(cfg, song) .. "/rooms")) do out[#out + 1] = seen_key({ song = song, room = room }, "room") end
+  end
+  if sc == "song" and b.song then rooms_of(b.song)
+  elseif sc == "band" then
+    for _, song in ipairs(band.songs(cfg)) do out[#out + 1] = seen_key({ song = song }, "song"); rooms_of(song) end
+  end
+  return out
+end
+chat.seen_gen = 0 -- (one more each time something was marked seen here: Home's unread count is built again at once. lib/webhome.lua)
+local cascaded = {} -- seen key -> the newest it was last carried to the covered scopes with (once per new message, not every frame)
+-- You've read a scope: its newest message counts as seen, and in the scopes its view covers (the panel's Messages tab does the same as it's
+-- drawn, passing what it shows as t).
+function chat.mark_seen(cfg, b, sc, t)
   if not b then return end
-  local t = chat.read(cfg, b, sc)
-  local last = t.msgs[#t.msgs]
-  local newest = last and type(last.file) == "string" and (last.file:match("([^/\\]+)$") or ""):sub(1, 15) or ""
-  local k = seen_key(b, sc)
-  if reaper.GetExtState(band.SECTION, k) < newest then reaper.SetExtState(band.SECTION, k, newest, true); index_v, unread_at = nil, -math.huge end
+  t = t or chat.read(cfg, b, sc)
+  local newest = ""
+  for _, m in ipairs(t.msgs) do -- (the newest name, not the last by time: what unread_in compares)
+    local s = type(m.file) == "string" and (m.file:match("([^/\\]+)$") or ""):sub(1, 15) or ""
+    if s > newest then newest = s end
+  end
+  local k, moved, changed = seen_key(b, sc), {}, false
+  local function mark(key) if reaper.GetExtState(band.SECTION, key) < newest then reaper.SetExtState(band.SECTION, key, newest, true); moved[key], changed = newest, true end end
+  mark(k)
+  if newest ~= "" and cascaded[k] ~= newest then
+    cascaded[k] = newest
+    for _, ck in ipairs(covered(cfg, b, sc)) do mark(ck) end
+  end
+  if changed then
+    index_v, unread_at, chat.seen_gen = nil, -math.huge, chat.seen_gen + 1
+    pcall(share_seen, cfg, moved) -- (and to your other computers: rt-people)
+  end
 end
 -- Every conversation you can see with its unread count and @mentions: { total, mentions, convs = { { scope, kind ("here", "ch", "dm"),
 -- name, n, at, members, archived } } }. The total leaves archived channels out. Kept 5 s.
@@ -778,8 +865,7 @@ function chat.draw(ctx, ImGui, cfg, b, tabs)
       if tab[3] and ImGui.BeginTabItem(ctx, tab[1]) then tab[2](); ImGui.EndTabItem(ctx) end
     end
     if ImGui.BeginTabItem(ctx, "Messages") then
-      local newest = t.msgs[#t.msgs] and t.msgs[#t.msgs].file:match("[/\\]([^/\\]+)$"):sub(1, 15) or ""
-      if reaper.GetExtState(band.SECTION, seen_key(b, scope)) < newest then reaper.SetExtState(band.SECTION, seen_key(b, scope), newest, true) end
+      chat.mark_seen(cfg, b, scope, t) -- (and the rooms This project shows, every project's under Studio: rt-people)
       local _, h = ImGui.GetContentRegionAvail(ctx)
       local function typing()
         ImGui.SetNextItemWidth(ctx, -60)

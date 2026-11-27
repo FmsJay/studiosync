@@ -203,7 +203,28 @@ function profile.action(cfg, a)
   return { id = type(a.id) == "string" and a.id:sub(1, 40) or nil, ok = not why or nil, why = why }, why and ("the web page's profile change: " .. why) or said
 end
 
--- The "profiles" topic: { me, people = { user = { name, colour, pic } }, reply }.
-function profile.model(cfg, reply) return { me = cfg.user, people = profile.all(cfg.root), reply = reply } end
+-- Pure: people (profile.all's, never changed) with persons.map's folded in -> a new table. A person's computers (lib/persons.lua) read as one:
+-- each of their names without a display name of its own takes the person's, without a picture the first one's among them, and the colour of
+-- their key's name (one swatch for one person); `person` is their key. rt-people
+function profile.fold(people, map)
+  local out = {}
+  for u, e in pairs(people or {}) do out[u] = e end
+  for u, p in pairs(map or {}) do
+    local e, pic = {}, nil
+    for _, v in ipairs(p.users) do local o = people[v]; if type(o) == "table" then pic = pic or o.pic end end
+    for k, v in pairs(people[u] or {}) do e[k] = v end
+    local key = people[p.key]
+    e.name, e.pic, e.person = e.name or p.name, e.pic or pic, p.key
+    if type(key) == "table" and key.colour then e.colour = key.colour end
+    out[u] = e
+  end
+  return out
+end
+-- The "profiles" topic: { me, people = { user = { name, colour, pic, person } }, persons = { key = { name, users } }, reply }.
+function profile.model(cfg, reply)
+  local map, persons = require("persons").map(cfg.root), {}
+  for _, p in pairs(map) do persons[p.key] = { name = p.name, users = p.users } end
+  return { me = cfg.user, people = profile.fold(profile.all(cfg.root), map), persons = persons, reply = reply }
+end
 
 return profile

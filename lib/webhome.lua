@@ -186,9 +186,16 @@ local function room_news(cfg, song, room, here, now)
   end
   return last, takes, changes
 end
+-- Is a status still fresh? e: { at = when this computer first saw its stamp (time_precise), changed = it saw the stamp change }; age: the stamp's
+-- age by this computer's clock. Gone FRESH s after its last change here, whatever the writer's clock says (presence.peers' rule): one whose
+-- clock ran ahead stayed online on Home for as long as it was ahead after they closed the project. Pure. (rt-people)
+function webhome.fresh(e, age, now)
+  return now - e.at < webhome.FRESH and (age < webhome.FRESH or e.changed == true)
+end
+local stamps, stamps_n = {}, 0 -- song/room/user -> { time, at, changed }
 -- Who's in a room now (rooms.people's rule, with what they're doing): { { user, rec, play, away } }, you left out.
 -- (each one's status line, "back at 8", comes from the profiles topic: lib/profile.lua)
-local function room_people(cfg, song, room)
+local function room_people(cfg, song, room, now)
   local dir, sts = band.song_dir(cfg, song) .. "/rooms/" .. room .. "/status", {}
   for _, f in ipairs(band.files(dir, ".json")) do
     local st = band.read_json(dir .. "/" .. f)
@@ -196,7 +203,19 @@ local function room_people(cfg, song, room)
   end
   local presence, out = require("presence"), {}
   for _, st in ipairs(presence.with_live(sts, presence.live(cfg, song, room))) do
-    if st.user ~= cfg.user and type(st.time) == "string" and band.age(st.time) < webhome.FRESH then
+    local fresh = false
+    if st.user ~= cfg.user and type(st.time) == "string" then
+      local k = song .. "/" .. room .. "/" .. st.user
+      local e = stamps[k]
+      if not e or e.time ~= st.time then
+        if stamps_n >= 4000 then stamps, stamps_n = {}, 0 end
+        if not e then stamps_n = stamps_n + 1 end
+        e = { time = st.time, at = now, changed = e ~= nil }
+        stamps[k] = e
+      end
+      fresh = webhome.fresh(e, band.age(st.time), now)
+    end
+    if fresh then
       out[#out + 1] = { user = st.user, rec = st.recording == true or nil, play = st.playing == true or nil, away = st.front == false or nil }
     end
   end
@@ -204,11 +223,53 @@ local function room_people(cfg, song, room)
   return out
 end
 local function newer(a, z) return (a.time or "") > (z.time or "") end
+-- One entry per person (James's findings 2026-11-27: Online now showed someone once per project and room they had open, and each of a person's
+-- computers apart). list: { { user, song, room, me, rec, play, away } }; key_of(user) -> their person (lib/persons.lua). The entry shown is their
+-- most telling place (yours: this computer's first; then recording, playing, in front, in your project); every place is in `devices` when
+-- there's more than one. rec and play: anywhere; away: everywhere; me: any of them yours. Pure. (rt-people)
+function webhome.fold(list, key_of, here_song)
+  local function rank(x)
+    return (x.me and 0 or 8) + (x.rec and 0 or 4) + (x.play and 0 or 2) + (x.away and 1 or 0) + (x.song == here_song and 0 or 0.5)
+  end
+  local groups, order = {}, {}
+  for _, x in ipairs(list) do
+    local k = key_of(x.user)
+    if not groups[k] then groups[k] = {}; order[#order + 1] = k end
+    table.insert(groups[k], x)
+  end
+  local out = {}
+  for _, k in ipairs(order) do
+    local g = groups[k]
+    table.sort(g, function(a, z)
+      local ra, rz = rank(a), rank(z)
+      if ra ~= rz then return ra < rz end
+      return (a.user .. "\0" .. tostring(a.song) .. "\0" .. tostring(a.room)) < (z.user .. "\0" .. tostring(z.song) .. "\0" .. tostring(z.room))
+    end)
+    local e = {}
+    for kk, v in pairs(g[1]) do e[kk] = v end
+    local away = true
+    for _, x in ipairs(g) do
+      e.rec, e.play, e.me = e.rec or x.rec, e.play or x.play, e.me or x.me
+      away = away and x.away == true
+    end
+    e.away = away or nil
+    if #g > 1 then
+      e.devices = {}
+      for _, x in ipairs(g) do e.devices[#e.devices + 1] = { user = x.user, song = x.song, room = x.room, rec = x.rec, play = x.play, away = x.away, me = x.me } end
+    end
+    out[#out + 1] = e
+  end
+  return out
+end
 
 function webhome.build(proj, cfg, b, now)
   local rooms, extras = require("rooms"), require("extras")
   local front = reaper.EnumProjects(-1)
   local projects, online, takes, bounces = {}, {}, {}, {}
+  -- (your other computers are you: folded into your own entry, lib/persons.lua. rt-people)
+  local persons = require("persons")
+  local me_key = persons.of(cfg.root, cfg.user)
+  local function key_of(u) local k = persons.of(cfg.root, u); return k == me_key and "\0me" or k end
   for _, song in ipairs(band.songs(cfg)) do
     if #projects >= webhome.PROJECTS then break end
     local sdir = band.song_dir(cfg, song)
@@ -224,10 +285,10 @@ function webhome.build(proj, cfg, b, now)
         p.since_at = since
       end
       for _, t in ipairs(tk) do takes[#takes + 1] = t end
-      for _, x in ipairs(room_people(cfg, song, room)) do
+      for _, x in ipairs(room_people(cfg, song, room, now)) do
         x.room = room ~= "main" and room or nil
         p.online[#p.online + 1] = x
-        online[#online + 1] = { user = x.user, song = song, room = x.room, rec = x.rec, play = x.play, away = x.away }
+        online[#online + 1] = { user = x.user, song = song, room = x.room, rec = x.rec, play = x.play, away = x.away, me = key_of(x.user) == "\0me" or nil }
       end
       local tab = rooms.tab(song, room)
       if tab then
@@ -235,6 +296,7 @@ function webhome.build(proj, cfg, b, now)
         online[#online + 1] = { user = cfg.user, me = true, song = song, room = room ~= "main" and room or nil, away = tab ~= front or nil }
       end
     end
+    p.online = webhome.fold(p.online, key_of, nil) -- (one face per person in the project: rt-people)
     if not p.last then
       local s = band.read_json(band.session_path(cfg, song))
       if type(s) == "table" and type(s.published) == "string" then p.last = { user = type(s.host) == "string" and s.host or nil, time = s.published, what = "published it" } end
@@ -254,6 +316,7 @@ function webhome.build(proj, cfg, b, now)
     if ta ~= tz then return ta > tz end
     return a.name < z.name
   end)
+  online = webhome.fold(online, key_of, b.song)
   table.sort(online, function(a, z) if (a.me or false) ~= (z.me or false) then return z.me == true end return a.user < z.user end)
   for _, list in ipairs({ takes, bounces }) do
     table.sort(list, newer)
@@ -292,8 +355,10 @@ function webhome.build(proj, cfg, b, now)
     recap = { time = r.to, lines = {} }
     for i = 1, lok and math.min(8, #lines) or 0 do recap.lines[i] = lines[i] end
   end
+  -- (Your computers: which of the studio's computers are yours, both saying so. lib/persons.lua, rt-people)
+  local cok, computers = pcall(persons.computers, cfg.root, cfg.user)
   return { me = cfg.user, studio = band.info(cfg.root).name, song = b.song, room = b.room ~= "main" and b.room or nil,
-    projects = projects, online = online, takes = takes, bounces = bounces, recap = recap,
+    projects = projects, online = online, takes = takes, bounces = bounces, recap = recap, computers = cok and computers or nil,
     opened = S.opened and os.time() - S.opened.at < 60 and S.opened or nil,
     unread = S.chat.unread, unread_at = S.chat.unread_at, unread_by = S.chat.unread_by, mentions = S.chat.mentions, todos = S.chat.todos, recent = S.chat.recent }
 end
@@ -353,9 +418,19 @@ function webhome.action(proj, cfg, b, a)
     end
   end
   if a.open ~= nil then return webhome.open(cfg, a.open) end
+  if type(a.computer) == "table" then -- ({ user, on }: one of the studio's computers is yours, or isn't. lib/persons.lua, rt-people)
+    S.at = -math.huge
+    local said, why = require("persons").set(cfg.root, a.computer.user, a.computer.on == true)
+    return said or ("the web page's Your computers change wasn't made: " .. tostring(why))
+  end
 end
 -- Each tick in front, while a page looks (lib/webui.lua).
 function webhome.tick(proj, cfg, b, publish, now)
+  local gen = require("page_chat").seen_gen -- (read in the chat here: the unread count goes again at once, not up to 25 s on. rt-people)
+  if gen ~= S.seen_gen then
+    if S.seen_gen ~= nil then S.chat, S.at = nil, -math.huge end
+    S.seen_gen = gen
+  end
   if now - S.prof_at >= require("profile").EVERY then
     S.prof_at = now
     local ok, m = pcall(require("profile").model, cfg, S.reply)
@@ -367,6 +442,6 @@ function webhome.tick(proj, cfg, b, publish, now)
     publish("home", ok and m or { me = cfg.user, error = tostring(m) })
   end
 end
-function webhome._reset() S = { want = -math.huge, at = -math.huge, chat_at = -math.huge, chat = nil, prof_at = -math.huge, reply = nil }; scans, takes_memo, mtimes = {}, {}, {} end
+function webhome._reset() S = { want = -math.huge, at = -math.huge, chat_at = -math.huge, chat = nil, prof_at = -math.huge, reply = nil }; scans, takes_memo, mtimes, stamps, stamps_n = {}, {}, {}, {}, 0 end
 
 return webhome

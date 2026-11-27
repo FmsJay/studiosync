@@ -546,7 +546,8 @@ function direct.speed_line_of(peers, who)
 end
 function direct.speed_line(cfg)
   local devs = devices(cfg.root)
-  return direct.speed_line_of(direct.status(cfg).peers, function(peer) return direct.who_of(devs, peer) end)
+  -- (a person's computer by the person, "James (James-Main)": lib/persons.lua, rt-people)
+  return direct.speed_line_of(direct.status(cfg).peers, function(peer) return require("persons").label(cfg.root, direct.who_of(devs, peer), cfg.user) end)
 end
 
 -- ---- the live layer (extension 1.0.8, docs/realtime-roadmap.md steps 1-2) -------------------------------------------------------------

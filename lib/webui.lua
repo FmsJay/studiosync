@@ -83,12 +83,13 @@ local function person(st, me)
   return { user = st.user, me = me or nil, playing = st.playing == true or nil, recording = st.recording == true or nil, armed = armed,
     live = type(st.live) == "string" and st.live or nil, call = st.call and true or nil }
 end
-function webui.presence_model(song, room, me, peers, who)
+function webui.presence_model(song, room, me, peers, who, key_of)
   local people = { person(me, true) }
   local others = {}
   for _, st in ipairs(peers or {}) do if type(st) == "table" and type(st.user) == "string" and st.user ~= me.user then others[#others + 1] = person(st) end end
   table.sort(others, function(a, z) return a.user:lower() < z.user:lower() end)
   for _, p in ipairs(others) do people[#people + 1] = p end
+  if key_of then people = require("persons").fold_people(people, key_of) end -- (one entry a person, their computers under it: rt-people)
   local claims = {}
   if type(who) == "table" then
     for kind, list in pairs({ track = who.tracks, region = who.regions }) do
@@ -291,7 +292,8 @@ function webui.tick(proj, cfg, b, handlers)
     local sync = require("sync")
     local _, who = sync.authority(cfg, b.song, b.room)
     last_who = who
-    local pm = webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who)
+    local pm = webui.presence_model(b.song, b.room, me, require("presence").peers(cfg, b.song, b.room), who,
+      function(u) return require("persons").of(cfg.root, u) end) -- (a person's computers as one: lib/persons.lua, rt-people)
     pm.asks = require("claimask").model(b) -- (Claims mode: asks waiting on you, and yours on others. lib/claimask.lua, rt-claims)
     local okg, mg = pcall(require("groups").may_manage, cfg.root, cfg.user)
     pm.may_grant = okg and mg or nil -- (Admins only: this page may let people edit here)

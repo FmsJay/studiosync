@@ -13,6 +13,7 @@ reaper = setmetatable({
   SetExtState = function(s, k, v) ext[s .. "/" .. k] = v end,
   DeleteExtState = function(s, k) ext[s .. "/" .. k] = nil end,
   RecursiveCreateDirectory = function() return 1 end,
+  EnumProjects = function() return nil end, -- (no project tabs: rooms.people's walk of them, which asks now go by, ends. rt-people)
   file_exists = function(p) return FS[p] ~= nil end,
   genGuid = function() return string.format("{%08X-1234-5678-9ABC-%012X}", math.random(0, 0x7fffffff), math.random(0, 0x7fffffff)) end,
   StudioSync_DirectStart = function(ch, secret, inbox, port) starts[#starts + 1] = { ch = ch, secret = secret, port = port }; return 1 end,

@@ -130,6 +130,14 @@ function invite.known(cfg, song, room)
   for _, r in ipairs(band.subdirs(band.song_dir(cfg, song) .. "/rooms")) do if r == room then return true end end
   return false
 end
+-- Is `user`'s person (any of their computers: lib/persons.lua) in song/room now (rooms.people's rule; this computer by its open tabs)? You
+-- could ask someone to join the project they were already in, or yourself on your other computer. rt-people, James's findings 2026-11-27
+function invite.inside_keys(cfg, song, room) -- -> { [person key] = true } of those in song/room
+  local persons, out = require("persons"), {}
+  for _, p in ipairs(require("rooms").people(cfg, song, room)) do out[persons.of(cfg.root, p.user)] = true end
+  return out
+end
+function invite.inside(cfg, user, song, room) return invite.inside_keys(cfg, song, room)[require("persons").of(cfg.root, user)] == true end
 local function asks_list() return band.ext_json(band.SECTION, "invite asks") or {} end
 -- Ask `to` to join song/room. -> true + words, or nil + why.
 function invite.ask(cfg, b, to, song, room, now)
@@ -138,6 +146,8 @@ function invite.ask(cfg, b, to, song, room, now)
   local j = invite.join_ok({ song = song, room = room })
   if type(to) ~= "string" or to == cfg.user or not chat.has(chat.people(cfg), to) then return nil, "only someone in the studio can be asked to join" end
   if not j or not invite.known(cfg, j.song, j.room) then return nil, "no such project or room here" end
+  if require("persons").same(cfg.root, to, cfg.user) then return nil, to .. " is one of your own computers" end
+  if invite.inside(cfg, to, j.song, j.room) then return nil, to .. " is in " .. j.song .. (j.room ~= "main" and (" (room " .. j.room .. ")") or "") .. " already" end
   local list = asks_list()
   local ok, why = invite.rate_ok(list, to, now)
   if not ok then return nil, why end
@@ -206,18 +216,30 @@ function invite.pending(cfg, now)
     end
   end
   local out = {}
-  for _, x in pairs(by) do out[#out + 1] = x end
+  -- (not one for a project you're in already, here or on another of your computers: nothing to join. rt-people)
+  for _, x in pairs(by) do if not invite.inside(cfg, cfg.user, x.song, x.room) then out[#out + 1] = x end end
   table.sort(out, function(a, z) return a.time > z.time end)
   pending_at, pending_v = reaper.time_precise(), out
   return out
 end
--- A chat message's join part for the pages (lib/webui.lua chat_model): { song, room, mine, answered, expired }, or nil.
+local cfg_seen -- (the studio's settings as invite.model last had them: chat_model is called without them)
+-- A chat message's join part for the pages (lib/webui.lua chat_model): { song, room, mine, answered, expired, inside }, or nil. inside: you're
+-- in that project already (here or on another of your computers), so it offers no Join. rt-people
 function invite.chat_model(m)
   local j = type(m) == "table" and invite.join_ok(m.join)
   if not j then return nil end
   local id = type(m.file) == "string" and m.file:match("([^/\\]+)%.json$") or ""
   local old = type(m.time) ~= "string" or m.time < now_iso(os.time() - invite.ASK_LIFE)
-  return { song = j.song, room = j.room, mine = m.user == me() or nil, answered = invite.answered(id) or nil, expired = old or nil }
+  local mine = m.user == me()
+  local inside = false
+  if not mine and not old then
+    local ok, x = pcall(function()
+      if cfg_seen then return invite.inside(cfg_seen, cfg_seen.user, j.song, j.room) end
+      return require("rooms").tab(j.song, j.room) ~= nil
+    end)
+    inside = ok and x == true
+  end
+  return { song = j.song, room = j.room, mine = mine or nil, answered = invite.answered(id) or nil, expired = old or nil, inside = inside or nil }
 end
 
 -- ---- links: this computer's end ------------------------------------------------------------------------------------------------------
@@ -451,9 +473,20 @@ function invite.action(proj, cfg, b, a)
     return said
   end
 end
+-- people: whom Ask to join may name, your own other computers left out; inside: those of them in this project and room now (no Ask to join
+-- on them). rt-people
 function invite.model(cfg, b, now)
-  local direct = require("direct")
-  return { me = cfg.user, studio = band.info(cfg.root).id, port = direct.port(), people = require("page_chat").people(cfg),
+  local direct, persons = require("direct"), require("persons")
+  cfg_seen = cfg
+  local people, inside = {}, {}
+  local here = b and b.song and invite.inside_keys(cfg, b.song, b.room or "main") or {}
+  for _, u in ipairs(require("page_chat").people(cfg)) do
+    if not persons.same(cfg.root, u, cfg.user) then
+      people[#people + 1] = u
+      if here[persons.of(cfg.root, u)] then inside[#inside + 1] = u end
+    end
+  end
+  return { me = cfg.user, studio = band.info(cfg.root).id, port = direct.port(), people = people, inside = inside,
     asks = invite.pending(cfg, now), last = W.last, song = b and b.song, room = b and b.room or "main" }
 end
 function invite.web_tick(proj, cfg, b, publish, now)

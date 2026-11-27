@@ -908,7 +908,7 @@ function ui.person_name(p, size)
     ImGui.SameLine(ctx, 0, 5)
   end
   ImGui.PushFont(ctx, ui.bold, size or 15)
-  ImGui.Text(ctx, p.name)
+  ImGui.Text(ctx, p.label or p.name) -- (label: a person's computer as the person, "James (James-Main)": lib/persons.lua, rt-people)
   ImGui.PopFont(ctx)
   ImGui.SetItemTooltip(ctx, p.user == cfg.user and "You. Right-click: your name and colour." or
     ((view.driver == cfg.user and "Right-click: hand over driving, their role, what they can change, or take them out.") or "Right-click: their role, what they can change, or take them out."))
@@ -1760,7 +1760,7 @@ local function home_who()
   local hide_away, away = reaper.GetExtState(band.SECTION, "who hide away") ~= "", 0
   for _, r in ipairs(view.rows) do
     if hide_away and r.state == "offline" then away = away + 1 else
-      people[#people + 1] = { name = r.name, user = r.name, state = r.state, armed = r.armed, recording = r.recording, playing = r.playing,
+      people[#people + 1] = { name = r.name, user = r.name, label = require("persons").label(cfg.root, r.name, cfg.user), state = r.state, armed = r.armed, recording = r.recording, playing = r.playing,
         driving = r.name == view.driver, version = r.version, mirror = r.mirror, last_track = r.last_track, last_at = r.last_at, live = r.live, call = r.call }
     end
   end
