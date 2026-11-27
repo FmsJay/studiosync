@@ -1749,10 +1749,16 @@ function mirror.wanted_order(list, here, after)
     if ma[2] ~= mb[2] then return ma[2] < mb[2] end
     return tostring(a) < tostring(b)
   end)
+  -- (a track it names that's gone since but is on the list: under what sat above that one, as every computer that was here has it: the track
+  -- moved up when the one above it was deleted. At the end, a late joiner had a new track anchored on a deleted one below everything, the
+  -- others at the top. The soak's reopen, seed 37, rt-guard)
+  local list_above = {}
+  for k, y in ipairs(list or {}) do list_above[y] = (list or {})[k - 1] or "" end
   repeat
     local landed, k = false, 1
     while k <= #new do -- (oldest first: each lands right under the track it names, above what landed there before it)
       local x, above = new[k], after[new[k]] or ""
+      for _ = 1, #(list or {}) do if above == "" or has[above] or not list_above[above] then break end; above = list_above[above] end
       local at = above == "" and 0 or nil
       if not at then for i, y in ipairs(out) do if y == above then at = i end end end
       if at then table.insert(out, at + 1, x); put[x] = true; table.remove(new, k); landed = true else k = k + 1 end
@@ -6134,6 +6140,7 @@ mirror.gone_why = mirror.gone_why or {} -- tostring(proj) .. oid -> "user" (a de
 mirror.empty_since = mirror.empty_since or {} -- tostring(proj) -> when a look first found it with no tracks and the studio's records (W.gone)
 mirror.EMPTY_SECS = 10 -- seconds an emptied project is left as it is before the studio's tracks are put back (W.gone, rt-guard)
 mirror.guard_said = mirror.guard_said or {}
+mirror.order_owed = mirror.order_owed or {} -- tostring(proj) -> tracks W.gone put back wait for mirror.keep_order (mirror.watch, at its end)
 function mirror.guard_say(pk, now, text) -- (once a minute a project at most: a put-back that waits would say it every pass)
   if now - (mirror.guard_said[pk] or -math.huge) >= 60 then mirror.guard_said[pk] = now; require("band").log(text) end
 end
@@ -6178,8 +6185,19 @@ function W.gone(w)
   -- tracks first: a bandmate's track deleted here came back without its items, which had nowhere to land yet, and that
   -- machine stayed different until the owner next changed them (laptop, 0.42.2)
   local function gone_rank(g) return g.oid:sub(1, 1) == "T" and 1 or 2 end
+  -- (and tracks in the studio's order: one put back lands under the track its version names, so that one has to be back first. rt-guard)
+  local in_order = {}
+  for _, g in ipairs(gone) do
+    if g.oid:sub(1, 1) == "T" then
+      local best = mirror.read_order(room_dir)
+      for k, x in ipairs(best and best.list or {}) do in_order[x] = k end
+      break
+    end
+  end
   table.sort(gone, function(a, b)
     if gone_rank(a) ~= gone_rank(b) then return gone_rank(a) < gone_rank(b) end
+    local ra, rb = in_order[a.oid] or math.huge, in_order[b.oid] or math.huge
+    if ra ~= rb then return ra < rb end
     return a.oid < b.oid
   end)
   -- (rt-guard: a deletion goes out only with something to show this person made it here, this session: not a new opening, and an edit of
@@ -6254,7 +6272,9 @@ function W.gone(w)
         -- bandmate's made at once) beat the record and brought the item back, on this computer alone. rt-converge)
         remember(proj, g.oid, g.rev or 0, "", g.evid, g.order)
       elseif mirror.gone_why[gk] ~= "user" then -- (no deletion of this person's behind it: the band's version back, nothing sent. rt-guard, above)
-        if o.kind == "track" then w.back_tracks[g.oid] = true end -- (its items and parts come back with it)
+        -- (its items and parts come back with it, and it goes to its place in the studio's order: it landed wherever apply put it, which the
+        -- order list didn't say, and a late joiner had another order. The soak's reopen, seed 37)
+        if o.kind == "track" then w.back_tracks[g.oid] = true; mirror.order_owed[pk] = true end
         guarded = guarded + 1
         local was_back = w.back
         put_back(o, g.rev, g.evid, { name = name })
@@ -6797,6 +6817,13 @@ function mirror.watch(proj, cfg, song, room, opts)
   if w.back_open then reaper.Undo_EndBlock2(proj, "StudioSync: put back what wasn't sent", -1); w.back_open = nil end
   if not ok_look then error(err_look, 0) end
   mirror.index_for(nil)
+  -- (tracks W.gone put back go to the studio's order once keep_order can run: the tab in front, stopped, nothing of the band's waiting. rt-guard)
+  if mirror.order_owed[pk] and not mirror.more and reaper.EnumProjects(-1) == proj and reaper.GetPlayStateEx(proj) == 0
+      and sync.pending_events(proj, cfg, song, room) == 0 then
+    mirror.order_owed[pk] = nil
+    local okk, errk = pcall(mirror.keep_order, proj, cfg, song, room)
+    if not okk then band.log("track order: " .. tostring(errk)) end
+  end
   if not mirror.more then mirror.sweep_unsent(proj, seen) end
   mirror.more_act[pk] = mirror.more and w.act or nil
   if w.sent > 0 then mirror.last_act[pk] = { act = w.act, at = now } end

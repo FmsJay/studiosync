@@ -13,6 +13,7 @@
 --  6. (soak) tools/soak's "reopen" edit: a file without some of its tracks opened in the tab; no deletion may go out from that computer until
 --     its next edit (node.lua checks in sync.post). Seeds 3 and 4 of --quick fail on 3ffc001: tests/run.py's soak step.
 --  7. follow.lua: a window moved or a plug-in window opened isn't "is editing"; a drag begun on the arrange or a track's panel is.
+--  8. (pure) mirror.wanted_order: a new track named under a track deleted since lands where that one sat (the soak's reopen found it).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -311,6 +312,15 @@ do
   assert(follow.down_on_project() == false, "a REAPER that can't say where: not counted")
   reaper = saved
   print("rt-guard 7: moving or resizing a window, or opening a plug-in window, isn't editing; a drag on the arrange is")
+end
+
+-- ---- 8. (pure) a new track named under a track deleted since lands where that one sat, not at the end (the soak's reopen, seed 37) ------
+do
+  local function w(list, here, after) return table.concat(mirror.wanted_order(list, here, after), ",") end
+  assert(w({ "A", "B", "C" }, { "B", "C", "N" }, { N = "A" }) == "N,B,C", "under the deleted top track: at the top, as every computer had it (was: at the end)")
+  assert(w({ "A", "B", "C" }, { "A", "C", "N" }, { N = "B" }) == "A,N,C", "under a deleted middle track: where it sat")
+  assert(w({ "A", "B" }, { "A", "B", "N" }, { N = "Z" }) == "A,B,N", "under a track nobody listed: at the end, as before")
+  print("rt-guard 8: a new track under a deleted one lands where that one sat")
 end
 
 print("ok rt-guard")

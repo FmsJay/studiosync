@@ -53,6 +53,13 @@ deletion held for a claimer and sent on Release (rt-guard 5), StudioSync's Undo 
 - Something on the computer that deletes with an undo point (a script, an agent's test: rt-reopen's B) is a real deletion to this guard.
 - Put-back tracks land where `apply` puts them; the order heal sets the order after an opening (as for any put-back).
 
+**Track order after a put-back** (found by the soak's `reopen`, seed 37 of the 10-minute run): put-back tracks now come back in the
+studio's order (each lands under the track its version names, so that one goes first), and once the tab is in front, stopped and caught up,
+`mirror.keep_order` puts the project on the studio's order (`mirror.order_owed`). And `mirror.wanted_order` (what a late joiner and the
+order heal go to): a new track named under a track that's been deleted since now lands where that track sat (under what was above it on the
+list), as every computer that was there has it, not at the end. That second one is older than rt-guard: a new track is never on the order
+list until someone moves a track, so its anchor's deletion left the late joiner with another order (test part 8).
+
 ## 2. "Says someone is editing when they're only moving windows around"
 
 **Cause** (`lib/follow.lua`, the live "<name> is editing" signal: the "[editing: name]" region, the track tint, the panel's line and the web
