@@ -59,17 +59,25 @@ function trim.plan(evs, points, cutoff)
       end
     end
   end
-  -- (every change made apart from the newest that no other change builds on: what a settle merges in, mirror.settled. The newest rival
-  -- alone lost a three-way merge's third change after 60 days, and it couldn't be rebuilt anywhere. Changes something builds on still go,
-  -- so losing branches don't keep history growing. Round 1 review, 0.59.45)
-  local based = {}
+  -- (the judge's support (lib/judge.lua, rt-sync2b): every change of an object that no other change builds on, its leaves, which is what the
+  -- judge merges or weighs; and, where an object has more than one, its deletions, since an edit stays beaten only while the deletion that
+  -- beat it is there. The newest rival alone lost a three-way merge's third change after 60 days (round 1 review, 0.59.45); edits only, a
+  -- deletion that had beaten a newer edit went, and the edit came back everywhere. Changes something builds on still go, so losing branches
+  -- don't keep history growing.)
+  local based, leaves = {}, {}
   for _, ev in ipairs(evs) do
     if type(ev.base_ev) == "string" then for part in ev.base_ev:gmatch("[^()&]+") do based[part] = true end end
   end
   for _, ev in ipairs(evs) do
     local k = key_of(ev)
-    local w = k and newest[k]
-    if w and ev ~= w and ev.base_ev and w.base_ev and not ev.gone and not behind[ev.id] and not based[ev.id] then keep[ev.id] = true end
+    if k and newest[k] and ev.type == "obj" and not based[ev.id] and not behind[ev.id] then
+      if ev.base_ev or ev.gone then keep[ev.id] = true end -- (one with nothing under it never merges: only the newest of those counts)
+      leaves[k] = (leaves[k] or 0) + 1
+    end
+  end
+  for _, ev in ipairs(evs) do
+    local k = key_of(ev)
+    if k and ev.gone and (leaves[k] or 0) > 1 then keep[ev.id] = true end
   end
   -- each kept one's base; a base that is a merge's id ("m(a&b)") is rebuilt from a and b and their bases, so those too. Only through merge
   -- ids: a plain base's own base isn't read (following every base_ev kept the whole history, since each change names the one before)

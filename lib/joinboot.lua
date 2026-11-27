@@ -62,22 +62,15 @@ function jb.compact(evs)
     end
   end
   if timeline then out[#out + 1] = timeline[1] end
+  -- (an object with one leaf (lib/judge.lua: nothing else builds on it) is that leaf; with more (edits made apart, a deletion racing an edit),
+  -- every change of it goes, so the joiner's judge weighs and merges exactly what everyone's did. rt-sync2b)
+  local judge = require("judge")
   for _, list in pairs(by_oid) do
-    local top
-    for _, ev in ipairs(list) do
-      if not top or mirror.newer({ rev = ev.rev, time = mirror.order_of(ev), user = ev.user }, { rev = top.rev, time = mirror.order_of(top), user = top.user }) then top = ev end
-    end
-    local byid, behind, todo, steps = {}, {}, { top.id }, 0
+    local byid = {}
     for _, ev in ipairs(list) do byid[ev.id] = ev end
-    while #todo > 0 and steps < 5000 do
-      steps = steps + 1
-      for _, pid in ipairs(parents_of(table.remove(todo), byid)) do
-        if type(pid) == "string" and not behind[pid] then behind[pid] = true; todo[#todo + 1] = pid end
-      end
-    end
-    local rival = steps >= 5000 -- (a walk too long to finish: everything, to be safe)
-    for _, ev in ipairs(list) do if ev ~= top and not behind[ev.id] then rival = true end end
-    if rival then for _, ev in ipairs(list) do out[#out + 1] = ev end else out[#out + 1] = top end
+    local s = judge.settled(list, function(id) return byid[id] end, { give_up = true })
+    if #s.leaves == 1 and #s.beaten == 0 and byid[s.leaves[1]] then out[#out + 1] = byid[s.leaves[1]]
+    else for _, ev in ipairs(list) do out[#out + 1] = ev end end
   end
   table.sort(out, function(a, z) return (a.time or "") .. a.id < (z.time or "") .. z.id end)
   return out

@@ -42,6 +42,17 @@ do
   assert(g.m0, "but not the base's own base: nothing rebuilds from it")
   assert(not g.p and not g.q, "both changes a merged base was made from")
 end
+-- (rt-sync2b) the judge's support stays: a deletion that beat a newer edit made without seeing it (both leaves of the object) is kept, or the
+-- edit came back everywhere 60 days on; and a leaf that is a deletion with nothing racing it is the newest anyway
+do
+  local v1 = { id = "v1", oid = "I-D", rev = 1, time = "2026-01-01T00:00:00Z", type = "obj" }
+  local gd = { id = "gd", oid = "I-D", rev = 2, base = 1, base_ev = "v1", gone = true, time = "2026-01-02T00:00:00Z", type = "obj" }
+  local ed = { id = "ed", oid = "I-D", rev = 3, base = 1, base_ev = "v1", time = "2026-01-03T00:00:00Z", type = "obj" }
+  local g = {}
+  for _, id in ipairs(trim.plan({ v1, gd, ed }, {}, "2026-02-15T00:00:00Z")) do g[id] = true end
+  assert(not g.gd and not g.ed, "the deletion and the edit it beat both stay (the judge weighs the two)")
+  assert(not g.v1, "and their base")
+end
 -- (0.58.54) a change with no time is never taken for old, and what a kept point stands on stays even when everything is past the cutoff
 do
   local e = { ev("x40", "I-X", 1, "2026-01-01T00:00:00Z"), ev("x35", "I-X", 2, "2026-01-06T00:00:00Z"), ev("x31", "I-X", 3, "2026-01-10T00:00:00Z"),
