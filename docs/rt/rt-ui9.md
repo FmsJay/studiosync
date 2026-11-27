@@ -92,6 +92,11 @@ On the phone: nothing new but the notes in All (no camera there).
 - **Across REAPER and a browser on the same computer** the channel doesn't reach (two browsers): the server's out-echo still stops a ring in
   one when the other answers, but a second call could start from the other. Closing that needs Live sync to say which page holds the call
   (in `rtc`); not done.
+- **Six windows at most on one host.** Each page keeps one event stream (`api/events`) open, and Chromium (Chrome, Edge, REAPER's WebView2)
+  keeps at most six connections to one host. The main window plus five pop-outs is fine; a seventh page of the same browser would wait for
+  its files until one closes (rt-ui8 allows six pop-outs plus the main window). This is what hung `?pop=chat` in the browser tests (rt-ui10a
+  fixed the harness in 692cab6: stale streams from earlier pages). A fix for real use would share one stream between a browser's pages
+  (a SharedWorker, or the call channel's idea for the state), or cap pop-outs at five.
 - **A call doesn't move** between windows: Pop out moves new calls, not one already going (its connection lives in the page that made it).
   Closing the window that holds a call ends it, as before.
 - **Join / leave live audio** from the top bar (the plan's "Join"), Hold to talk and talkback: still the panel's (Chat > Call, the call

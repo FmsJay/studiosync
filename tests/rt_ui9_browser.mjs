@@ -43,6 +43,7 @@ const server = http.createServer((req, res) => {
   if (u.pathname === '/api/events') {
     res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache' });
     res.write('data: ' + JSON.stringify(state) + '\n\n');
+    res.page = (req.headers.referer || '').replace(/#.*$/, ''); // (whose stream: ended when that page closes, below)
     clients.add(res);
     req.on('close', () => clients.delete(res));
     return;
@@ -125,7 +126,13 @@ async function page(url, o = {}) {
   p.has = (label, scope = 'body') => ev('[...document.querySelectorAll(' + JSON.stringify(scope + ' button') + ')].some((x) => x.textContent === ' + JSON.stringify(label) + ' && !x.hidden && !!x.offsetParent)');
   p.text = (sel) => ev('(() => { const e = document.querySelector(' + JSON.stringify(sel) + '); return e ? e.textContent : ""; })()');
   p.visible = (sel) => ev('(() => { const e = document.querySelector(' + JSON.stringify(sel) + '); return !!e && e.getClientRects().length > 0; })()');
-  p.close = async () => { await (await fetch('http://127.0.0.1:' + port + '/json/close/' + t.id)).text(); ws.close(); };
+  // (a closed page's event streams end here: Chrome can keep old ones open, and at its six connections a host the next page's files wait,
+  // as rt-ui10a found for tests/rt_ui1_browser.mjs)
+  p.close = async () => {
+    await (await fetch('http://127.0.0.1:' + port + '/json/close/' + t.id)).text(); ws.close();
+    const mine = url.replace(/#.*$/, '');
+    for (const c of [...clients]) if (c.page === mine) { c.end(); clients.delete(c); }
+  };
   return p;
 }
 const ok = (c, m) => { if (!c) { fails++; console.log('FAIL ' + m); } else console.log('  ok ' + m); };
