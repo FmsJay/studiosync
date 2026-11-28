@@ -350,4 +350,44 @@ do
   print("rt-guard 9: a delete-all right after another deletion (two \"Remove tracks\" in a row) goes")
 end
 
+-- ---- 10. an older file opened in the same tab: REAPER keeps the master track; Live sync's load guard settles again (rt-live bugs 2, 3) --------
+-- Fails on 52ce885: the reopen wasn't seen (mirror.on_open went by the master track; sync2c c3).
+do
+  local S, A, B = song("Guard10")
+  local guard = require("loadguard")
+  S.as(A)
+  local old = A.F.save() -- (the file: Drums, Keys, Gtr)
+  T = T + 5
+  S.edit(B, function(F) F.add_track("Bass") end)
+  S.recv(A)
+  assert(S.track(A, "Bass"), "Bee's Bass on James's: " .. S.names(A))
+  -- a save: the load guard settles again, the tracks stay. Not an opening: a deletion made just before it still goes
+  T = T + 5
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  reaper.DeleteTrack(S.track(A, "Gtr"))
+  A.edited = A.F.clock
+  local pk = tostring(A.F.proj)
+  guard.loads[pk] = (guard.loads[pk] or 1) + 1
+  S.settle(A)
+  assert(S.gone_by("James") == 2, "a deletion saved before the look still goes (" .. S.gone_by("James") .. ")")
+  S.recv(B)
+  assert(not S.track(B, "Gtr"), "Gtr gone on Bee's: " .. S.names(B))
+  -- File > Open of the older file in the same tab: the same master track, new tracks; the guard settles again, the load moved the count
+  T = T + 5
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  local master = reaper.GetMasterTrack(A.F.proj)
+  A.F.load(old)
+  assert(reaper.GetMasterTrack(A.F.proj) == master, "(the stand-in keeps the master track, as REAPER does)")
+  guard.loads[pk] = guard.loads[pk] + 1
+  A.edited = A.F.clock
+  local gone_before, opening = S.gone_by("James"), mirror.opened[pk]
+  S.settle(A)
+  assert(mirror.opened[pk] ~= opening, "a new opening (was: the same master track, so not one)")
+  S.recv(A)
+  assert(S.gone_by("James") == gone_before, "nothing sent for what the older file lacks")
+  print("rt-guard 10: an older file opened in the same tab is a new opening; a save isn't one")
+end
+
 print("ok rt-guard")

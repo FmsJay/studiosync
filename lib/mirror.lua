@@ -2037,12 +2037,25 @@ end
 -- test"): a project saved with it on (ProjExtState "hold": "1", or a colour try's "try"/"try1") has it cleared, and what it held goes out
 -- through this look as any change of yours. The only place "hold" is read (tests/test_0_60_rt_nohold.lua checks). And a colour look REAPER
 -- stopped during is put back, nothing sent (lib/colours.lua). rt-nohold
-mirror.opened = {} -- tostring(proj) -> the master track it was opened with (a test forgets one to open it again)
+-- A file opened again in its tab: REAPER keeps the tab's master track (and project) pointer through File > Open, on Windows and Linux (rt-live
+-- bug 2, sync2c c3), so that's told by Live sync's load guard settling again (lib/loadguard.lua: REAPER was loading or saving, or the tab's
+-- name changed) with none of the tracks the last look began with still there. A save leaves the tracks; a deletion doesn't move the guard.
+-- shortcut: a delete-all saved before the next look reads as an opening (its deletion put back); REAPER reusing every freed track's address
+-- reads as none. Upgrade if REAPER ever offers a per-opening id.
+mirror.opened = {} -- tostring(proj) -> { master, loads, tracks }: this opening, a new table per opening (a test forgets one to open it again)
+local function none_left(proj, tracks)
+  for _, tr in ipairs(tracks) do if reaper.ValidatePtr2(proj, tr, "MediaTrack*") then return false end end
+  return true
+end
 -- -> true on a new opening: this script's first look at the project, or a file opened again in its tab (rt-guard, mirror.watch)
 function mirror.on_open(proj)
   local key, master = tostring(proj), reaper.GetMasterTrack(proj) or false
-  if mirror.opened[key] == master then return false end
-  mirror.opened[key] = master
+  local o, loads = mirror.opened[key], require("loadguard").loads[key] or 0
+  local same = o and o.master == master and (o.loads == loads or not none_left(proj, o.tracks))
+  if not same then o = { master = master }; mirror.opened[key] = o end
+  o.loads, o.tracks = loads, {}
+  for i = 0, reaper.CountTracks(proj) - 1 do o.tracks[i + 1] = reaper.GetTrack(proj, i) end
+  if same then return false end
   local B = require("band")
   if select(2, reaper.GetProjExtState(proj, B.SECTION, "hold")) ~= "" then
     reaper.SetProjExtState(proj, B.SECTION, "hold", "")
@@ -4222,7 +4235,8 @@ function W.order(w)
     -- deleted first track it ran too, and the band's delete-all with a tempo change, landed over the link before session.json had come through
     -- Syncthing, had its new tempo put back to the old one on every other computer. Cross test step 1, James, rt)
     local mhad, master = mirror.master_seen[order_key], reaper.GetMasterTrack(proj)
-    if mhad and not (mhad == master and reaper.ValidatePtr2(proj, mhad, "MediaTrack*")) then sync.timeline_looked[proj], sync.timeline_live[proj] = nil, nil end
+    -- (or a reopen mirror.on_open tells by the load guard: REAPER keeps the master track through File > Open in the same tab. rt-fixlive1)
+    if mhad and (w.opened_now or not (mhad == master and reaper.ValidatePtr2(proj, mhad, "MediaTrack*"))) then sync.timeline_looked[proj], sync.timeline_live[proj] = nil, nil end
     mirror.master_seen[order_key] = master
   end
   for _, o in ipairs(objs) do if o.kind == "track" then order[#order + 1] = o.oid end end
