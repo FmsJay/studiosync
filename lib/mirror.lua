@@ -6016,7 +6016,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
   local media = room_dir .. "/media"
   local order = { track = 1, fx = 2, item = 3 }
   local list = {}
-  for oid, t in pairs(plan) do list[#list + 1] = { oid = oid, t = t } end
+  -- (not what already is as the plan has it: gone then and gone now, or held at that very version. one() does nothing for those, but they
+  -- were counted: a whole-project Restore of a near-empty song said "bringing back 624 changes" and ended "1 change(s) brought back". rt-fixlive3)
+  for oid, t in pairs(plan) do
+    local _, h, evid = mirror.known(proj, oid)
+    if not (t and not t.beaten and evid == t.id and (h or "") ~= "") and not (not t and (h or "") == "") then list[#list + 1] = { oid = oid, t = t } end
+  end
   -- tracks before what sits on them when bringing back; the other way round when removing
   table.sort(list, function(a, x)
     local ka, kx = order[a.t and a.t.obj or (a.oid:sub(1, 1) == "T" and "track" or "item")] or 3, order[x.t and x.t.obj or (x.oid:sub(1, 1) == "T" and "track" or "item")] or 3

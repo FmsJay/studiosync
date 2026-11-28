@@ -263,4 +263,27 @@ do
   assert(told("wasn't the studio's version of it") == 1, "and not again")
   print("rt-sync2j 4: drift here (REAPER's item isn't the version held) is put back and said once")
 end
+
+-- ---- 5. a Restore says how many changes it really brings back ------------------------------------------------------------------------------
+do
+  local S, A, B = song("Restore")
+  S.as(A)
+  local keys = S.track(A, "Keys")
+  local ioid = oid_of(keys.items[1])
+  local plan = {}
+  local _, _, tev = mirror.known(A.F.proj, oid_of(keys))
+  plan[oid_of(keys)] = mirror.event_file(S.dir, tev) -- (held at that very version: nothing to do)
+  plan["I-GONE-1"] = false -- (gone then, gone now)
+  plan[ioid] = false -- (the one real change: the item goes)
+  local at_once = mirror.REVERT_AT_ONCE
+  mirror.REVERT_AT_ONCE = 0 -- (in slices, as a big one goes: the stand-in's clock doesn't move, so the first slice does it all)
+  local yes = function() return true end
+  local said = mirror.revert(A.F.proj, A.cfg, S.song, "main", plan, { can = yes, mode = "everyone" })
+  mirror.REVERT_AT_ONCE = at_once
+  assert(said == "bringing back 1 changes: REAPER keeps working while it does", "it says the one real change (was: every object in the plan, 3): " .. tostring(said))
+  assert(told("^1 change%(s%) brought back") == 1, "and ends with the same count")
+  assert(#S.track(A, "Keys").items == 0, "(the item went)")
+  print("rt-sync2j 5: a Restore's slices count only what really changes")
+end
+
 print("ok")
