@@ -1739,6 +1739,8 @@ local function remember(proj, oid, rev, h, evid, order)
   local r = mirror.remembered[pk]
   if not r then r = {}; mirror.remembered[pk] = r end
   r[oid] = true
+  -- (an item recorded gone here, by its deletion or with its track: a stand-in made for a version of it that won't land now goes. rt-sync2e)
+  if h == "" and oid:sub(1, 1) == "I" then mirror.standins_go(proj, oid) end
 end
 mirror.remember = remember
 
@@ -3053,6 +3055,26 @@ function mirror.placeholder(tr, oid, state, track_name)
   reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", oid, true)
   reaper.UpdateItemInProject(it)
 end
+-- One of mirror.placeholder's stand-ins, or a copy a person made of one (it keeps the id and the mark): not a live take's or a jam's, which
+-- carry band_arriving too (lib/streams.lua, lib/jam.lua) and go their own way.
+local function iext(it, k) return select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:" .. k, "", false)) or "" end
+function mirror.is_standin(it) return iext(it, "band_arriving") ~= "" and iext(it, "band_stream") == "" and iext(it, "band_jam") == "" end
+-- Every stand-in here carrying `oid`. Cost: a walk of the project's items, only where one of them was met (landing, deletion, a gone record).
+function mirror.standins(proj, oid)
+  local out = {}
+  for i = 0, reaper.CountMediaItems(proj) - 1 do
+    local it = reaper.GetMediaItem(proj, i)
+    if itm_oid(it) == oid and mirror.is_standin(it) then out[#out + 1] = it end
+  end
+  return out
+end
+-- An item recorded gone here (its deletion, or gone with its track: mirror.remember) while a stand-in made for a version of it is still here:
+-- every stand-in carrying its id goes. Cost: one lookup; the walk only when a stand-in is found. rt-sync2e
+function mirror.standins_go(proj, oid)
+  local it = oid:sub(1, 1) == "I" and mirror.find(proj, "item", oid)
+  if not (it and mirror.is_standin(it)) then return end
+  for _, x in ipairs(mirror.standins(proj, oid)) do reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(x), x) end
+end
 
 -- Apply one revision (an "obj" event) here. Returns true when done, false to try again later (its track or its
 -- media hasn't arrived yet), and the hash now held.
@@ -3175,7 +3197,7 @@ function mirror.will_wait(proj, ev, putting_back)
   end
   return false
 end
-function mirror.apply(proj, ev, media_dir, local_mix)
+function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
   mirror.applied = (mirror.applied or 0) + 1 -- (StudioSync wrote the project: lib/dawview.lua reads every track for the page again. rt-perfcut4)
   if ev.obj == "track" then mirror.order_band[tostring(proj)] = true end
   local kind, oid = ev.obj, ev.oid
@@ -3191,7 +3213,9 @@ function mirror.apply(proj, ev, media_dir, local_mix)
   end
   if ev.gone then
     local p = mirror.find(proj, kind == "fx" and "track" or kind, kind == "fx" and ev.track or oid)
-    if p and kind == "item" then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(p), p)
+    if p and kind == "item" then
+      -- (a stand-in: every one carrying its id goes, a copy a person made of it too: one left stayed grey for good. rt-sync2e)
+      for _, x in ipairs(mirror.is_standin(p) and mirror.standins(proj, oid) or { p }) do reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(x), x) end
     elseif p and kind == "track" then -- (auto-colour rules recolour the rest when a track goes: theirs are the band's)
       -- (your items on it the band doesn't have yet, a held or just-made recording, go to "<track> (yours, not sent)" first: deleted with the
       -- track, they were lost with no copy. Review, 0.58.92)
@@ -3220,7 +3244,9 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         local mine_new = io ~= "" and mirror.known(proj, io) ~= nil
         if mine_new and named then mine_new = not named[io] and mirror.new_here(proj, io, room_dir)
         elseif mine_new then mine_new = mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir) end
-        if io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or mine_new then
+        -- (a grey stand-in holds no work: it goes with the track. Kept, it lost its id there and stayed grey for good: rt-sync2c's 15011, rt-sync2e)
+        if mirror.is_standin(it) then
+        elseif io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or mine_new then
           -- (kept as new work only, no edit of yours waiting in it, from a deletion that doesn't name its items: noted with the version it holds,
           -- so the deleter's own deletion of that very version, which comes beside the track's, takes it after all: mirror.receive. rt-fix9.
           -- A deletion that names them never needs it: what it names went, and what it doesn't the deleter never had)
@@ -3397,12 +3423,24 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     if not tr then return false end
     for _, path in ipairs(mirror.media_needed(ev.state, media_dir)) do
       if not reaper.file_exists(path) then -- still on its way: a grey stand-in shows where it goes until it lands
-        if not mirror.find(proj, "item", oid) then mirror.placeholder(tr, oid, ev.state, ev.name) end
+        -- (not for StudioSync's Undo / Redo (`no_standin`): it doesn't try again, so its stand-in stayed grey for good. rt-sync2e)
+        if not no_standin and not mirror.find(proj, "item", oid) then mirror.placeholder(tr, oid, ev.state, ev.name) end
         return false
       end
     end
     require("fxfiles").fetch(ev.files, media_dir, (ev.name or "") ~= "" and ev.name or "a track") -- (what its take plug-ins load, before they do: 0.59.14)
     local it = mirror.find(proj, "item", oid)
+    -- (landing on a stand-in: on the one nearest the version's place on its track. Any other carrying its id is a copy a person made of it
+    -- while the audio was arriving (a track or a stretch duplicated): below it becomes a copy of the landed item, where that person put it,
+    -- with an id of its own, and goes out as theirs. Left, it stayed grey for good: rt-sync2c's 9002, rt-sync2e)
+    local copies = {}
+    if it and mirror.is_standin(it) then
+      local vpos = tonumber(ev.state:match("\nPOSITION ([%d%.%-e]+)")) or 0
+      local function far(x) return (reaper.GetMediaItem_Track(x) == tr and 0 or 1e9) + math.abs(reaper.GetMediaItemInfo_Value(x, "D_POSITION") - vpos) end
+      local all = mirror.standins(proj, oid)
+      for _, x in ipairs(all) do if far(x) < far(it) then it = x end end
+      for _, x in ipairs(all) do if x ~= it then copies[#copies + 1] = x end end
+    end
     -- (its take open in the MIDI editor here: rewritten under it, what's being edited there goes. Later, once it's closed or on another item.
     -- 0.59.14, review)
     if it and reaper.MIDIEditor_GetActive then
@@ -3436,8 +3474,10 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local try = require("band").colour_try(proj)
     local tried = try and try.items and try.items[select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))]
     if tried and portable(state:match("\n(COLOR [^\n]*)") or "") == portable(tried[1] or "") then state = mirror.with_colour_line(state, tried[2] or "") end
-    reaper.SetItemStateChunk(it, mirror.resolve_media(mirror.only_shared((state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", ""))), media_dir), false)
+    local chunk = mirror.resolve_media(mirror.only_shared((state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", ""))), media_dir)
+    reaper.SetItemStateChunk(it, chunk, false)
     reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", oid, true)
+    if iext(it, "band_arriving") ~= "" then reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_arriving", "", true) end -- (landed: no longer grey)
     if pick then mirror.pick_take(it, pick)
     elseif active and active < reaper.CountTakes(it) then reaper.SetMediaItemInfo_Value(it, "I_CURTAKE", active) end
     if lane then reaper.SetMediaItemInfo_Value(it, "I_FIXEDLANE", lane < mirror.BAD_LANE and lane or 0) end -- (events from 0.42.7 hold 255)
@@ -3453,6 +3493,17 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     -- to where the copy is", which then met the bandmates' changes to the original. The soak's seed 8023, two items alike. rt-converge)
     local guid = select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))
     if guid ~= "" and select(2, reaper.GetProjExtState(proj, mirror.GSEC, oid)) ~= guid then reaper.SetProjExtState(proj, mirror.GSEC, oid, guid) end
+    for _, c in ipairs(copies) do -- (the person's copies of the stand-in, above: the landed item at their place and lane, no id yet)
+      local pos, cl = reaper.GetMediaItemInfo_Value(c, "D_POSITION"), reaper.GetMediaItemInfo_Value(c, "I_FIXEDLANE")
+      reaper.SetItemStateChunk(c, chunk, false)
+      reaper.SetMediaItemInfo_Value(c, "D_POSITION", pos)
+      reaper.SetMediaItemInfo_Value(c, "I_FIXEDLANE", cl)
+      reaper.GetSetMediaItemInfo_String(c, "P_EXT:band_arriving", "", true)
+      reaper.GetSetMediaItemInfo_String(c, "P_EXT:band_oid", "", true) -- (an id of its own at the next look, which sends it as new: theirs)
+      if pick then mirror.pick_take(c, pick) end
+      note_theirs(c, false, mirror.item_paths(st))
+      reaper.UpdateItemInProject(c)
+    end
     return true, mirror.item_hash(ev.track, st)
   end
   return true, ""
@@ -6432,7 +6483,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       gone_since = gone_since + 1
     elseif mine_gone then
       local made = p.t.obj == "track" and not mirror.find(proj, "track", p.oid)
-      local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
+      local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix, true)
       if ok and made then contents_owed(proj, room_dir, p.oid) end
       if ok then
         mirror.hlc_seen(last and last.hlc)
@@ -6453,7 +6504,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       refused = refused + 1
     elseif p.t then
       local made = p.t.obj == "track" and not mirror.find(proj, "track", p.oid)
-      local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix)
+      local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix, true)
       if ok and made then contents_owed(proj, room_dir, p.oid) end
       if ok then
         mirror.hlc_seen(last and last.hlc)
