@@ -13,6 +13,8 @@
 --  7. hv 11: a ranked track's hashed line has no depth (the tree decides it); a track with no rank keeps it.
 --  8. The "older than the studio's" line is said once each time this computer drops below the floor, and again when the floor rises (and a
 --     bandmate's hold again then); Health reads the floor afresh (rt-fixlive1).
+--  9. A timeline change made a level lower isn't held (it has no hash), and a map this version can't read isn't picked as the newest: a
+--     computer that starts takes the room's newest tempo map at once (rt-sync2h task 2).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -312,6 +314,38 @@ do
   sync.LEVEL = LEVEL
   sync.floor(A.cfg, true)
   print("rt-floor 8: \"older than the studio's\" is said each time this computer drops below the floor, and again when it rises")
+end
+
+-- ---- 9. a computer that starts takes the room's newest tempo map at once (rt-sync2h task 2) ------------------------------------------------
+-- After a deploy that raised the level, the room's newest timeline change had been made at the level before: held by the floor, and still
+-- picked as the newest map, so every older map was marked superseded and nothing landed. A computer that opened an older file (LinuxBox after
+-- the 0.65.0 restart, rt-fixlive2's f4 prep; the desktop after 0.63.1, rt-sync2g) kept that file's map until someone changed the tempo again.
+do
+  local S = studio("Floor9")
+  local A, B, C = S.computer("James"), S.computer("Bee"), S.computer("Cee")
+  for p in pairs(files) do if p:find(sync.floor_dir(A.cfg), 1, true) then files[p] = nil end end
+  level(LEVEL, A)
+  local function map(n, bpm, lv, format)
+    local id = string.format("James-20270101-00000%dZ-0000%d-000%d", n, n, n)
+    files[S.dir .. "/events/" .. id .. ".json"] = { type = "timeline", id = id, user = "James", time = string.format("2027-01-01T00:00:0%dZ", n),
+      format = format or band.FORMAT, lv = lv, tempo = { { time = 0, bpm = bpm, num = 4, denom = 4, linear = false } }, markers = {} }
+    return id
+  end
+  local function bpm(c) S.as(c); return band.capture_tempo(c.F.proj)[1].bpm end
+  map(1, 100, LEVEL)
+  map(2, 113, LEVEL - 1) -- (the newest: made at the level before, as every map is right after a deploy that raises it)
+  S.recv(B)
+  assert(bpm(B) == 113, "the room's newest map lands though it was made a level lower: the floor guards what's hashed, and a timeline isn't (" .. bpm(B) .. ")")
+  assert(sync.held_by_floor({ type = "obj", lv = LEVEL - 1 }) and not sync.held_by_floor({ type = "timeline", lv = LEVEL - 1 }),
+    "an object change made a level lower is still held")
+  assert(sync.held_by_floor({ type = "timeline", time = "2099-01-01T00:00:00Z" }), "and a timeline from a StudioSync before floors (no level), made since the floor, too")
+  -- a newest map this version can't read (a newer format) doesn't keep the newest readable one out: it waits for the update, the rest land
+  local newer = map(3, 90, LEVEL, band.FORMAT + 1)
+  S.recv(C)
+  assert(bpm(C) == 113, "a map this version can't read isn't picked as the newest: the newest readable lands (" .. bpm(C) .. ")")
+  S.as(C)
+  assert(select(2, reaper.GetProjExtState(C.F.proj, sync.APPLIED, newer)) == "" and sync.deferred[newer], "the unreadable one waits for the update, not marked done")
+  print("rt-floor 9: a computer that starts takes the room's newest tempo map at once, one made a level lower too")
 end
 
 print("ok rt-floor")

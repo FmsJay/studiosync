@@ -1072,11 +1072,13 @@ local ev_seq = 0
 -- Changes from the band this project gave up on (they failed again and again, or couldn't be read): kept, so Health says so and can try
 -- them again. Marked as done and only logged, the project stayed different for good with nothing to show it. Review, 0.58.47.
 -- Of the timeline changes waiting (in time order), the one to apply: the newest, ours included, and newer than what this project already has
--- (`have`: time .. id). -> its id, or nil. Pure (review, 0.58.92).
+-- (`have`: time .. id). -> its id, or nil. Pure but for the floor (review, 0.58.92).
+-- (only a map this version can apply: one too new or held (sync.too_new), picked as the newest, had every older map marked superseded while it
+-- waited itself, so a computer that started on an older file took no map at all. rt-sync2h)
 function sync.newest_map(pending, have)
   local id, best = nil, have or ""
   for _, ev in ipairs(pending) do
-    if ev.type == "timeline" then
+    if ev.type == "timeline" and not sync.too_new(ev) then
       local o = ev.order or ((ev.time or "") .. (ev.id or "")) -- (the order sync.post gives it: after the newest seen where it was made)
       if o > best then id, best = ev.id, o end
     end
@@ -1890,11 +1892,14 @@ end
 function sync.below_floor() return sync.floor_now ~= nil and sync.floor_now.below end
 -- Was `ev` made below the floor? A lower level, or none at all on a change made since the floor was first recorded (history from before
 -- the floor has none either, and lands as ever). Pure but for floor_now.
+-- (not a timeline change with a level: the floor guards what goes into a hash (mirror.HV) and the event format (band.FORMAT, checked on its
+-- own), and a timeline has no hash, its shape kept by TIMELINE_FORMAT since before floors. Held, the room's newest map after a deploy that
+-- raised the level was one nobody applied: LinuxBox and the desktop, restarted onto older files, kept theirs. rt-sync2h)
 function sync.held_by_floor(ev)
   local f = sync.floor_now
   if not f then return false end
   local lv = tonumber(ev.lv)
-  if lv then return lv < f.level end
+  if lv then return lv < f.level and ev.type ~= "timeline" end
   return type(ev.time) == "string" and ev.time >= f.since
 end
 -- What a computer below the floor says, in Live sync's log and on Health (panel and web).
