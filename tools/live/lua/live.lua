@@ -280,7 +280,9 @@ function LV.events_since(song, user, since, room)
     local f = reaper.EnumerateFiles(dir, i)
     if not f then break end
     i = i + 1
-    if f:sub(1, #pre) == pre and f:sub(#pre + 1, #pre + 16) >= mark and f:match("%.json$") then
+    -- (the writer's name, then its time: "James-" is also the start of "James-Laptop-...", whose files were counted as the desktop's (live check
+    -- sync2f f8 on 0.63.0: three old laptop events of a leftover track read as the desktop re-sending it every 40 s). rt-sync2g)
+    if f:sub(1, #pre) == pre and f:sub(#pre + 1, #pre + 1):match("%d") and f:sub(#pre + 1, #pre + 16) >= mark and f:match("%.json$") then
       local h = io.open(dir .. "/" .. f)
       local s = h and h:read("a") or ""; if h then h:close() end
       out[#out + 1] = { id = f, type = s:match('"type"%s*:%s*"([^"]*)"'), obj = s:match('"obj"%s*:%s*"([^"]*)"'), name = s:match('"name"%s*:%s*"([^"]*)"'), gone = s:find('"gone"%s*:%s*true') ~= nil }

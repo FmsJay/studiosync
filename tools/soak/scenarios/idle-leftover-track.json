@@ -1,0 +1,50 @@
+{
+ "name": "idle-leftover-track",
+ "what": "rt-sync2g, live check sync2f f8 on 0.63.0: the desktop seemed to send a leftover test track ('LV c6twomovesaton Drums', made with the laptop's help in an earlier run) three times in 120 s with nobody editing, the laptop off. It was the live tool's own count (its events_since took the laptop's files, James-Laptop-*, for the desktop's, James-*), not StudioSync. This pins the StudioSync side: James makes a track, Bee changes it, Bee goes offline for good, and James's computer then sends nothing for minutes. Passes before and after rt-sync2g (a guard, not a reproduction).",
+ "phase": 5,
+ "today": "passes",
+ "seed": 1,
+ "faults": {
+  "clean": true,
+  "link_min": 0.01,
+  "link_max": 0.01
+ },
+ "mode": "everyone",
+ "undo_probe": false,
+ "edits": [
+  {
+   "t": 5,
+   "node": "James",
+   "lua": "F.add_track('LV leftover Drums'); return 'made LV leftover Drums'"
+  },
+  {
+   "t": 15,
+   "node": "Bee",
+   "lua": "reaper.SetMediaTrackInfo_Value(track('LV leftover Drums'), 'D_VOL', 0.5); return 'turned LV leftover Drums down'"
+  },
+  {
+   "t": 60,
+   "node": "James",
+   "lua": "local n = 0; for p in pairs(fs) do if p:find('/events/James%-%d') then n = n + 1 end end; N.james_sent = n; return 'James has sent ' .. n"
+  },
+  {
+   "t": 280,
+   "node": "James",
+   "lua": "return 'still here at 280 s'"
+  }
+ ],
+ "checks": [
+  {
+   "on": ["James"],
+   "what": "James sent nothing in the minutes after Bee went away",
+   "lua": "local n = 0; for p in pairs(fs) do if p:find('/events/James%-%d') then n = n + 1 end end; assert(N.james_sent and n == N.james_sent, 'James sent ' .. tostring(n - (N.james_sent or 0)) .. ' more event(s) with nobody editing')"
+  }
+ ],
+ "net": [
+  {
+   "t": 30,
+   "offline": "Bee",
+   "until": 290
+  }
+ ]
+}
