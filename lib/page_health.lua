@@ -93,11 +93,20 @@ function H.build_rows()
               "studio's order by itself, with the transport stopped, a little after the last edit.", who)
             or string.format("The tracks are in another order here than on %s's computer. Close and reopen this project on the computer that's wrong: " ..
             "it opens in the studio's order.", who))
-          or string.format("This project isn't the same as %s's, though every change has arrived on both (%d s now). StudioSync looks for what never landed " ..
-            "after a minute and brings it in line, at most every 5 minutes. If this stays, ask the driver to use Restore > Restore whole project to here, " ..
+          or string.format("This project isn't the same as %s's, though every change has arrived on both (%d s now). StudioSync brings in line what never " ..
+            "landed as soon as it sees this. If this stays, ask the driver to use Restore > Restore whole project to here, " ..
             "or close and reopen this project.", who, secs))
         or "Some changes from the others came out different here than on their machine (the Console names them). Ask the driver to " ..
           "use Restore > Restore whole project to here, or close and reopen this project." }
+    end)(),
+    (function()
+      -- (a bandmate with every change, holding the very versions this computer holds, whose song is another: the judge put them together
+      -- differently. Live sync's note: mirror.judge_apart_note, rt-sync2 5c, rt-sync2j)
+      local who, objs = reaper.GetExtState(band.SECTION, "content apart " .. tostring(proj)):match("^([^|]*)|(.*)$")
+      return { "contents", not (s.sync and who), "red", "The same changes make the same song here",
+        string.format("Every change has arrived here and on %s's computer, but StudioSync put them together into another song%s. That's a bug in " ..
+          "StudioSync: please report it. Restore > Restore whole project to here brings everyone in line.", tostring(who), (objs or "") ~= "" and
+          (" (merged: " .. objs .. ")") or "") }
     end)(),
     -- (red only when a bandmate is online and we can't reach them: working alone showed red, with "Something needs
     -- fixing" on the tab, though nothing did: review, 2026-10-31)

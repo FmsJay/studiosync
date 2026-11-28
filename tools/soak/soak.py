@@ -379,6 +379,9 @@ class Sim:
                 bad.append((what, "... and %d more objects differ" % (len(diff) - 6)))
             if not diff and a["order"] != b["order"]:
                 bad.append((what, "track order differs (%s vs %s): %s / %s" % (names[0], names[k], a["order"], b["order"])))
+            # (and at quiet the content codes too: the same versions held, put together the same way. rt-sync2 5c, rt-sync2j)
+            if what == "converged" and not diff and a.get("content") and b.get("content") and a["content"] != b["content"]:
+                bad.append((what, "content codes differ (%s vs %s): %s / %s, though REAPER reads the same" % (names[0], names[k], a["content"], b["content"])))
             if not same_timeline(a["timeline"], b["timeline"]):
                 bad.append((what, "tempo map / markers differ (%s vs %s): %s / %s" % (names[0], names[k], a["timeline"][:300], b["timeline"][:300])))
         return bad

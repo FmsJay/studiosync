@@ -177,4 +177,72 @@ do
   assert(skipped, "nobody has it: skipped at once (was: after ten minutes)")
   print("rt-sync2j 1: what the judge lacks, and a file that doesn't read, are asked of the bandmates by id; once none has it, no waiting")
 end
+
+-- ---- 2. the content code, its buckets, and heal at once --------------------------------------------------------------------------------------
+do
+  local S, A, B = song("Heal")
+  local cA, bA = mirror.contents(A.F.proj, S.dir)
+  S.as(B)
+  local cB, bB = mirror.contents(B.F.proj, S.dir)
+  assert(cA == cB and bA == bB and #bA == 96, "the same song on both: the same content code and buckets")
+  -- James moves Keys' item; on Bee's the change is marked done without landing (a skipped change), so she's caught up and different
+  T = T + 5
+  S.edit(A, function(F) F.set_text(S.track(A, "Keys").items[1], midi(9, 2)) end)
+  local moved
+  for _, v in ipairs(S.events(function(v) return v.obj == "item" and v.user == "James" end)) do if not moved or v.rev > moved.rev then moved = v end end
+  moved = moved and moved.rev > 1 and moved or nil
+  assert(moved, "James's move went out")
+  S.as(B)
+  reaper.SetProjExtState(B.F.proj, sync.APPLIED, moved.id, "1")
+  local stA = S.status(A)
+  S.as(B)
+  local apart = mirror.buckets_apart(select(2, mirror.contents(B.F.proj, S.dir)), stA.bk)
+  local n = 0
+  for _ in pairs(apart) do n = n + 1 end
+  assert(n == 1 and apart[mirror.bucket_of(moved.oid)], "they differ in the moved item's bucket alone (" .. n .. ")")
+  local only = mirror.heal_plan(B.F.proj, S.dir, mirror.root(B.F.proj), { stA }, 0, reaper.time_precise())
+  assert(only and only[mirror.bucket_of(moved.oid)], "heal is due at once, in that bucket (was: after a minute of differing)")
+  assert(mirror.heal_plan(B.F.proj, S.dir, mirror.root(B.F.proj), { stA }, 0, reaper.time_precise()) == nil, "once per difference")
+  assert(mirror.heal_plan(B.F.proj, S.dir, mirror.root(B.F.proj), { stA }, 0, reaper.time_precise() + mirror.HEAL_AGAIN) ~= nil, "and again after HEAL_AGAIN")
+  assert(mirror.heal_plan(B.F.proj, S.dir, mirror.root(B.F.proj), { stA }, 1, reaper.time_precise() + 2 * mirror.HEAL_AGAIN) == nil, "never while changes are still to land here")
+  assert(mirror.heal(B.F.proj, S.dir, false, only) == 1, "heal brings that one change in")
+  S.settle(B)
+  assert(item_pos(B, "Keys") == 9 and S.status(B).content == stA.content, "and the codes agree")
+  print("rt-sync2j 2: the content code and buckets; a change that never landed is healed at once, in its bucket")
+end
+
+-- ---- 3. same changes, different song --------------------------------------------------------------------------------------------------------
+do
+  local S, A, B = song("Judge")
+  -- both move Keys' item apart: each ends holding the merge of the two
+  T = T + 5
+  S.edit(A, function(F) F.set_text(S.track(A, "Keys").items[1], midi(4, 2, "James")) end)
+  S.edit(B, function(F) F.set_text(S.track(B, "Keys").items[1], midi(6, 2)) end)
+  S.recv(A); S.recv(B)
+  local oid = oid_of(S.track(A, "Keys").items[1])
+  S.as(A)
+  local _, _, kevA = mirror.known(A.F.proj, oid)
+  S.as(B)
+  local _, _, kevB = mirror.known(B.F.proj, oid)
+  assert(mirror.split_merge(kevA) and kevA == kevB, "both hold the same merge: " .. tostring(kevA) .. " / " .. tostring(kevB))
+  local stA = S.status(A)
+  assert(stA.mirror == S.status(B).mirror and stA.content == S.status(B).content, "the same song")
+  -- (the fault: Bee's merge put together otherwise, as a judge disagreeing with itself would)
+  S.as(B)
+  mirror.content_memo[S.dir .. "\0" .. kevB], mirror.contents_memo[tostring(B.F.proj)] = "something else", nil
+  local stB = S.status(B)
+  assert(stB.mirror == stA.mirror and stB.content ~= stA.content, "same versions held, another content code")
+  S.as(B)
+  mirror.heal_plan(B.F.proj, S.dir, stB.mirror, { stA }, 0, reaper.time_precise())
+  local note = reaper.GetExtState(band.SECTION, "content apart " .. tostring(B.F.proj))
+  assert(note == "James|" .. oid:upper(), "noted for Health with the merged object: " .. note)
+  mirror.heal_plan(B.F.proj, S.dir, stB.mirror, { stA }, 0, reaper.time_precise() + 1000)
+  assert(told("put the same changes together into a different song here than on James's") == 1, "logged once")
+  mirror.content_memo[S.dir .. "\0" .. kevB], mirror.contents_memo[tostring(B.F.proj)] = nil, nil
+  local stA2 = S.status(A)
+  S.as(B)
+  mirror.heal_plan(B.F.proj, S.dir, stB.mirror, { stA2 }, 0, reaper.time_precise() + 2000)
+  assert(reaper.GetExtState(band.SECTION, "content apart " .. tostring(B.F.proj)) == "", "the same song again: the note goes")
+  print("rt-sync2j 3: the same changes put together into another song are noted with the merged object, once")
+end
 print("ok")

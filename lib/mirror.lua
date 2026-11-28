@@ -6660,6 +6660,138 @@ end
 -- The mirrored tracks' order as one code, beside `mirror` in the status: the code above doesn't hold it (a track's place isn't part of its
 -- version), so two computers with the same code could show their tracks in another order with nothing said. rt-undo
 function mirror.order_code(proj) return mirror.hash(table.concat(mirrored_order(proj), ",")) end
+-- The song's contents as one code, beside `mirror` in the status (rt-sync2 5c): a hash over each object's (oid, the version held, what that
+-- version holds). A change holds what it was sent with (its own `hash`); a merge what this computer puts together for it (its state hashed),
+-- so two caught-up computers with equal `mirror` codes and different content codes hold the same changes put together into different songs.
+-- And 16 bucket codes (6 hex digits each: the oids whose own hash starts with 0, 1 ... f), so what differs is looked for in the buckets that
+-- differ. Held as mirror.root is. -> code, buckets (96 characters), how many versions held here don't read here (their content is "?").
+mirror.content_memo = {} -- room dir \0 version id -> what it holds (versions never change; one that doesn't read yet isn't kept)
+local function version_content(room_dir, id)
+  local key = room_dir .. "\0" .. id
+  local c = mirror.content_memo[key]
+  if c then return c end
+  local v = event_file(room_dir, id)
+  if type(v) ~= "table" then return "?" end
+  if v.gone then c = "gone"
+  elseif mirror.split_merge(id) then
+    local st = v.state
+    c = mirror.hash(tostring(v.track or "") .. "\n" .. (type(st) == "table" and require("band").json_encode(st) or tostring(st)))
+  else c = v.hash or mirror.hash(id) end
+  mirror.content_memo[key] = c
+  return c
+end
+mirror.contents_memo = {}
+function mirror.contents(proj, room_dir)
+  local pk, cc, now = tostring(proj), reaper.GetProjectStateChangeCount and reaper.GetProjectStateChangeCount(proj), reaper.time_precise()
+  local m = mirror.contents_memo[pk]
+  if m and m.dir == room_dir and m.cc == cc and m.n == mirror.rec_writes and now >= m.at and now - m.at < mirror.ROOT_HOLD then return m.code, m.bk, m.unread end
+  local all, by, unread, i = {}, {}, 0, 0
+  while true do
+    local ok, oid, v = reaper.EnumProjExtState(proj, mirror.SEC, i)
+    if not ok then break end
+    i = i + 1
+    local h, ev = v:match("^%d+|([^|]*)|([^|]*)")
+    if h and h ~= "" and ev ~= "" then
+      local c = version_content(room_dir, ev)
+      if c == "?" then unread = unread + 1 end
+      local o = oid:upper()
+      local line = o .. "=" .. ev .. ":" .. c
+      all[#all + 1] = line
+      local d = mirror.hash(o):sub(1, 1)
+      by[d] = by[d] or {}
+      table.insert(by[d], line)
+    end
+  end
+  table.sort(all)
+  local bk = {}
+  for d in ("0123456789abcdef"):gmatch(".") do
+    local list = by[d] or {}
+    table.sort(list)
+    bk[#bk + 1] = mirror.hash(table.concat(list, "\n")):sub(1, 6)
+  end
+  local code, bks = mirror.hash(table.concat(all, "\n")), table.concat(bk)
+  mirror.contents_memo[pk] = { dir = room_dir, cc = cc, n = mirror.rec_writes, at = now, code = code, bk = bks, unread = unread }
+  return code, bks, unread
+end
+-- The buckets two computers' codes differ in: a set of hex digits (every one when either can't be read). Pure.
+function mirror.buckets_apart(a, b)
+  local out = {}
+  local ok = type(a) == "string" and type(b) == "string" and #a == 96 and #b == 96
+  for k = 1, 16 do
+    local d = ("0123456789abcdef"):sub(k, k)
+    if not ok or a:sub(k * 6 - 5, k * 6) ~= b:sub(k * 6 - 5, k * 6) then out[d] = true end
+  end
+  return out
+end
+function mirror.bucket_of(oid) return mirror.hash(tostring(oid):upper()):sub(1, 1) end
+-- Heal (Live sync's P.heal, the soak's): when to bring this computer in line, as a fact. A bandmate who has every change holds another content
+-- code while this computer has every change too: heal at once, only the buckets that differ (rt-sync2 5b: it was a minute of differing, then
+-- at most every 5 minutes). Once per difference: a heal that changed nothing isn't run again for the same codes until HEAL_AGAIN has passed
+-- (a part that couldn't land then, playing or its tab behind). And "same changes, different song": a bandmate holding the same versions
+-- (`mirror` equal) and another content code, with every version read here, means the judge put them together differently; that's noted
+-- (mirror.judge_apart_note) with the objects, for Health and as a bug report, never healed. peers: the others' statuses; pending: the band's
+-- changes not applied here (a number, or a function asked only when someone differs). -> a set of bucket digits to heal, or nil.
+mirror.HEAL_AGAIN = 300
+mirror.heal_last = {} -- proj -> { key, at }: the difference last healed
+function mirror.heal_plan(proj, room_dir, mine, peers, pending, now)
+  local pk = tostring(proj)
+  local code, bk, unread = mirror.contents(proj, room_dir)
+  local apart, keys, same_changes = {}, {}, {}
+  for _, st in ipairs(peers) do
+    if type(st.content) == "string" and st.pending == 0 and st.content ~= code then
+      local d = mirror.buckets_apart(bk, st.bk)
+      for x in pairs(d) do apart[x] = true end
+      keys[#keys + 1] = tostring(st.user) .. "=" .. st.content
+      if st.mirror == mine and unread == 0 then same_changes[#same_changes + 1] = { user = st.user, buckets = d } end
+    end
+  end
+  if #keys == 0 then
+    mirror.heal_last[pk] = nil
+    mirror.judge_apart_note(proj, room_dir, {})
+    return nil
+  end
+  if (type(pending) == "function" and pending() or pending or 0) ~= 0 then return nil end
+  mirror.judge_apart_note(proj, room_dir, same_changes)
+  table.sort(keys)
+  local key = code .. " " .. table.concat(keys, " ")
+  local was = mirror.heal_last[pk]
+  if was and was.key == key and now - was.at < mirror.HEAL_AGAIN then return nil end
+  mirror.heal_last[pk] = { key = key, at = now }
+  return apart
+end
+-- "Same changes, different song" (rt-sync2 5c): the merges held here in the buckets that differ from each such bandmate's (plain changes hold
+-- what they were sent with, so only a merge can differ). Non-persisted ExtState "content apart <proj>" = who|objects, read by Health; logged
+-- once per bandmate and objects. list: { { user, buckets } }; empty clears it.
+mirror.judge_apart_said = {}
+function mirror.judge_apart_note(proj, room_dir, list)
+  local band = require("band")
+  local k = "content apart " .. tostring(proj)
+  if #list == 0 then
+    if reaper.GetExtState(band.SECTION, k) ~= "" then reaper.DeleteExtState(band.SECTION, k, false) end
+    return
+  end
+  local who, objs, i = {}, {}, 0
+  for _, x in ipairs(list) do who[#who + 1] = tostring(x.user) end
+  while true do
+    local ok, oid, v = reaper.EnumProjExtState(proj, mirror.SEC, i)
+    if not ok then break end
+    i = i + 1
+    local h, ev = v:match("^%d+|([^|]*)|([^|]*)")
+    if h and h ~= "" and mirror.split_merge(ev or "") then
+      for _, x in ipairs(list) do if x.buckets[mirror.bucket_of(oid)] then objs[#objs + 1] = oid:upper(); break end end
+    end
+  end
+  table.sort(who)
+  table.sort(objs)
+  local text = table.concat(who, ", ") .. "|" .. table.concat(objs, ", ", 1, math.min(#objs, 20))
+  if reaper.GetExtState(band.SECTION, k) ~= text then reaper.SetExtState(band.SECTION, k, text, false) end
+  if not mirror.judge_apart_said[text] then
+    mirror.judge_apart_said[text] = true
+    band.log(string.format("StudioSync put the same changes together into a different song here than on %s's computer (%s). That's a bug in " ..
+      "StudioSync: Health shows it. Restore > Restore whole project to here brings everyone in line", table.concat(who, ", "),
+      #objs > 0 and ("merged: " .. table.concat(objs, ", ", 1, math.min(#objs, 20))) or "no merge here differs: look at the bucket lists"))
+  end
+end
 -- Who has every change, as this computer has, yet holds another project or another track order. Live sync notes it each pass (non-persisted
 -- ExtState "apart <proj>": since|key|what|names), and Health's "come out the same here" row is red once the same difference has stood for
 -- APART_SECS (the codes differ for some seconds after any edit: each computer says its own every few seconds). The row went by the "mirror
@@ -6872,7 +7004,8 @@ local function grandfathered(s, kev, versions)
   for id in tostring(kev):gmatch("[^()&]+") do if id ~= "m" and not leaf[id] then return false end end
   return true
 end
-function mirror.heal(proj, room_dir, local_mix)
+-- only: a set of bucket digits (mirror.bucket_of): heal only the objects in those (mirror.heal_plan's: where a bandmate's code differs).
+function mirror.heal(proj, room_dir, local_mix, only)
   local n = 0
   local evindex = require("evindex")
   evindex.load(room_dir)
@@ -6890,6 +7023,11 @@ function mirror.heal(proj, room_dir, local_mix)
   -- track before the one it sits under went to the top; which computer had which depended on its Lua's hash seed. The soak's bug 8.
   -- rt-converge)
   local oids, rank, answers = evindex.oids(room_dir), { T = 1, F = 2, E = 2, R = 2, M = 2 }, {}
+  if only then
+    local some = {}
+    for _, oid in ipairs(oids) do if only[mirror.bucket_of(oid)] then some[#some + 1] = oid end end
+    oids = some
+  end
   table.sort(oids, function(a, b)
     local ra, rb = rank[a:sub(1, 1)] or 3, rank[b:sub(1, 1)] or 3
     if ra ~= rb then return ra < rb end

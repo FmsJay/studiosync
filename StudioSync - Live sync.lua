@@ -304,7 +304,6 @@ local watched = false -- someone has the web UI's Song page open: the view and c
 if sync.begin_loading then sync.begin_loading(proj) else sync.loading[tostring(proj)] = true end
 local claims_at = -math.huge -- when our claims on gone tracks were last looked for (sync.drop_gone_claims)
 local rt_at = 0 -- when Real time mode's sends were last matched to what's armed
-local heal_since, healed_at = nil, -math.huge -- since when a caught-up bandmate's project has differed (mirror.heal)
 local mirror_took = 0 -- how long the last full look took
 local mirror_cc, mirror_at, mirror_due = -1, -math.huge, false -- the project's change count at the last full look, and when
 
@@ -609,8 +608,8 @@ function P.receive(t)
 end
 function P.heal(t)
   local s, can, who, driver, others, alone, my_can, now, rooms = t.s, t.can, t.who, t.driver, t.others, t.alone, t.my_can, t.now, t.rooms
-  -- a bandmate who has every change has had a different project from ours for a minute, and we're caught up too:
-  -- something never landed here. Bring it in line with the band's newest version (at most every 5 minutes).
+  -- a bandmate who has every change holds another song than ours, and we're caught up too: something never landed here. Bring it in line
+  -- with the band's versions at once (mirror.heal_plan).
   if s and s.sync == "mirror" then
     local mine, differs, same = require("mirror").root(proj), false, false
     -- (kept for the status receipt later in this pass, unless a heal changes it below: mirror.root reads every object's revision, sorts and
@@ -632,14 +631,25 @@ function P.heal(t)
       reaper.DeleteExtState(band.SECTION, "mirror drift " .. tostring(proj), false)
       reaper.DeleteExtState(band.SECTION, "mirror drift last", false)
     end
-    if differs and sync.pending_events(proj, cfg, b.song, b.room) == 0 then heal_since = heal_since or now else heal_since = nil end
     if now - claims_at > 10 then claims_at = now; pcall(sync.drop_gone_claims, proj, cfg, b.song, b.room) end
-    if heal_since and now - heal_since > 60 and now - healed_at > 300 and reaper.EnumProjects(-1) == proj then
-      healed_at, heal_since, t.mirror_root = now, nil, nil
-      local ok, n = pcall(require("mirror").heal, proj, sync.room_dir(cfg, b.song, b.room), sync.local_mix)
+    -- (by the content codes, at once, only the buckets that differ, once per difference: mirror.heal_plan. It went by the `mirror` codes
+    -- differing for a minute, then at most every 5 minutes. rt-sync2 5b, rt-sync2j)
+    local rdir = sync.room_dir(cfg, b.song, b.room)
+    local okp, only = false, nil
+    if reaper.EnumProjects(-1) == proj then
+      okp, only = pcall(require("mirror").heal_plan, proj, rdir, mine, require("presence").peers(cfg, b.song, b.room),
+        function() return sync.pending_events(proj, cfg, b.song, b.room) end, now)
+      if not okp then band.log("couldn't compare this song with the others': " .. tostring(only)) end
+    end
+    if okp and only then
+      t.mirror_root = nil
+      local ok, n = pcall(require("mirror").heal, proj, rdir, sync.local_mix, only)
       if not ok then band.log("couldn't bring the project in line with the studio: " .. tostring(n))
       elseif n > 0 then band.log(string.format("caught up on %d change%s that hadn't arrived here", n, n == 1 and "" or "s")); mirror_due, t.redraw = true, true end
     end
+    -- (what this song holds, for the others' heal and Health: the status's `content` and `bk`. rt-sync2 5c)
+    local okc, code, bk = pcall(require("mirror").contents, proj, rdir)
+    if okc then t.content, t.buckets = code, bk end
     -- (and the track order: a move that never landed here, or an older file's order. Only stopped, in front, caught up, and 10 s after your
     -- last edit with no mouse button down: mirror.order_heal. rt-edits)
     local oko, moved = pcall(require("mirror").order_heal, proj, cfg, b.song, b.room, now, mouse_down() and 0 or now - changed_at)
@@ -834,6 +844,7 @@ function P.status(t)
     playing = reaper.GetPlayStateEx(proj) & 1 == 1 or nil, recording = reaper.GetPlayStateEx(proj) & 4 == 4 or nil,
     front = reaper.EnumProjects(-1) == proj, mirror = s and s.sync == "mirror" and (t.mirror_root or require("mirror").root(proj)) or nil,
     order = s and s.sync == "mirror" and t.order_code or nil, -- (the track order as a code, for the others' Health: mirror.apart_note. rt-undo)
+    content = s and s.sync == "mirror" and t.content or nil, bk = s and s.sync == "mirror" and t.buckets or nil, -- (what the song holds, and its 16 bucket codes: mirror.contents, the others' mirror.heal_plan. rt-sync2 5c)
     -- (the view and the cursor only while someone follows you, their one reader (presence.follow): each scroll or click rewrote this file and
     -- Syncthing sent it to everyone. Being followed puts them in at once, as the follower's own status shows it. 0.59.14, review)
     editing = require("presence").editing(proj), view = (followed or watched) and require("presence").view(proj) or nil, ping = require("presence").my_ping(proj),

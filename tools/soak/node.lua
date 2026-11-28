@@ -217,14 +217,30 @@ function N.receive()
   end
   return n
 end
--- (Live sync's P.heal and the order heal: a bandmate with every change whose project has differed from ours for a minute, while we're caught up
--- too, brings ours in line (at most every 5 minutes); the track order put right 10 s after the last edit. Counted for the soak's stats.)
+-- (Live sync's P.heal and the order heal: a bandmate with every change whose song differs from ours, while we're caught up too, brings ours in
+-- line at once, in the buckets that differ (mirror.heal_plan: rt-sync2 5b, rt-sync2j; it was a minute, then at most every 5 minutes); the
+-- track order put right 10 s after the last edit. Counted for the soak's stats. An --old lib has no heal_plan: its old rule.)
 local heal_since, healed_at, heals, claims_at = nil, -math.huge, 0, -math.huge
 local function heal()
   local now = F.clock
   local mine, differs = mirror.root(F.proj), false
   for _, st in ipairs(require("presence").peers(cfg, SONG, ROOM)) do
     if st.mirror and st.pending == 0 and st.mirror ~= mine then differs = true end
+  end
+  if mirror.heal_plan then
+    pcall(mirror.apart_note, F.proj, mine, mirror.order_code(F.proj), function() return sync.pending_events(F.proj, cfg, SONG, ROOM) end,
+      require("presence").peers(cfg, SONG, ROOM), now)
+    if now - claims_at > 10 then claims_at = now; pcall(sync.drop_gone_claims, F.proj, cfg, SONG, ROOM) end
+    local okp, only = pcall(mirror.heal_plan, F.proj, sync.room_dir(cfg, SONG, ROOM), mine, require("presence").peers(cfg, SONG, ROOM),
+      function() return sync.pending_events(F.proj, cfg, SONG, ROOM) end, now)
+    if not okp then ERRORS[#ERRORS + 1] = string.format("%.1f mirror.heal_plan: %s", now, tostring(only))
+    elseif only then
+      local ok, n = pcall(mirror.heal, F.proj, sync.room_dir(cfg, SONG, ROOM), false, only)
+      if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f mirror.heal: %s", now, tostring(n)) elseif (n or 0) > 0 then heals = heals + 1 end
+    end
+    local ok, moved = pcall(mirror.order_heal, F.proj, cfg, SONG, ROOM, now, now - changed_at)
+    if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f mirror.order_heal: %s", now, tostring(moved)) elseif (moved or 0) > 0 then heals = heals + 1 end
+    return (ok and moved or 0)
   end
   -- (Live sync's note of who holds another project or track order, each pass: the order heal acts on it (mirror.order_apart_for). Without it
   -- no soak computer ever put its track order right after its first look, which the real Live sync does: a soak artifact. rt-converge)
@@ -251,6 +267,7 @@ function N.order_now() return mirror.keep_order(F.proj, cfg, SONG, ROOM) end
 -- the project's root, what's still to apply, the track order's code)
 function N.status()
   local info = { pending = sync.pending_events(F.proj, cfg, SONG, ROOM), mirror = mirror.root(F.proj), order = mirror.order_code(F.proj) }
+  if mirror.contents then info.content, info.bk = mirror.contents(F.proj, sync.room_dir(cfg, SONG, ROOM)) end -- (rt-sync2 5c)
   band.try("write_status", sync.write_status, F.proj, cfg, SONG, ROOM, info, false)
   return true
 end
@@ -368,7 +385,10 @@ function N.state()
   for _, x in ipairs(markers) do x.pos, x["end"] = r(x.pos), r(x["end"]) end
   local names = {}
   for _, o in ipairs(objs) do if o.kind == "track" and type(o.state) == "table" then names[o.oid] = o.state.name end end
-  return json({ hashes = hashes, order = table.concat(order, ","), timeline = json({ tempo, markers }), dup = dup, names = names, ntracks = #F.tracks, nitems = #F.all_items() })
+  -- (and what it holds by its versions, the status's content code: equal at quiet, rt-sync2 5c. An --old lib has none)
+  local content = mirror.contents and (mirror.contents(F.proj, sync.room_dir(cfg, SONG, ROOM))) or nil
+  return json({ hashes = hashes, order = table.concat(order, ","), timeline = json({ tempo, markers }), dup = dup, names = names, ntracks = #F.tracks, nitems = #F.all_items(),
+    content = content })
 end
 -- Every track and item here, one line each (for a failure's report).
 function N.dump()
