@@ -1,4 +1,4 @@
-version 0.65.0
+version 0.65.1
 StudioSync - Autostart.lua	25766	a2bb70f854518b05
 StudioSync - Claim selected tracks.lua	851	7b9f063bd6e689a2
 StudioSync - Draw.lua	28530	69861b104a44a33e
@@ -31,8 +31,8 @@ lib/ai.lua	41233	07f9d72ca8940838
 lib/alerts.lua	4108	92d3618fe772d5a2
 lib/api.lua	7230	54afeaa36188ce81
 lib/audience.lua	20816	11f23accecec96e4
-lib/band.lua	136024	b3576476a7dbf655
-lib/beats.lua	26951	684c1e7df9ab2d63
+lib/band.lua	136024	92aa4503b7cb252c
+lib/beats.lua	28018	f8558948ccc5cde1
 lib/bgrender.lua	40501	09bd0b354f29763b
 lib/bounces.lua	40012	fe8c91cbdbdc10fc
 lib/calibrate.lua	24690	d44bad072a9dde63
@@ -198,8 +198,8 @@ sha256 e027eeddfeda5a1e8847b05b9df78fd49e67c138a1b76d6fcae02dfe59c8ee34 lib/ai.l
 sha256 9178f966b2a5be07cc7a72c3595717685029776292d2c0a0a4228fe6caef4277 lib/alerts.lua
 sha256 153dea2968aa950af8ed3f85740b680e3206426eb6ecc38c0f3634607c880819 lib/api.lua
 sha256 c900d9f44a758adbc415d53c6758e10d3dfdfea466869535ef3323b6c285d732 lib/audience.lua
-sha256 32861ed99d3b1d58c36d4140e53763d4f0c3c1c67715e9717fd01f8859ac912f lib/band.lua
-sha256 4876ece637d4b8b740cd4f26caeb6e55dc1149070a151366bb933b00be52a56d lib/beats.lua
+sha256 6bbee868da2dd77b1689ec624b0fbfe3a33e505a5f0cafda71e0d232b0c49d04 lib/band.lua
+sha256 942a2fc2be4f83e6d057556eefb7ad17436b495e55d5588235e7036d2516d847 lib/beats.lua
 sha256 c024cf380f415eb6655a1145c692477a638712225cba9c4dddb6f5047f61f304 lib/bgrender.lua
 sha256 b77dfdbf187f43260a4eb7f3c263237054cc0260c77549143864c1e04dfc9275 lib/bounces.lua
 sha256 49ba4d4c0976c69d25e19dffe2478beb91b1aa17a60d66ca53584819e84288e3 lib/calibrate.lua
