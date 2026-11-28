@@ -4259,8 +4259,9 @@ function W.order(w)
     -- deleted first track it ran too, and the band's delete-all with a tempo change, landed over the link before session.json had come through
     -- Syncthing, had its new tempo put back to the old one on every other computer. Cross test step 1, James, rt)
     local mhad, master = mirror.master_seen[order_key], reaper.GetMasterTrack(proj)
-    -- (or a reopen mirror.on_open tells by the load guard: REAPER keeps the master track through File > Open in the same tab. rt-fixlive1)
-    if mhad and (w.opened_now or not (mhad == master and reaper.ValidatePtr2(proj, mhad, "MediaTrack*"))) then sync.timeline_looked[proj], sync.timeline_live[proj] = nil, nil end
+    -- (not on a reopen only the load guard tells, rt-fixlive1's: run then, the soak's reopen-older-file and empty-then-load lost Cee's markers
+    -- to a session.json behind the room's. Left for a round that checks the timeline look against an older file in the same tab)
+    if mhad and not (mhad == master and reaper.ValidatePtr2(proj, mhad, "MediaTrack*")) then sync.timeline_looked[proj], sync.timeline_live[proj] = nil, nil end
     mirror.master_seen[order_key] = master
   end
   for _, o in ipairs(objs) do if o.kind == "track" then order[#order + 1] = o.oid end end
