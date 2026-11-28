@@ -3294,7 +3294,14 @@ function mirror.judge(proj, oid, room_dir, news)
     local now = reaper.time_precise()
     local t0 = mirror.missing_since[key] or now
     mirror.missing_since[key] = t0
-    if now - t0 >= mirror.WAIT_MISSING then opt.give_up = true; settle() end
+    -- (what's missing is asked of the bandmates here by id over the link at once, and once every one asked says it hasn't it, it counts as
+    -- trimmed at once: lib/needlist.lua. WAIT_MISSING stays the bound for when nobody here answers. rt-sync2 5b, rt-sync2j)
+    local nl, gone = require("needlist"), #s.missing > 0
+    for _, id in ipairs(s.missing) do
+      nl.want_id(room_dir, id)
+      gone = gone and nl.gone_everywhere(room_dir, id)
+    end
+    if gone or now - t0 >= mirror.WAIT_MISSING then opt.give_up = true; settle() end
   end
   s.oid, s.held = oid, held
   return s

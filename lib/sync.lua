@@ -1972,13 +1972,18 @@ function sync.receive(proj, cfg, song, room, can)
       if not good then
         local id = f:sub(1, -6)
         sync.unreadable[id] = sync.unreadable[id] or reaper.time_precise()
-        if reaper.time_precise() - sync.unreadable[id] > sync.UNREADABLE_SECS then
+        -- (asked of the bandmates here by id first, and skipped at once when every one asked says it hasn't it: nobody made it. One they have,
+        -- a cloud drive still writing it here, gets its UNREADABLE_SECS. lib/needlist.lua, rt-sync2 5b, rt-sync2j)
+        local nl, rdir = require("needlist"), sync.room_dir(cfg, song, room)
+        nl.want_id(rdir, id, true)
+        if nl.gone_everywhere(rdir, id) or reaper.time_precise() - sync.unreadable[id] > sync.UNREADABLE_SECS then
           -- (on Health's skipped list, so Try again can have it once it's whole: marked done, it was never looked at again. Review, 0.58.92)
           sync.skip(proj, { id = id, user = type(ev) == "table" and type(ev.user) == "string" and ev.user or "?" }, "its file couldn't be read (half-synced or damaged)")
           band.log("skipped a file in the studio's folder that StudioSync can't read (" .. f .. ")")
         end
       end
       if good then
+        if sync.unreadable[f:sub(1, -6)] then require("needlist").by_id[sync.room_dir(cfg, song, room) .. "\0" .. f:sub(1, -6)] = nil end
         sync.unreadable[f:sub(1, -6)] = nil
         kept[f] = ev
         pending[#pending + 1] = ev

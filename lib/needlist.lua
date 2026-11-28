@@ -20,6 +20,11 @@
 -- copy is still the record, and the inbox copy goes when it lands. Never an id in the room's trimmed/ lists, never one older than EV_DAYS
 -- (history trim takes only changes older than trim.DAYS), never this computer's own. Asked when who's here changes, again while a round
 -- brought something, and again (EV_RETRY s, doubling) until a bandmate answers, an empty list meaning every day matches (rt-catchup).
+-- And by id (rt-sync2 5b, rt-sync2j): a version the judge needs and lacks here (mirror.judge: its answer incomplete), or a change whose
+-- file doesn't read here (sync.receive), is asked of every bandmate here at once ("need_ask" { want = { room, ids } }, as above), and each
+-- answers with the files it has and the ids it hasn't ("need_list" { dev, room, none = { ids } }). Once every bandmate asked says it hasn't
+-- it, it's gone everywhere (needlist.gone_everywhere): the judge counts it trimmed and receive skips the file at once, not after their
+-- WAIT_MISSING / UNREADABLE_SECS, which stay for when nobody here answers.
 -- On unless this computer's ExtState "link need list" is "0" (rt-p3: it was off unless "1" until the filters above were in; why it's safe and
 -- the re-check in docs/rt/rt-linkmove.md round 6, item 1).
 -- Unreviewed (security reviews come after all features, James 2026-11-19).
@@ -172,6 +177,53 @@ end
 
 -- ---- the asker ----------------------------------------------------------------------------------------------------------------------------
 needlist.wants = {} -- song/room/file -> { room, file, size, by (the lister's device id), key, at }
+-- ---- asked by id ---------------------------------------------------------------------------------------------------------------------------
+needlist.by_id = {} -- room dir \0 id -> { dir, room, id, asked = { [dev] = true }, none = { [dev] = true } }
+-- A change by id this computer needs from `room_dir` (sync.room_dir's): asked of the bandmates here at the next tick. Bandmate data never
+-- names a file: an id with a slash or a control character isn't one. `there`: its file is here but doesn't read (sync.receive forgets it
+-- once it does); else it's forgotten once its file is here.
+function needlist.want_id(room_dir, id, there)
+  if type(id) ~= "string" or #id > 200 or id:find("[/\\%c]") or id:find("%.%.") then return end
+  local k = room_dir .. "\0" .. id
+  if not needlist.by_id[k] then needlist.by_id[k] = { dir = room_dir, room = room_dir:match("/rooms/([^/]+)$"), id = id, asked = {}, none = {}, there = there } end
+end
+-- Has every bandmate it was asked of said it hasn't change `id`? (false while it hasn't been asked of anyone, or anyone hasn't answered)
+function needlist.gone_everywhere(room_dir, id)
+  local w = needlist.by_id[room_dir .. "\0" .. tostring(id)]
+  if not (w and next(w.asked)) then return false end
+  for dev in pairs(w.asked) do if not w.none[dev] then return false end end
+  return true
+end
+-- Live sync's tick: each wanted id of this song not here yet, to each bandmate here not asked yet (EV_PER_MSG a message). -> messages sent.
+local function ask_by_id(cfg, b, peers, dev_of, me)
+  local song_dir, lists, sent = cfg.root .. "/" .. b.song .. "/rooms/", {}, 0
+  for k, w in pairs(needlist.by_id) do
+    local idir = direct.inbox_dir(cfg, w.dir .. "/events")
+    if not w.there and (reaper.file_exists(w.dir .. "/events/" .. w.id .. ".json") or (idir and reaper.file_exists(idir .. "/" .. w.id .. ".json"))) then
+      needlist.by_id[k] = nil -- (here now)
+    elseif w.dir:sub(1, #song_dir) == song_dir and w.room and direct.plain(w.room) then
+      for _, p in ipairs(peers) do
+        local dev = (dev_of or {})[p]
+        if dev and not w.asked[dev] then
+          w.asked[dev] = true
+          local key = p .. "\0" .. w.room
+          lists[key] = lists[key] or { peer = p, room = w.room, ids = {} }
+          table.insert(lists[key].ids, w.id)
+        end
+      end
+    end
+  end
+  for _, l in pairs(lists) do
+    table.sort(l.ids)
+    for k = 1, #l.ids, needlist.EV_PER_MSG do
+      direct.send_live(cfg, "need_ask", { user = cfg.user, dev = me, want = { room = l.room, ids = { table.unpack(l.ids, k, math.min(k + needlist.EV_PER_MSG - 1, #l.ids)) } } }, b.song, b.room, nil, { l.peer })
+      sent = sent + 1
+    end
+    pcall(require("streams").trace, string.format("asked by id: %d change(s) in %s asked of %s", #l.ids, l.room, l.peer))
+  end
+  return sent
+end
+needlist.ask_by_id = ask_by_id -- (tests)
 local seen, parts = {}, {} -- device id -> the digest of its list this computer has been through; -> { digest, n }
 local asked_at, who, round = -math.huge, nil, 0
 local ev_due, ev_round = false, 0 -- (the event ids go with the next ask: who's here changed, or the last round brought some)
@@ -186,6 +238,10 @@ function needlist.tick(cfg, b)
   local key = cfg.root .. "\n" .. b.song .. "\n" .. table.concat(peers, " ")
   local now = reaper.time_precise()
   if #peers == 0 then who = key; return 0 end
+  if next(needlist.by_id) then -- (at once, every tick: the judge waits on these)
+    local me = require("services").my_device_id()
+    if me then ask_by_id(cfg, b, peers, dev_of, me) end
+  end
   local retry = ev_wait ~= nil and now >= ev_wait.next and key == who
   if key == who and math.abs(now - asked_at) < needlist.EVERY and not retry then return 0 end -- (at once when who's here changes)
   if key ~= who then ev_due, ev_wait = true, nil end
@@ -221,6 +277,16 @@ end
 -- A "need_list" from a bandmate here: what it holds that isn't here goes into the wants. -> how many were added, or false.
 local on_ev_list
 function needlist.on_list(cfg, b, d)
+  if needlist.on() and type(d) == "table" and type(d.none) == "table" then
+    -- (ids this bandmate hasn't: noted against what was asked of it, only)
+    if not peer_of(cfg, b, d.dev) or not direct.plain(d.room) or #d.none > needlist.EV_PER_MSG then return false end
+    local dir, n = require("sync").room_dir(cfg, b.song, d.room), 0
+    for _, id in ipairs(d.none) do
+      local w = needlist.by_id[dir .. "\0" .. tostring(id)]
+      if w and w.asked[d.dev] then w.none[d.dev], n = true, n + 1 end
+    end
+    return n
+  end
   if needlist.on() and type(d) == "table" and type(d.evs) == "table" then return on_ev_list(cfg, b, d) end
   if not needlist.on() or type(d) ~= "table" or type(d.files) ~= "table" or #d.files > needlist.PER_MSG then return false end
   if not peer_of(cfg, b, d.dev) or type(d.digest) ~= "string" or not d.digest:match("^%d+|%d+$") or #d.digest > 40 then return false end
@@ -319,12 +385,17 @@ local function serve_events(cfg, b, d, to)
   if not s or math.abs(now - s.at) > 60 then s = { at = now, n = 0 }; ev_served[d.dev] = s end
   local dir, id, n = ev_dir(cfg, b.song, room), band.info(cfg.root).id, 0
   if not (id and reaper.StudioSync_DirectSend and direct.ensure(cfg)) then return 0 end
+  local none = {}
   for _, e in ipairs(w.ids) do
     if s.n >= needlist.EV_MAX then break end
     local rel = b.song .. "/rooms/" .. room .. "/events/" .. tostring(e) .. ".json"
     local path = direct.rel_ok(rel) and direct.path(cfg, dir, e .. ".json")
-    if path and reaper.file_exists(path) and reaper.StudioSync_DirectSend(id, rel, path, to) == 1 then n, s.n = n + 1, s.n + 1 end
+    if path and reaper.file_exists(path) then
+      if reaper.StudioSync_DirectSend(id, rel, path, to) == 1 then n, s.n = n + 1, s.n + 1 end
+    elseif path then none[#none + 1] = tostring(e) end
   end
+  -- (and which it hasn't, so an asker waiting on one by id knows: needlist.gone_everywhere. rt-sync2j)
+  if #none > 0 then direct.send_live(cfg, "need_list", { dev = require("services").my_device_id(), room = room, none = none }, b.song, b.room, nil, { to }) end
   pcall(require("streams").trace, string.format("event catch-up: %d changes in %s sent to %s", n, room, to))
   return n
 end
