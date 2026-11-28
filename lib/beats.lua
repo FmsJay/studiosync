@@ -11,15 +11,20 @@
 --   2 beats (position only)          | BANDBEAT 2; POSITION in quarter notes
 --   1 beats (position, length, rate) | BANDBEAT 1; POSITION and LENGTH in quarter notes; SNAPOFFS and the FADEIN length and auto length as
 --                                    | quarter notes from the item's start, the FADEOUT's as quarter notes back from its end; an audio take's
---                                    | PLAYRATE as source seconds per item (rate x length)
+--                                    | PLAYRATE as source seconds per item (rate x length), or as it is when the take has stretch markers of
+--                                    | its own; each stretch marker's place in quarter notes from the item's start; on an auto-stretch item
+--                                    | (IMPLIEDWARP 1), the stretch markers REAPER made for the tempo map alone are left out (beats.rewarp)
 --   automation, project timebase 1/2 | BANDBEAT <tb> first; each PT time, POOLEDENVINST / BANDAI place (and in 1 its length) and BANDAIPT
 --                                    | time in quarter notes. Automation with no times in it carries no mark.
 --
 -- These are the quantities REAPER keeps when the map changes (rt-r4 check 1, mirror.retime's before this). A fade or snap offset keeps its
 -- beats where it sits, not its share of the length: REAPER 7.86 (Windows and Linux) took an item at 10 s, 6 s long, with a 90 bpm marker
 -- added at 10.5 s, to 7.8333 s, its fade in 1 -> 1.1667 s (a share of the length would be 1.2222) and its fade out 0.5 -> 0.6667 s, and live
--- check sync2f f4 saw the share form re-send such an item at every tempo change inside it (rt-sync2g). Quarter notes to 1e-6, the inner spans
--- and rates to 1e-9: past that it's arithmetic, and a value moved for a map and back reads the same.
+-- check sync2f f4 saw the share form re-send such an item at every tempo change inside it (rt-sync2g). Stretch markers, measured the same way:
+-- REAPER keeps each one's beats; an item with stretch markers of its own keeps its rate (only one without scales it with the length); on an
+-- auto-stretch item REAPER adds markers of its own where the map changes inside it ("0 1" after their places), the same ones again from the
+-- map alone when C_AUTOSTRETCH is set (beats.rewarp). Quarter notes to 1e-6, the inner spans and rates to 1e-9: past that it's arithmetic, and
+-- a value moved for a map and back reads the same.
 -- Versions from before (no mark) are read once into this form where their map is known (`tm` on the version: beats.upgrade); one with no map
 -- stays as its seconds, which land as they are (the rule for versions from before rt-converge).
 local beats = {}
@@ -50,6 +55,8 @@ local function item_walk(state, fn)
       if kw == "TAKE" then take = { midi = false }; takes[#takes + 1] = take end
       out = fn(line, kw, take)
       if out and kw == "PLAYRATE" then take.rate = #L + 1 end
+      if out and kw == "SM" then take.sm = #L + 1 end
+      if kw == "IMPLIEDWARP" then takes.implied = line:match("^%s*IMPLIEDWARP%s+1") ~= nil end
     end
     if line:find("^%s*<SOURCE MIDI") then take.midi = true end
     if out then L[#L + 1] = out end
@@ -58,7 +65,31 @@ local function item_walk(state, fn)
   if L[#L] == "" then L[#L] = nil end
   return L, takes
 end
-local function join(L, was) return table.concat(L, "\n") .. (was:sub(-1) == "\n" and "\n" or "") end
+local function join(L, was)
+  local out = {}
+  for i = 1, #L do if L[i] then out[#out + 1] = L[i] end end -- (false: a line taken out after the walk)
+  return table.concat(out, "\n") .. (was:sub(-1) == "\n" and "\n" or "")
+end
+-- A take's stretch markers: its SM line's entries ("pos srcpos [slope flags]", joined by " + "), each { pos, rest, made } (made: REAPER's own
+-- for the tempo map, flag bit 1). Pure.
+local function sm_entries(line)
+  local out = {}
+  for e in (line:match("^%s*SM%s+(.*)$") or ""):gmatch("[^+]+") do
+    local pos, rest = e:match("^%s*(%S+)(.-)%s*$")
+    if pos then
+      local w = {}
+      for t in rest:gmatch("%S+") do w[#w + 1] = t end
+      out[#out + 1] = { pos = tonumber(pos), rest = rest, made = (tonumber(w[3]) or 0) % 2 == 1 }
+    end
+  end
+  return out
+end
+local function sm_line(list, posf)
+  local e = {}
+  for i, x in ipairs(list) do e[i] = posf(x.pos) .. x.rest end
+  return "SM " .. table.concat(e, " + ")
+end
+local function own_markers(list) for _, x in ipairs(list) do if not x.made then return true end end return false end
 local function num_at(line, k) -- (the k-th number after the keyword, its text's start and end)
   local n, pos = 0, 1
   while true do
@@ -101,11 +132,15 @@ function beats.item(state, mode, qn)
   if mode == 1 then
     for _, t in ipairs(takes) do
       local r = t.rate and not t.midi and num_at(L[t.rate], 1)
-      if r then L[t.rate] = set_at(L[t.rate], 1, f9(r * l)) end
+      local sm = t.sm and not t.midi and sm_entries(L[t.sm])
+      local own = sm and own_markers(sm)
+      if sm and not own and takes.implied then L[t.sm] = false -- (REAPER's alone: made again from the map where it lands)
+      elseif sm then local rr = r or 1; L[t.sm] = sm_line(sm, function(x) return q6(qn(p + x / rr) - q0) end) end -- (to 1e-6: REAPER writes them to 1e-9 s)
+      if r and not own then L[t.rate] = set_at(L[t.rate], 1, f9(r * l)) end
     end
   end
   for i, line in ipairs(L) do
-    if line:match("^%s*<ITEM") then table.insert(L, i + 1, "BANDBEAT " .. mode); return join(L, state) end
+    if line and line:match("^%s*<ITEM") then table.insert(L, i + 1, "BANDBEAT " .. mode); return join(L, state) end
   end
   table.insert(L, 1, "BANDBEAT " .. mode)
   return join(L, state)
@@ -155,7 +190,11 @@ function beats.item_seconds(state, time, qn)
   if l and l > 0 then
     for _, t in ipairs(takes) do
       local r = t.rate and not t.midi and num_at(L[t.rate], 1)
-      if r then L[t.rate] = set_at(L[t.rate], 1, g14(snapped(r / l, function(x) return f9(tonumber(g14(x)) * l) == f9(r) end))) end
+      local sm = t.sm and not t.midi and sm_entries(L[t.sm])
+      local own = sm and own_markers(sm)
+      local rw = r and not own and tonumber(g14(snapped(r / l, function(x) return f9(tonumber(g14(x)) * l) == f9(r) end))) or r or 1
+      if r and not own then L[t.rate] = set_at(L[t.rate], 1, g14(rw)) end
+      if sm then L[t.sm] = sm_line(sm, function(x) return g14((time(q0 + x) - p) * rw) end) end
     end
   end
   return join(L, state)
@@ -290,7 +329,7 @@ end
 function beats.upgrade12(state)
   if beats.mark(state) ~= 1 then return state end
   local lq = tonumber(state:match("\n%s*LENGTH ([^\n]+)")) or 0
-  local L = item_walk(state, function(line, kw)
+  local L, takes = item_walk(state, function(line, kw)
     if kw == "SNAPOFFS" then local v = num_at(line, 1); return v and set_at(line, 1, f9(v * lq)) or line end
     if kw == "FADEIN" or kw == "FADEOUT" then
       local a, b = num_at(line, 2), num_at(line, 3)
@@ -299,6 +338,11 @@ function beats.upgrade12(state)
     end
     return line
   end)
+  -- (an auto-stretch item's markers REAPER made for the map, kept as they were then: left out, as today. A take's own markers in seconds
+  -- would need the map: those items go out once after updating, Known limits in docs/rt/rt-sync2g.md)
+  for _, t in ipairs(takes) do
+    if t.sm and not t.midi and takes.implied and not own_markers(sm_entries(L[t.sm])) then L[t.sm] = false end
+  end
   return join(L, state)
 end
 -- Two canonical item texts the same but for their inner spans (snap offset, fades) within 1e-7 quarter notes: what upgrade12 can promise, a
@@ -355,6 +399,15 @@ local function time_in(proj) return function(q) return reaper.TimeMap2_QNToTime(
 -- What the look reads (seconds, from REAPER) as it travels.
 function beats.read_item(proj, state, tr, track_mode) return beats.item(state, beats.item_mode(proj, state, tr, track_mode), qn_in(proj)) end
 function beats.read_env(proj, state) return beats.env(state, beats.project_mode(proj), qn_in(proj)) end
+-- After an item's chunk is set from a travelling text: an auto-stretch item whose text left out REAPER's own stretch markers (beats.item)
+-- gets them again from the map here, as REAPER makes them (C_AUTOSTRETCH set off and on: measured to give the very chunk REAPER had, on
+-- REAPER 7.86, Windows and Linux. rt-sync2g). Nothing for any other item.
+function beats.rewarp(it, chunk)
+  if type(chunk) ~= "string" or not chunk:find("\n%s*IMPLIEDWARP%s+1") or chunk:find("\n%s*SM ") then return false end
+  reaper.SetMediaItemInfo_Value(it, "C_AUTOSTRETCH", 0)
+  reaper.SetMediaItemInfo_Value(it, "C_AUTOSTRETCH", 1)
+  return true
+end
 -- A travelling text in seconds on this project's map, for REAPER.
 function beats.write(proj, kind, state) return beats.seconds(kind, state, time_in(proj), qn_in(proj)) end
 -- Which map and timebases the canonical form is read under here, as one string (a look's reuse of what it read last time).

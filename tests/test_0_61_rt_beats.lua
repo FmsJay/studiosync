@@ -455,4 +455,48 @@ do
   print("rt-sync2g 9: updating from hash version 12 sends nothing: its shares of the length read as quarter notes")
 end
 
+-- ---- 10. (rt-sync2g) stretch markers: REAPER's own on an auto-stretch item left out and made again; a take's own in beats, its rate kept ------
+do
+  -- (chunks as REAPER 7.86 wrote them, Windows and Linux alike: an auto-stretch item at 10 s, 6 s long, at 120 bpm, then with a 90 bpm marker
+  -- at 12 s inside it (live check sync2f f4's numbers): REAPER scaled the rate with the length and added its own markers, flagged "0 1")
+  local function qn120(t) return t * 2 end
+  local function qn90at(at) return function(t) if t <= at then return t * 2 end return at * 2 + (t - at) * 1.5 end end
+  local function tm90at(at) return function(q) if q <= at * 2 then return q / 2 end return at + (q - at * 2) / 1.5 end end
+  local tail = "<SOURCE WAVE\nFILE \"a.wav\"\n>\n>\n"
+  local auto0 = "<ITEM\nPOSITION 10\nSNAPOFFS 0\nLENGTH 6\nFADEIN 1 0.01 0 1 0 0 0\nFADEOUT 1 0.01 0 1 0 0 0\nBEAT 1\nIMPLIEDWARP 1\nPLAYRATE 1 1 0 -1 0 0.0025\n" .. tail
+  local auto1 = "<ITEM\nPOSITION 10\nSNAPOFFS 0\nLENGTH 7.33333333333333\nFADEIN 1 0.01 0 1 0 0 0\nFADEOUT 1 0.01333333333333 0 1 0 0 0\nBEAT 1\nIMPLIEDWARP 1\n"
+    .. "PLAYRATE 0.81818181818182 1 0 -1 0 0.0025\nSM 0 0 0 1 + 1.636363636 2 0 1 + 6 6 0 1\n" .. tail
+  local c0, c1 = beats.item(auto0, 1, qn120), beats.item(auto1, 1, qn90at(12))
+  assert(c0 == c1, "an auto-stretch item reads the same before and after a tempo change inside it (REAPER's own markers left out):\n" .. c0 .. "\n" .. c1)
+  local h12 = beats.upgrade12("<ITEM\nBANDBEAT 1\nPOSITION 20.000000\nLENGTH 12.000000\nIMPLIEDWARP 1\nPLAYRATE 6.000000000 1 0 -1 0 0.0025\nSM 0 0 0 1 + 1.636363636 2 0 1\n" .. tail)
+  assert(not h12:find("\nSM ", 1, true), "hash version 12's copy of REAPER's own markers on an auto-stretch item is left out as it's read: " .. h12)
+  -- (a take with stretch markers of its own, at 10 s, 6 s long, a 90 bpm marker added at 10.5 s: REAPER kept the rate and each marker's beats.
+  -- The first change also adds a marker at each end, so such an item goes out once: these are after it)
+  local own0 = "<ITEM\nPOSITION 10\nSNAPOFFS 3\nLENGTH 6\nPLAYRATE 1 1 0 -1 0 0.0025\nSM 0 0 + 1 1 + 3 2.5 + 6 5.5\n" .. tail
+  local own1 = "<ITEM\nPOSITION 10\nSNAPOFFS 3.83333333333333\nLENGTH 7.83333333333333\nPLAYRATE 1 1 0 -1 0 0.0025\n"
+    .. "SM 0 0 + 1.166666667 1 + 3.833333333 2.5 + 7.833333333 5.5\n" .. tail
+  local o0, o1 = beats.item(own0, 1, qn120), beats.item(own1, 1, qn90at(10.5))
+  assert(o0 == o1, "a take's own stretch markers in beats and its rate as it is: the same after the tempo change:\n" .. o0 .. "\n" .. o1)
+  assert(o0:find("\nPLAYRATE 1 1 ", 1, true) and o0:find("\nSM 0.000000 0 + 2.000000 1 + 6.000000 2.5 + 12.000000 5.5\n", 1, true), "(its rate kept, markers in quarter notes): " .. o0)
+  assert(beats.item(beats.item_seconds(o1, tm90at(10.5), qn90at(10.5)), 1, qn90at(10.5)) == o1, "and back in seconds, read as it travelled")
+  -- a landing of an auto-stretch item here: its chunk set, then C_AUTOSTRETCH off and on (REAPER makes its markers from the map)
+  local F = E.new("C:/A/Warp10.rpp")
+  reaper = F.reaper
+  local tr = F.add_track("Gtr")
+  reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "T-W10", true)
+  local set = {}
+  local real = reaper.SetMediaItemInfo_Value
+  reaper.SetMediaItemInfo_Value = function(it, k, v) if k == "C_AUTOSTRETCH" then set[#set + 1] = v end; return real(it, k, v) end
+  assert(mirror.apply(F.proj, { type = "obj", obj = "item", oid = "I-W10", track = "T-W10", name = "Gtr", id = "Bee-20261128-100000Z-00001-0001", user = "Bee",
+    rev = 1, hlc = 1, time = "2026-11-28T10:00:00Z", format = 2, hv = mirror.HV, state = c1 }, "R/W10/media", false), "applied")
+  assert(set[1] == 0 and set[2] == 1, "its auto-stretch set off and on after the chunk (" .. #set .. ")")
+  set = {}
+  assert(mirror.apply(F.proj, { type = "obj", obj = "item", oid = "I-W11", track = "T-W10", name = "Gtr", id = "Bee-20261128-100000Z-00002-0002", user = "Bee",
+    rev = 1, hlc = 2, time = "2026-11-28T10:00:00Z", format = 2, hv = mirror.HV, state = o1 }, "R/W10/media", false), "applied")
+  assert(#set == 0, "an item with stretch markers of its own: left as it landed")
+  reaper.SetMediaItemInfo_Value = real
+  reaper = F0.reaper
+  print("rt-sync2g 10: stretch markers: REAPER's own on auto-stretch left out and made again; a take's own in beats, its rate kept")
+end
+
 print("ok rt-sync2f")
