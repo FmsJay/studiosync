@@ -1,0 +1,18 @@
+{
+ "name": "folder-loop",
+ "what": "rt-sync2d (folders as parent + rank; rt-sync2c REAPER check 8): two computers each drag the other's track into their own within a second, neither having seen the other's move: James puts Keys into Bass, Bee puts Bass into Keys. Each version says its folder (pk), so the studio's tree has a loop of parents; rank.tree breaks it by the newest version: Bass's (Bee's version of Bass, sent after Bee's Keys in the same look, merged with James's: the newest clock in the loop), so Bass leaves the loop and goes to the top level, keeping Keys inside it. Every computer, the late joiner included, must end on the same tree, a valid one. With depths as the folders (before rt-sync2d) each computer kept the depths of whichever versions landed last, and the folders could end apart.",
+ "phase": "4b",
+ "today": "passes",
+ "seed": 1,
+ "faults": {"clean": true, "link_min": 3.0, "link_max": 3.0, "st_min": 3.0, "st_max": 3.5},
+ "mode": "everyone",
+ "undo_probe": false,
+ "edits": [
+  {"t": 40, "node": "James", "lua": "local d, b, k, g = track('Drums'), track('Bass'), track('Keys'), track('Gtr'); for i, t in ipairs({ d, b, k, g }) do F.tracks[i] = t end; d.depth, b.depth, k.depth, g.depth = 0, 1, -1, 0; F.changed(); return 'Keys dragged into Bass'"},
+  {"t": 40.5, "node": "Bee", "lua": "local d, b, k, g = track('Drums'), track('Bass'), track('Keys'), track('Gtr'); for i, t in ipairs({ d, k, b, g }) do F.tracks[i] = t end; d.depth, k.depth, b.depth, g.depth = 0, 1, -1, 0; F.changed(); return 'Bass dragged into Keys'"}
+ ],
+ "checks": [
+  {"on": "all", "what": "one valid tree everywhere: Drums, Bass (a folder), Keys in it, Gtr",
+   "lua": "local names, want = {}, 'Drums 0,Bass 1,Keys -1 <Bass,Gtr 0'; for _, t in ipairs(F.tracks) do local p = reaper.GetParentTrack(t); names[#names + 1] = t.name .. ' ' .. math.floor(t.depth or 0) .. (p and ' <' .. p.name or '') end; assert(table.concat(names, ',') == want, table.concat(names, ','))"}
+ ]
+}

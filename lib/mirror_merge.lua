@@ -568,7 +568,9 @@ end
 -- A track's settings (mirror.track_state), changed apart from one base, put together setting by setting: one renames it while another turns it
 -- up, and both stand. Lanes (how many, which play, their names, the mode) go together. Numbers compare as numbers (0 and 0.0 are one). -> the
 -- merged state and the settings both changed. Pure.
-local TRACK_TOGETHER = { freemode = "lanes", lanes = "lanes", plays = "lanes", lanenames = "lanes" }
+-- (a track's folder is its parent and its depth together: merged apart, one side's parent with the other's depth made a folder neither had,
+-- and an older StudioSync, which puts the depth in place, another tree than the parent gives. rt-sync2d)
+local TRACK_TOGETHER = { freemode = "lanes", lanes = "lanes", plays = "lanes", lanenames = "lanes", parent = "folder", depth = "folder" }
 function M.merge_track(base, winner, loser)
   local function norm(v) if v == nil then return nil end; local n = tonumber(v); return n and string.format("%.10g", n) or tostring(v) end
   local keys, out, both = {}, {}, {}

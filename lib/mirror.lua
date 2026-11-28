@@ -420,7 +420,7 @@ end
 -- (measured, REAPER 7.83: no @init, even with a changed parameter). Which envelopes show, which is armed and how
 -- tall its lane is stay each person's own. A receive names its source track by oid (REAPER's chunk says its
 -- position); receives from a track that isn't mirrored (Real time, live views) stay as they are on each machine.
-mirror.HV = 9 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c)
+mirror.HV = 10 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c). 10: and its parent again, now the folder it is in for real (rt-sync2d)
 mirror.KIND = { T = "track", F = "fx", E = "env", R = "recv", M = "misc", I = "item" } -- (an oid's first letter)
 mirror.PART = { fx = "the plug-ins", env = "the automation", recv = "the sends", misc = "the groups, lock, input FX or note names" }
 mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x, R-x, M-x)
@@ -1346,10 +1346,11 @@ function mirror.colour_key(c)
   return i or n
 end
 function mirror.track_line(t, local_mix, colour)
-  -- (its parent left out, "" in its place: it follows from the depths above it, which travel, so a folder change arriving in pieces made the
-  -- tracks under it read as edited, and put back or sent each other back and forth. 0.59.14, review. An older event's hash names it, which the
-  -- band's-hash checks in watch and apply take as the same track: nothing goes out again for it)
-  local f = { t.name or "", "", t.depth or 0, t.mute or 0, "", t.phase or 0, mirror.icon_key(t.icon), -- ("": solo is each person's own)
+  -- (its parent: the folder it is in, a fact of its own since folders are parent + rank (rt-sync2 section 3, rt-sync2d; hv 10). From 0.59.14
+  -- to rt-sync2c it was left out ("" in its place): it followed from the depths above it, and a folder change arriving in pieces made the
+  -- tracks under it read as edited. Now a parent or depth that differs from the band's only by StudioSync's doing isn't an edit (W.order's
+  -- tree_seen, W.one), and the band's-hash checks in watch and apply read a line from before (no parent) as the same track)
+  local f = { t.name or "", t.parent or "", t.depth or 0, t.mute or 0, "", t.phase or 0, mirror.icon_key(t.icon), -- ("": solo is each person's own)
     t.freemode or 0, t.lanes or 0, t.plays or "", t.lanenames or "", 0, local_mix and "" or (t.vol or ""), local_mix and "" or (t.pan or "") }
   for _, kp in ipairs(mirror.TRACK_MORE) do f[#f + 1] = t[kp[1]] or "" end
   for _, kp in ipairs(mirror.TRACK_MIX) do f[#f + 1] = local_mix and "" or (t[kp[1]] or "") end
@@ -1370,10 +1371,11 @@ end
 -- The same settings? As track_line, but 0 and 0.0 are one number: a state read here has floats, and one from a bandmate's event can have
 -- whole numbers. Read as different, a track that had only moved in the list was put back and suggested to its owner at every restart.
 -- (The hash stays on track_line: changing what it reads would make every track look changed.) Pure.
-function mirror.same_line(x, y, local_mix)
+function mirror.same_line(x, y, local_mix, sans_tree)
   -- (a version from a StudioSync before ranks has none: its place isn't another, it's unsaid. rt-sync2c)
-  if (x.rank == nil) ~= (y.rank == nil) then
-    local function sans(t) local c = {}; for k, v in pairs(t) do c[k] = v end; c.rank = nil; return c end
+  -- (sans_tree: its folder left out too, parent and depth: where REAPER has it from the tree as it stands here, mirror.apply. rt-sync2d)
+  if (x.rank == nil) ~= (y.rank == nil) or sans_tree then
+    local function sans(t) local c = {}; for k, v in pairs(t) do c[k] = v end; if (x.rank == nil) ~= (y.rank == nil) then c.rank = nil end; if sans_tree then c.parent, c.depth = nil, nil end; return c end
     x, y = sans(x), sans(y)
   end
   local function plain(t) return (mirror.track_line(t, local_mix):gsub("(%d)%.0%f[|\0]", "%1")) end
@@ -1749,6 +1751,7 @@ function mirror.rank_in(ev)
   return type(ev) == "table" and ev.rk ~= nil and type(ev.state) == "table" and rank.valid(ev.state.rank) and ev.state.rank or nil
 end
 function mirror.sans_rank(st) local c = {}; for k, v in pairs(st) do c[k] = v end; c.rank = nil; return c end
+function mirror.sans_depth(st) local c = {}; for k, v in pairs(st) do c[k] = v end; c.depth = nil; return c end
 local function itm_oid(it) return select(2, reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", false)):upper() end
 mirror.track_oid, mirror.item_oid = trk_oid, itm_oid
 -- StudioSync's own helper tracks (the SonoBus return, stems) never mirror
@@ -1809,6 +1812,10 @@ function mirror.set_track_state(proj, tr, t, local_mix)
   for _, kp in ipairs({ { "freemode", "I_FREEMODE" }, { "lanes", "I_NUMFIXEDLANES" }, { "mute", "B_MUTE" },
       { "phase", "B_PHASE" }, { "depth", "I_FOLDERDEPTH" } }) do
     local v = t[kp[1]] and (tonumber(t[kp[1]]) or 0)
+    -- (not the depth of a track with a rank: its folder comes from the studio's tree (mirror.tree_depths), and a version's depth is only what
+    -- REAPER read where it was made. An item landing put its track's version back whole, depth and all, and undid the folder a bandmate's
+    -- track had just been put in, on every computer. rt-sync2d)
+    if v and kp[1] == "depth" and mirror.rank_of(tr) then v = nil end
     if v and kp[1] == "lanes" then v = math.max(v, in_use) end
     if v and kp[1] == "freemode" and in_use > 1 then v = 2 end
     if v then reaper.SetMediaTrackInfo_Value(tr, kp[2], v) end
@@ -3243,7 +3250,11 @@ function mirror.apply(proj, ev, media_dir, local_mix)
     local r, old_move = mirror.rank_in(ev), false
     if not r and room_dir then r, old_move = mirror.rank_from(room_dir, ev) end
     if not r and not old_move then r = tr and mirror.rank_of(tr) end
-    local place = r and room_dir and mirror.rank_above(proj, room_dir, oid, r) or ev.state.after or ""
+    -- (in a room with ranks, its place is in the studio's folder tree (parent, then rank: rank.tree), and REAPER's depths come from that tree,
+    -- not from the version: one track of a folder change landing before the rest left the tracks under it in another folder for a while, and
+    -- an older StudioSync's depth is only a hint of the folder. rt-sync2d)
+    local tree = room_dir and (r or mirror.ranked(proj)) and { mirror.rank_above(proj, room_dir, mirror.tree_entry(oid, r, not r and ev.state.after or "", ev)) } or nil
+    local place = tree and tree[1] or ev.state.after or ""
     if not tr then
       local idx = 0 -- under the track it sat under there (or first)
       local above = place ~= "" and mirror.find(proj, "track", place)
@@ -3254,7 +3265,7 @@ function mirror.apply(proj, ev, media_dir, local_mix)
       tr = reaper.GetTrack(proj, idx)
       reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", oid, true)
     end
-    mirror.set_track_state(proj, tr, ev.state, local_mix)
+    mirror.set_track_state(proj, tr, tree and mirror.sans_depth(ev.state) or ev.state, local_mix)
     if r and r ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r, true)
     elseif not r and old_move and mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", "", true) end
     -- moved in the band's project: here too (REAPER reorders only in the tab in front; a tab behind keeps its order)
@@ -3272,12 +3283,13 @@ function mirror.apply(proj, ev, media_dir, local_mix)
         for _, x in ipairs(sel) do if reaper.ValidatePtr2(proj, x, "MediaTrack*") then reaper.SetTrackSelected(x, true) end end
       end
     end
+    if tree then mirror.tree_depths(proj, tree[3]) end -- (the folders from the tree, for the order the tracks have here now. rt-sync2d)
     local t = mirror.track_state(proj, tr, local_mix)
     mirror.track_seen[tostring(proj) .. oid] = t -- (as it was put in place: mirror.receive's keep_unsent)
     -- (landed, only its place in this machine's list can differ: the band's hash stands, so fingerprints agree, and it isn't
-    -- "came out different". Track order can differ: PC Fight, laptop, 0.42.3)
+    -- "came out different". Track order can differ: PC Fight, laptop, 0.42.3. Nor its folder, which REAPER has from the tree here. rt-sync2d)
     local h = mirror.track_hash(t, local_mix)
-    if ev.hash and h ~= ev.hash and type(ev.state) == "table" and mirror.same_line(t, ev.state, local_mix) then h = ev.hash end
+    if ev.hash and h ~= ev.hash and type(ev.state) == "table" and mirror.same_line(t, ev.state, local_mix, tree ~= nil) then h = ev.hash end
     if made and media_dir then mirror.bring_parts(proj, oid, media_dir, local_mix) end
     return true, h
   elseif kind == "fx" then
@@ -3901,6 +3913,18 @@ local function event_file(room_dir, evid, depth)
     -- (an older StudioSync's move on either side: the merge's place is the `after` it merges, as old computers place it. mirror.rank_from)
     local old_move = (w.moved ~= nil and not mirror.rank_in(w)) or (l.moved ~= nil and not mirror.rank_in(l))
     v.rk = not old_move and (w.rk or l.rk or b.rk) and 1 or nil
+    -- (a folder is meant on the side that says one (`pk`: mirror.parent_in); an older StudioSync's side changed it only where it changed
+    -- that track's depth too, else its parent is the stale one its REAPER read: no change. rt-sync2d)
+    if w.pk or l.pk then
+      local function said(x, xs)
+        if x.pk or type(xs) ~= "table" or tonumber(xs.depth) ~= tonumber(bs.depth) then return xs end
+        local c = {}
+        for k, val in pairs(xs) do c[k] = val end
+        c.parent = bs.parent
+        return c
+      end
+      ws, ls, v.pk = said(w, ws), said(l, ls), 1
+    end
   end
   v.state, v.clashed = mirror.merge_state(w.obj, bs, ws, ls, l.user)
   if v.state == nil then return nil end
@@ -4003,6 +4027,7 @@ function mirror.fx_was_open(tr)
 end
 mirror.first_look = mirror.first_look or {} -- project -> until when its chains may be still loading after it opened
 mirror.order_seen = mirror.order_seen or {} -- project -> its tracks' order at the last look
+mirror.tree_seen = mirror.tree_seen or {} -- project -> oid -> "parent|depth" at the last look, or as StudioSync last wrote them (rt-sync2d)
 mirror.order_band = mirror.order_band or {} -- project -> a band's track landed since the last look
 mirror.holds = mirror.holds or {} -- project -> track oid -> { what runs through it }, as of the last look
 mirror.bus_said = mirror.bus_said or {} -- track oid -> when "that changes how X sounds" was last said
@@ -4478,16 +4503,31 @@ function W.order(w)
       end
     end
   end
+  -- (which tracks this person put in another folder, or whose depth they changed doing it: REAPER's folder differs from the one the look before
+  -- saw, or StudioSync last wrote (tree_seen), and no bandmate's track has landed since (order_band, as for a move). Only those send their
+  -- folder as REAPER has it; any other track's parent and depth are the band's (W.one), so a folder change arriving in pieces, or the depths
+  -- StudioSync works out from the studio's tree (rank.tree), are nobody's edit. rt-sync2d)
+  local tree_was, tree, refoldered = mirror.tree_seen[order_key], {}, {}
+  for _, o in ipairs(objs) do
+    if o.kind == "track" and type(o.state) == "table" then tree[o.oid] = tostring(o.state.parent or "") .. "|" .. tostring(tonumber(o.state.depth) or 0) end
+  end
+  if tree_was and not first_here and not mirror.order_band[order_key] then
+    for oid, x in pairs(tree) do if tree_was[oid] ~= nil and tree_was[oid] ~= x then refoldered[oid] = tree_was[oid]:match("^(.-)|") end end
+  end
+  w.refoldered = refoldered -- (oid -> the parent it had before: W.send says it as `unfolder`, for Undo)
   -- (a track this person moved, or made here, gets a rank between its neighbours' as REAPER has them now, so every computer sorts it there:
   -- lib/rank.lua. Only in a room with ranks (the first look of an opening is the file's order, nobody's move). rt-sync2c)
   local ranked = false -- (mirror.ranked, from the states this look already read: not two REAPER calls a track every look. rt-sync2c)
   for _, o in ipairs(objs) do if o.kind == "track" and type(o.state) == "table" and o.state.rank then ranked = true; break end end
+  w.ranked = ranked
   if not first_here and ranked then
     local list, need = {}, {}
     for _, o in ipairs(objs) do
       if o.kind == "track" and o.ptr and type(o.state) == "table" then
         list[#list + 1] = o
         if moved_set[o.oid] or (o.state.rank == nil and mirror.known(proj, o.oid) == nil) then need[o.oid] = true end
+        -- (put in another folder: a rank among its new siblings. rt-sync2d)
+        if refoldered[o.oid] and refoldered[o.oid] ~= tostring(o.state.parent or "") then need[o.oid] = true end
       end
     end
     local a = nil
@@ -4496,6 +4536,12 @@ function W.order(w)
         local b
         for k = i + 1, #list do if not need[list[k].oid] and list[k].state.rank then b = list[k].state.rank; break end end
         local r = rank.between(a, b) or (a and rank.between(a, nil)) -- (neighbours out of rank order here: after the one above it)
+        -- (and between its siblings in the folder it's in, which the tree sorts it among: where the tracks around it in the list aren't, a
+        -- rank between those siblings instead. rt-sync2d)
+        local sa, sb
+        for k = i - 1, 1, -1 do local x = list[k]; if (x.state.parent or "") == (o.state.parent or "") and x.state.rank then sa = x.state.rank; break end end
+        for k = i + 1, #list do local x = list[k]; if not need[x.oid] and (x.state.parent or "") == (o.state.parent or "") and x.state.rank then sb = x.state.rank; break end end
+        if r and (sa and not rank.less(sa, r) or sb and not rank.less(r, sb)) then r = rank.between(sa, sb) or r end
         if r then
           reaper.GetSetMediaTrackInfo_String(o.ptr, "P_EXT:band_rank", r, true)
           o.state.rank, o.hash = r, mirror.track_hash(o.state, opts.local_mix)
@@ -4506,6 +4552,7 @@ function W.order(w)
   end
   w.order_was = mirror.order_seen[order_key] -- (the tracks as the look before had them: where a track deleted since sat, W.gone)
   mirror.order_seen[order_key], mirror.order_band[order_key] = order, nil
+  mirror.tree_seen[order_key] = tree
   w.moved_set, w.first_here = moved_set, first_here
 end
 function W.put_back(w, o, rev, evid, why)
@@ -4728,6 +4775,19 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     base_ev = evid ~= "" and evid or nil, -- (the version this one started from: a merge finds the base there, mirror.merge_item)
     name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act, tl = mirror.map_stamp(proj) } -- (hash: what it is here; every receiver checks it came out the same)
   mirror.map_tag(proj, ev) -- (the tempo map its seconds are on: whoever lands it elsewhere puts it on the same beat there. rt-converge)
+  -- (in a room with ranks, its folder is meant (`pk`: mirror.parent_in): the one this person put it in, else the studio's tree's for it, so a
+  -- stale parent an older StudioSync left in its version isn't made the truth by an edit of something else. And the folder it left, when
+  -- they moved it (`unfolder`): what Undo puts back. rt-sync2d)
+  if o.kind == "track" and w.ranked and type(state) == "table" then
+    ev.pk = 1
+    local was = (w.refoldered or {})[o.oid]
+    if was ~= nil and was ~= tostring(state.parent or "") then ev.unfolder = was end
+    if was == nil and last and not last.gone then
+      if not w.tree_par then w.tree_par = select(2, mirror.rank_order(proj, room_dir)) end
+      local p = w.tree_par[o.oid]
+      if p ~= nil and p ~= tostring(state.parent or "") then state.parent = p; o.hash = mirror.track_hash(state, opts.local_mix); ev.hash = o.hash end
+    end
+  end
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and w.moved_from then ev.moved = w.moved_from[o.oid] end -- (the track it sat under before you moved it: mirror.moved_since)
   if o.kind == "track" then ev.rk = 1 end -- (its rank is meant: mirror.rank_in. rt-sync2c)
@@ -4922,6 +4982,17 @@ function W.one(w, o)
   local suggest, kept_back, credit, moved_set, seen, t_send, scheme, rescheme = w.suggest, w.kept_back, w.credit, w.moved_set, w.seen, w.t_send, w.scheme, w.rescheme
   local rev, h, evid, kord = mirror.known(proj, o.oid)
   local rk = tostring(proj) .. o.oid
+  -- (a track whose folder this person didn't change (W.order's refoldered): its parent and depth are the band's version's, whatever REAPER
+  -- reads here meanwhile (a folder change landing in pieces, the depths StudioSync works out from the studio's tree, an older StudioSync's
+  -- stale parent). Read as this person's, they went out and moved tracks for everyone. rt-sync2d)
+  if o.kind == "track" and rev and (h or "") ~= "" and o.hash ~= h and not (w.refoldered or {})[o.oid] then
+    local ev = event_file(room_dir, evid)
+    local st = ev and not ev.gone and type(ev.state) == "table" and ev.state
+    if st and (tostring(st.parent or "") ~= tostring(o.state.parent or "") or (tonumber(st.depth) or 0) ~= (tonumber(o.state.depth) or 0)) then
+      o.state.parent, o.state.depth = st.parent or "", st.depth or 0
+      o.hash = mirror.track_hash(o.state, opts.local_mix)
+    end
+  end
   -- the colour has just started or stopped counting here (before 0.36 it never did; SWS auto-colouring switched on
   -- or off): a track that differs from the band's version only in colour isn't a change of ours. With the colour
   -- counting, the band's last change to the track says what it is, so every machine ends up with the same (0.36
@@ -5897,6 +5968,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   local opened_now = mirror.on_open(proj)
   if opened_now then
     mirror.edit_seen[pk], mirror.looks[pk], mirror.order_seen[pk], mirror.seen_here[pk] = nil, nil, nil, nil -- (order_seen: W.order's first look. rt-sync2c)
+    mirror.tree_seen[pk] = nil
     for k in pairs(mirror.gone_why) do if k:sub(1, #pk) == pk then mirror.gone_why[k] = nil end end
   end
   mirror.hold_colours()
@@ -6255,6 +6327,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
   list = sorted
   local done, refused, kept, kept_names, there, waiting, edited, gone_since = 0, 0, 0, {}, 0, 0, 0, 0
   local now_map -- (the tempo map in place, read once: opts.map_of below)
+  local tree_par -- (the studio's folders, read once: a track's below. rt-sync2d)
   local function one(p)
     local rev, h, evid = mirror.known(proj, p.oid)
     local name = p.t and p.t.name or ""
@@ -6278,11 +6351,23 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         -- from before ranks, put back with none, was taken for an older StudioSync's move on every other computer: three orders. rt-sync2c)
         local r = p.t.state.rank
         if tr and mirror.ranked(proj) then r = from and from ~= here and mirror.rank_at(proj, room_dir, p.oid, from) or mirror.rank_of(tr) or r end
-        if (from or here) ~= p.t.state.after or r ~= p.t.state.rank then
+        -- (and its folder the same way, in a room with ranks: the one the studio's tree gives it here, or the one a folder change taken back
+        -- left (`unfolder`, W.send). An older version's parent is the folder of the day it was made: Undo of a rename took the track out of
+        -- the folder it had been put in since, for everyone. rt-sync2d)
+        local par, depth, pk = p.t.state.parent, p.t.state.depth, nil
+        if tr and mirror.ranked(proj) then
+          local left = mirror.moved_since(room_dir, last, p.t.id, "unfolder")
+          tree_par = tree_par or select(2, mirror.rank_order(proj, room_dir))
+          local now = tree_par[p.oid] or ""
+          if left and left ~= now then par, p.unfolder = left, now
+          else par, depth = now, reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") end
+          pk = 1
+        end
+        if (from or here) ~= p.t.state.after or r ~= p.t.state.rank or par ~= p.t.state.parent or depth ~= p.t.state.depth or pk then
           local st = {}
           for k, v in pairs(p.t.state) do st[k] = v end
-          st.after, st.rank = from or here, r
-          p.t = setmetatable({ state = st }, { __index = p.t })
+          st.after, st.rank, st.parent, st.depth = from or here, r, par, depth
+          p.t = setmetatable({ state = st, pk = pk }, { __index = p.t })
         end
       end
     end
@@ -6347,7 +6432,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok and made then contents_owed(proj, room_dir, p.oid) end
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil, pk = p.t.obj == "track" and p.t.pk or nil, unfolder = p.unfolder,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act, tl = mirror.map_stamp(proj) }
         mirror.map_tag(proj, ev)
         local id = sync.post(cfg, song, room, ev)
@@ -6368,7 +6453,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok and made then contents_owed(proj, room_dir, p.oid) end
       if ok then
         mirror.hlc_seen(last and last.hlc)
-        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil,
+        local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil, pk = p.t.obj == "track" and p.t.pk or nil, unfolder = p.unfolder,
           undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act, tl = mirror.map_stamp(proj) } -- (act: a History page restore is one act, rt-history)
         mirror.map_tag(proj, ev)
         local id = sync.post(cfg, song, room, ev)
@@ -6459,10 +6544,25 @@ end
 -- on your computer alone, or rode out on the track's next change with no order list behind it. Now only what you changed after their
 -- track landed reads as yours. (A band track landing outside a receive pass, a heal or a put-back, keeps the old rule until the next look.)
 -- rt-converge
+-- Each track's folder as REAPER has it (parent oid and depth), the way W.order notes it: what the next look compares with, so only what
+-- this person changed since is theirs (rt-sync2d). -> oid -> "parent|depth"
+function mirror.tree_here(proj)
+  local out = {}
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local oid = not local_track(tr) and trk_oid(tr) or ""
+    if oid ~= "" then
+      local p = reaper.GetParentTrack(tr)
+      out[oid] = (p and trk_oid(p) or "") .. "|" .. tostring(tonumber(reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH")) or 0)
+    end
+  end
+  return out
+end
 function mirror.order_after_band(proj)
   local pk = tostring(proj)
   if not mirror.order_band[pk] or mirror.order_seen[pk] == nil then return end
   mirror.order_seen[pk], mirror.order_band[pk] = table.concat(mirrored_order(proj), ","), nil
+  mirror.tree_seen[pk] = mirror.tree_here(proj) -- (and the folders: a bandmate's track landing moves the depths around it. rt-sync2d)
 end
 function mirror.read_order(room_dir)
   local band, best = require("band"), nil
@@ -6519,7 +6619,8 @@ function mirror.keep_order(proj, cfg, song, room)
     local l = ranked and list_order(proj, room_dir, mirrored_order(proj))
     if ranked and table.concat(l or {}, ",") ~= table.concat(mirrored_order(proj), ",") then mirror.publish_order(proj, room_dir, cfg.user) end
   end
-  if ranked then want = mirror.rank_order(proj, room_dir, nil, true) -- (the studio's order from the tracks' versions' ranks: lib/rank.lua. rt-sync2c)
+  local par -- (the studio's folders: oid -> parent, rank.tree. rt-sync2d)
+  if ranked then want, par = mirror.rank_order(proj, room_dir, nil, true) -- (the studio's order from the tracks' versions' ranks and parents: lib/rank.lua. rt-sync2c, rt-sync2d)
   else
     want = list_order(proj, room_dir, here)
     if not want then -- (nobody's said yet: whoever's here first, and what they have then, is where everyone starts)
@@ -6528,7 +6629,12 @@ function mirror.keep_order(proj, cfg, song, room)
     end
   end
   if table.concat(want, ",") == table.concat(here, ",") then
-    mirror.rank_room(proj, cfg, song, room, here) -- (on the studio's order: what has no rank yet gets one. rt-sync2c)
+    -- (the folders too, from the tree: under StudioSync's own undo point, and not a change of this person's. rt-sync2d)
+    if par then
+      local n = mirror.tree_depths(proj, par, "StudioSync: the studio's folders")
+      if n > 0 then mirror.tree_seen[tostring(proj)] = mirror.tree_here(proj); reaper.TrackList_AdjustWindows(false) end
+    end
+    mirror.rank_room(proj, cfg, song, room, here, par) -- (on the studio's order: what has no rank yet gets one, and no folder yet one. rt-sync2c, rt-sync2d)
     list_too()
     return 0
   end
@@ -6551,9 +6657,11 @@ function mirror.keep_order(proj, cfg, song, room)
   end
   for i = reaper.CountSelectedTracks(proj) - 1, 0, -1 do reaper.SetTrackSelected(reaper.GetSelectedTrack(proj, i), false) end
   for _, x in ipairs(sel) do if reaper.ValidatePtr2(proj, x, "MediaTrack*") then reaper.SetTrackSelected(x, true) end end
+  if par then mirror.tree_depths(proj, par) end -- (and the folders from the tree, whatever REAPER did to depths moving them. rt-sync2d)
   reaper.PreventUIRefresh(-1)
   reaper.Undo_EndBlock2(proj, "StudioSync: the studio's track order", -1)
   mirror.order_seen[tostring(proj)] = table.concat(mirrored_order(proj), ",") -- (not a move of this person's: the next look mustn't send it)
+  mirror.tree_seen[tostring(proj)] = mirror.tree_here(proj)
   reaper.TrackList_AdjustWindows(false)
   list_too()
   return n
@@ -6581,36 +6689,79 @@ end
 local function held_place(proj, room_dir, tr, oid)
   local _, h, evid = mirror.known(proj, oid)
   local ev = (evid or "") ~= "" and (h or "") ~= "" and event_file(room_dir, evid) or nil
-  if not ev then return mirror.rank_of(tr), "" end
+  if not ev then return mirror.rank_of(tr), "", nil end
   local r = mirror.rank_from(room_dir, ev)
-  return r, not r and type(ev.state) == "table" and ev.state.after or ""
+  return r, not r and type(ev.state) == "table" and ev.state.after or "", ev
 end
 mirror.held_place = held_place
--- The studio's track order by rank, as oids. `except`: one left out (a track being placed). `fix`: the rank on each track is set to the one
--- its version gives it where they differ (mirror.keep_order, under its undo point).
-function mirror.rank_order(proj, room_dir, except, fix)
+-- A track version's folder, when it's meant: only one sent by a StudioSync with folders as parent + rank (`pk`) says it. An older
+-- StudioSync's `parent` is what its REAPER's depths said when it sent, and it never sent a track again when only that changed (a folder
+-- closed further down moves the tracks above into it without touching their own depth): stale. -> the parent oid ("" the top), or nil.
+-- rt-sync2d
+function mirror.parent_in(ev)
+  return type(ev) == "table" and ev.pk ~= nil and type(ev.state) == "table" and tostring(ev.state.parent or "") or nil
+end
+-- What rank.tree needs of a track version: { oid, rank, after, parent (meant, or nil), depth, newest (its clock, for a loop of parents) }.
+local function tree_entry(oid, r, after, ev, tr)
+  if not ev then -- (not sent yet: made here, where REAPER's folders are this person's)
+    local p = tr and reaper.GetParentTrack(tr)
+    return { oid = oid, rank = r, after = after, parent = p and trk_oid(p) or "", depth = tr and reaper.GetMediaTrackInfo_Value(tr, "I_FOLDERDEPTH") or 0, newest = "~" }
+  end
+  local ms, who = judge.order_parts(judge.order_of(ev))
+  return { oid = oid, rank = r, after = after, parent = mirror.parent_in(ev), depth = type(ev.state) == "table" and tonumber(ev.state.depth) or 0,
+    newest = string.format("%016d", math.floor(ms)) .. tostring(who) .. "|" .. tostring(ev.id) }
+end
+mirror.tree_entry = tree_entry
+-- The studio's track order: the folder tree (parent, then rank, depth first: rank.tree), as oids, and oid -> parent. `except`: one left out
+-- (a track being placed); `extra`: a tree_entry put in (a track landing). `fix`: the rank on each track is set to the one its version gives
+-- it where they differ (mirror.keep_order, under its undo point). rt-sync2c, rt-sync2d
+function mirror.rank_order(proj, room_dir, except, fix, extra)
   local list = {}
   for i = 0, reaper.CountTracks(proj) - 1 do
     local tr = reaper.GetTrack(proj, i)
     local oid = not local_track(tr) and trk_oid(tr) or ""
     if oid ~= "" and oid ~= except then
-      local r, after = held_place(proj, room_dir, tr, oid)
+      local r, after, ev = held_place(proj, room_dir, tr, oid)
       if fix and r ~= mirror.rank_of(tr) then reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r or "", true) end
-      list[#list + 1] = { oid = oid, rank = r, after = after }
+      list[#list + 1] = tree_entry(oid, r, after, ev, tr)
     end
   end
-  return rank.order(list)
+  if extra then list[#list + 1] = extra end
+  return rank.tree(list)
 end
--- The track that should sit right above `oid` (with rank r) among the tracks here: "" for the top. -> its oid.
-function mirror.rank_above(proj, room_dir, oid, r)
+-- The track that should sit right above a landing track (its tree_entry `e`) among the tracks here: "" for the top. -> its oid, and the
+-- tree with it in (order, parents).
+function mirror.rank_above(proj, room_dir, e)
+  local order, par = mirror.rank_order(proj, room_dir, e.oid, false, e)
   local prev = ""
-  for _, x in ipairs(mirror.rank_order(proj, room_dir, oid)) do -- (just above the first ranked track after it, as rank.order would place it)
-    local tr = mirror.find(proj, "track", x)
-    local rx = tr and held_place(proj, room_dir, tr, x)
-    if rx and (rank.less(r, rx) or r == rx and rank.less(oid, x)) then return prev end
-    prev = x
+  for _, x in ipairs(order) do if x == e.oid then break end; prev = x end
+  return prev, order, par
+end
+-- REAPER's depths from the tree (rank.depths), for the order the tracks have here: where the tree has another parent than REAPER reads.
+-- Only the tracks whose depth changes are touched. `par`: the tree's parents (mirror.rank_order). `undo`: the name of StudioSync's own undo point
+-- to make them under, when any. -> how many depths were set. rt-sync2d
+function mirror.tree_depths(proj, par, undo)
+  local here, tracks, now = {}, {}, {}
+  for i = 0, reaper.CountTracks(proj) - 1 do
+    local tr = reaper.GetTrack(proj, i)
+    local oid = not local_track(tr) and trk_oid(tr) or ""
+    if oid ~= "" and par[oid] ~= nil then
+      here[#here + 1], tracks[oid] = oid, tr
+      local p = reaper.GetParentTrack(tr)
+      now[oid] = p and trk_oid(p) or ""
+    end
   end
-  return prev
+  local want, got = rank.depths(here, par)
+  local differ = false
+  for _, oid in ipairs(here) do if got[oid] ~= now[oid] then differ = true; break end end
+  if not differ then return 0 end -- (the same folders, however REAPER spells them: an open folder at the end stays)
+  local n = 0
+  if undo then reaper.Undo_BeginBlock2(proj) end
+  for _, oid in ipairs(here) do
+    if reaper.GetMediaTrackInfo_Value(tracks[oid], "I_FOLDERDEPTH") ~= want[oid] then reaper.SetMediaTrackInfo_Value(tracks[oid], "I_FOLDERDEPTH", want[oid]); n = n + 1 end
+  end
+  if undo then reaper.Undo_EndBlock2(proj, undo, -1) end
+  return n
 end
 -- The rank a track's version gives it: its own, else the newest in what it builds on. A version from before ranks, or an Undo or Restore
 -- of one, keeps the place the track has (the judge's merge_track reads a missing rank the same way), on a track made anew as on one already
@@ -6641,7 +6792,10 @@ end
 -- StudioSync makes ("auto": no Undo step of anyone's), its version built on the one held. Where no track has a rank, by place (rank.spread:
 -- the same ranks whoever does it); else between the ranked tracks around it. A track whose maker never ranks it sits under the track its
 -- version names (rank.order). -> how many were ranked.
-function mirror.rank_room(proj, cfg, song, room, here)
+-- `par` (a room with ranks: the studio's folders, oid -> parent, rank.tree): a track whose version doesn't say its folder yet (no `pk`) gets
+-- it the same way, once, by its maker: the parent the tree gives it (from its version's depth, as REAPER's depths said it), so two
+-- computers doing it write the same, and its depth as REAPER now has it from that tree. rt-sync2d
+function mirror.rank_room(proj, cfg, song, room, here, par)
   local sync = require("sync")
   local room_dir = sync.room_dir(cfg, song, room)
   local ranks, any = {}, false
@@ -6651,48 +6805,81 @@ function mirror.rank_room(proj, cfg, song, room, here)
     any = any or ranks[i] ~= nil
   end
   local spread = not any and rank.spread(#here)
+  -- (the ranks in the tree's order, for an older StudioSync, which sorts by rank alone: where they aren't (a folder taken from one side of a
+  -- merge and the rank from the other, a loop of parents broken), the fewest tracks out of rank order get ranks between the tracks around
+  -- them, the same on every computer holding the same versions. rt-sync2d)
+  local unsorted, depth = {}, par and rank.depths(here, par) or {} -- (depth: the tree's, as rank.depths spells it, the same everywhere)
+  if par then
+    local list, sorted = {}, {}
+    for i, oid in ipairs(here) do if ranks[i] then list[#list + 1] = oid; sorted[#sorted + 1] = { oid = oid, rank = ranks[i] } end end
+    table.sort(sorted, function(x, y) if x.rank ~= y.rank then return rank.less(x.rank, y.rank) end; return rank.less(x.oid, y.oid) end)
+    for k, x in ipairs(sorted) do sorted[k] = x.oid end
+    unsorted = mirror.moved_tracks(sorted, list, {})
+    for i, oid in ipairs(here) do if unsorted[oid] then ranks[i] = nil end end
+  end
   local can, who = sync.authority(cfg, song, room)
-  local n, act = 0, nil
+  local n, nf, act, same_as, mine = 0, 0, nil, nil, nil
   for i, oid in ipairs(here) do
     local rev, h, evid = mirror.known(proj, oid)
-    local ev = not ranks[i] and rev and (h or "") ~= "" and (evid or "") ~= "" and event_file(room_dir, evid) or nil
-    -- (by its maker, when they may change it: one computer ranks each track, not every computer in the room at once)
-    if ev and not ev.gone and type(ev.state) == "table" and mirror.is_creator(oid, cfg.user)
-        and (can(cfg.user, ev.state.name or "") or sync.maker_may(oid, cfg.user, ev.state.name or "", nil, who.mode, nil, who.is_claimed)) then
+    local ev = rev and (h or "") ~= "" and (evid or "") ~= "" and event_file(room_dir, evid) or nil
+    -- (ranked, and its folder said as the tree has it, or not due. Said otherwise (a loop of parents broken, its folder deleted) or with
+    -- another depth than the tree gives it here (a folder change merged with another, landed in pieces): said again, so its version is the
+    -- tree's and an older StudioSync, which puts the versions' depths in place, has the same folders. rt-sync2d)
+    local tr0 = ev and (ranks[i] or unsorted[oid]) and par and par[oid] and mirror.find(proj, "track", oid)
+    local said = ev and mirror.parent_in(ev)
+    local off = tr0 and type(ev.state) == "table" and ((said ~= nil and said ~= par[oid]) or (tonumber(ev.state.depth) or 0) ~= depth[oid])
+    if unsorted[oid] then off = ev and type(ev.state) == "table" end
+    local due = off or tr0 and said == nil
+    if ev and (ranks[i] or unsorted[oid]) and not due then ev = nil end
+    -- (by its maker, when they may change it: one computer ranks each track, not every computer in the room at once. A version whose folder
+    -- or rank is off the tree (`off`) is said again by any computer that finds it so, whoever's claim stands, while it holds the same versions
+    -- as a caught-up bandmate (their status's mirror code is this one's): it is StudioSync's reading of the versions every computer holds, the
+    -- same version wherever it's made, and an older StudioSync shows the versions' depths and sorts by rank alone, so until then it showed
+    -- other folders (the mixed soak: 9 of 30 by makers alone, an older computer's own tracks). Not on a guess: a late joiner still catching up
+    -- found its half of the versions off and said them again, newer than the edits on their way, and they won the merges. rt-sync2d)
+    if off and same_as == nil then
+      same_as, mine = false, mirror.root(proj)
+      for _, st in ipairs(require("presence").peers(cfg, song, room)) do if st.mirror and st.pending == 0 and st.mirror == mine then same_as = true end end
+    end
+    if ev and not ev.gone and type(ev.state) == "table" and (off and same_as or mirror.is_creator(oid, cfg.user)
+        and (can(cfg.user, ev.state.name or "") or sync.maker_may(oid, cfg.user, ev.state.name or "", nil, who.mode, nil, who.is_claimed))) then
       local a, b
       if not spread then
         for k = i - 1, 1, -1 do if ranks[k] then a = ranks[k]; break end end
-        for k = i + 1, #here do if ranks[k] then b = ranks[k]; break end end
+        for k = i + 1, #here do if ranks[k] and not unsorted[here[k]] then b = ranks[k]; break end end
       end
-      local r = spread and spread[i] or rank.between(a, b)
+      local was = ranks[i]
+      local r = was or spread and spread[i] or rank.between(a, b)
       local tr = mirror.find(proj, "track", oid)
       if r and tr then
+        if was then nf = nf + 1 else n = n + 1 end
         ranks[i] = r
         local st = band_json(ev.state)
         st.rank = r
+        if par and par[oid] then st.parent, st.depth = par[oid], depth[oid] end
         reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r, true)
         act = act or new_act(cfg.user, reaper.time_precise())
         mirror.hlc_seen(ev.hlc)
         local post = { type = "obj", obj = "track", oid = oid, rev = mirror.next_rev(rev, false), base = rev, base_ev = evid, state = st, name = st.name,
-          hash = mirror.track_hash(st), hv = mirror.HV, act = act, auto = true, rk = 1 }
+          hash = mirror.track_hash(st), hv = mirror.HV, act = act, auto = true, rk = 1, pk = par and par[oid] and 1 or nil }
         local id = sync.post(cfg, song, room, post)
         remember(proj, oid, post.rev, post.hash, id, mirror.order_of(post))
-        n = n + 1
       end
     end
   end
   if n > 0 then require("band").log(string.format("%d track(s) given their place as a rank (StudioSync's track order, from this version on)", n)) end
-  return n
+  if nf > 0 then require("band").log(string.format("%d track(s) given their folder as a parent (StudioSync's folders, from this version on)", nf)) end
+  return n + nf
 end
 
 -- Did someone move this track between the version `upto` (an event id) and `x`, a newer version built on it? -> the track it sat under
 -- before the oldest such move ("" for the top), or nil when nobody moved it. A change sent with a move of yours carries `moved` (W.send);
 -- changes from before rt-edits carry none, so those moves aren't taken back. Walks what x builds on (a merged version: its winner), 200
 -- versions at most.
-function mirror.moved_since(room_dir, x, upto)
+function mirror.moved_since(room_dir, x, upto, field)
   local from, steps = nil, 0
   while type(x) == "table" and x.id ~= upto and steps < 200 do
-    if type(x.moved) == "string" then from = x.moved end
+    if type(x[field or "moved"]) == "string" then from = x[field or "moved"] end
     steps = steps + 1
     local next_id = mirror.split_merge(x.id) or x.base_ev
     x = next_id and event_file(room_dir, next_id) or nil
@@ -6728,7 +6915,10 @@ function mirror.order_heal(proj, cfg, song, room, now, idle)
   if (idle or 0) < mirror.ORDER_IDLE or sync.loading[pk] or reaper.EnumProjects(-1) ~= proj or reaper.GetPlayStateEx(proj) ~= 0 then return 0 end
   -- (a room with no ranks yet: ranked once this computer is on the studio's list, as soon as it can be. rt-sync2c)
   if mirror.order_kept[pk] and not mirror.ranked(proj) and sync.pending_events(proj, cfg, song, room) == 0 then mirror.rank_due(proj, cfg, song, room) end
-  if mirror.order_kept[pk] then
+  -- (in a room with ranks, the order and the folders are the tree's (lib/rank.lua) whatever has landed when: sorted again every APART_SECS
+  -- once quiet, which also puts back the folders of a put-back or refused folder change. rt-sync2d)
+  local tree_due = mirror.ranked(proj) and now - (mirror.order_kept[pk] or -math.huge) >= mirror.APART_SECS
+  if mirror.order_kept[pk] and not tree_due then
     if not mirror.order_apart_for(proj, now) or now - mirror.order_kept[pk] < mirror.APART_SECS or now - (mirror.order_landed[pk] or -math.huge) < mirror.ORDER_WAIT then return 0 end
   elseif sync.pending_events(proj, cfg, song, room) > 0 then return 0 end
   mirror.order_kept[pk] = now
@@ -6979,7 +7169,9 @@ function mirror.edited_here(proj, oid, h, last, media, local_mix)
     if not tr then return false end
     local t = mirror.track_state(proj, tr, local_mix)
     if mirror.track_hash(t, local_mix) == h then return false end
-    return not (last and type(last.state) == "table" and mirror.same_line(t, last.state, local_mix))
+    -- (a ranked track's folder here is the studio's tree's (mirror.tree_depths), not an edit: only the look tells a person's folder change.
+    -- Read as one, a Redo after the tree had put a restored folder right left that track "changed here since". rt-sync2d)
+    return not (last and type(last.state) == "table" and mirror.same_line(t, last.state, local_mix, mirror.rank_of(tr) ~= nil))
   end
   return false
 end

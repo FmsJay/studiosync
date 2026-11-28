@@ -154,7 +154,7 @@ do
   for _, n in ipairs({ "Drums", "Bass", "Gtr", "Keys" }) do assert(S.rank(A, n), n .. " has a rank on James's") end
   assert(rank.less(S.rank(A, "Drums"), S.rank(A, "Bass")) and rank.less(S.rank(A, "Gtr"), S.rank(A, "Keys")), "in the studio's order")
   local ranked = S.events(function(v) return v.obj == "track" and v.state and v.state.rank and v.auto end)
-  assert(#ranked == 4 and ranked[1].hv == 9, "four versions with their ranks, StudioSync's own (auto: no Undo step of James's), hash version 9: " .. #ranked)
+  assert(#ranked == 4 and ranked[1].hv >= 9, "four versions with their ranks, StudioSync's own (auto: no Undo step of James's), hash version 9 or later (10: rt-sync2d): " .. #ranked)
   S.recv(B)
   assert(S.rank(B, "Keys") == S.rank(A, "Keys") and S.names(B) == "Drums, Bass, Gtr, Keys", "the same ranks on Bee's")
   S.keep(B)

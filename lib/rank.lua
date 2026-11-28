@@ -96,4 +96,72 @@ function rank.order(tracks)
   return out
 end
 
+-- Folders as parent + rank (docs/rt/rt-sync2.md section 3, James's decision 4; docs/rt/rt-sync2d.md). Each track names the folder it is in
+-- (`parent`: an oid, or "" for the top level); REAPER's depths are worked out from the tree, never taken as the truth.
+-- The parent each track's depth gives it in `order` (REAPER's I_FOLDERDEPTH: 1 opens a folder, -n closes n after the track). -> oid -> parent.
+function rank.depth_parents(order, depth)
+  local par, stack = {}, {}
+  for _, oid in ipairs(order) do
+    par[oid] = stack[#stack] or ""
+    local d = tonumber(depth[oid]) or 0
+    if d == 1 then stack[#stack + 1] = oid elseif d < 0 then for _ = 1, -d do stack[#stack] = nil end end
+  end
+  return par
+end
+
+-- The studio's tree. tracks: { { oid, rank, after, parent, depth, newest } } in any order. `parent` nil: not said (a version from a StudioSync
+-- before parents, or one not given one yet): the parent its version's depth gives it in the rank order, as REAPER's depths have always said
+-- it, not the `parent` its version read: a track wasn't sent again when only that changed (a folder closed further down), so it's stale.
+-- A parent not here, or the track itself, is the top level. A loop of parents (two moves at once, each into the other) is broken by the
+-- track whose version is the newest (`newest`, compared byte by byte; then the larger oid) going to the top level: the move made last, the
+-- one that can't have seen the other. -> the order (a depth-first walk, each level in rank order), and oid -> parent.
+function rank.tree(tracks)
+  local flat = rank.order(tracks)
+  local by, depth = {}, {}
+  for _, t in ipairs(tracks) do by[t.oid] = t; depth[t.oid] = t.depth end
+  local inferred, par = rank.depth_parents(flat, depth), {}
+  for _, oid in ipairs(flat) do
+    local p = by[oid].parent
+    if p == nil then p = inferred[oid] end
+    par[oid] = (p ~= oid and by[p]) and p or ""
+  end
+  for _, oid in ipairs(flat) do -- (loops: a walk up that comes back round)
+    local seen, x = {}, oid
+    while x ~= "" and not seen[x] do seen[x] = true; x = par[x] end
+    if x ~= "" then
+      local y, last = par[x], x
+      while true do
+        local a, b = tostring(by[y].newest or ""), tostring(by[last].newest or "")
+        if a ~= b and rank.less(b, a) or a == b and rank.less(last, y) then last = y end
+        if y == x then break end
+        y = par[y]
+      end
+      par[last] = ""
+    end
+  end
+  local kids = { [""] = {} }
+  for _, oid in ipairs(flat) do kids[oid] = kids[oid] or {}; local p = par[oid]; kids[p] = kids[p] or {}; table.insert(kids[p], oid) end
+  local out = {}
+  local function walk(p) for _, x in ipairs(kids[p]) do out[#out + 1] = x; walk(x) end end
+  walk("")
+  return out, par
+end
+
+-- REAPER depths that make `order` hold the tree `par` (oid -> parent). Where the order can't (a track whose parent isn't open above it, as
+-- REAPER reads folders: the order not sorted yet), that track goes to the top level. -> oid -> depth, and oid -> the parent REAPER will read.
+function rank.depths(order, par)
+  local stack, level, got = {}, {}, {}
+  for i, oid in ipairs(order) do
+    local p = par[oid] or ""
+    local k = 0
+    for j = #stack, 1, -1 do if stack[j] == p then k = j; break end end
+    if p ~= "" and k == 0 and order[i - 1] == p then stack[#stack + 1] = p; k = #stack end -- (the track above opens its folder)
+    for j = #stack, k + 1, -1 do stack[j] = nil end
+    level[oid], got[oid] = #stack, stack[#stack] or ""
+  end
+  local out = {}
+  for i, oid in ipairs(order) do out[oid] = (order[i + 1] and level[order[i + 1]] or 0) - level[oid] end
+  return out, got
+end
+
 return rank
