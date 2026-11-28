@@ -127,6 +127,11 @@ band.log_error = function(where, err) ERRORS[#ERRORS + 1] = string.format("%.1f 
 -- (a modal box would hold that REAPER, Live sync and all, until answered: nothing in a sync path may open one. rt-fix9)
 rawset(reaper, "MB", function(text) ERRORS[#ERRORS + 1] = "a modal box opened: " .. tostring(text):sub(1, 120); return 7 end)
 local mirror, sync, direct, undo = require("mirror"), require("sync"), require("direct"), require("undo")
+-- (the studio's version floor already recorded, at this lib's level, as band.json is: the soak models a studio in its steady state. Each
+-- node writing its own floor file at its first look added three files to the network's draws and reshuffled every seed's faults. The
+-- raise itself is tests/test_0_61_rt_floor.lua's. docs/rt/rt-floor.md)
+add_dirs(ROOT .. "/_band/floor")
+fs[ROOT .. "/_band/floor/" .. tostring(sync.LEVEL or 0) .. "-soak.json"] = '{"level":' .. tostring(sync.LEVEL or 0) .. ',"since":"2026-01-01T00:00:00Z"}'
 local recall, claimask = require("recall"), require("claimask")
 mirror.JUDGE_SINCE = "19700101-000000" -- (the soak models life after the judge: no history of its is grandfathered from heal. rt-sync2b)
 direct.available = function() return true end -- (the extension is mandatory: its inbox is read)
