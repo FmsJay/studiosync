@@ -22,7 +22,7 @@
 local judge = { MAX_LEAVES = 64, MAX_STEPS = 400, MERGE_DAYS = 30 }
 -- Ids, clocks and names compared byte by byte, never with Lua's `<`: that follows the C library's collation, which a computer's locale can
 -- change ("B" before "a" in bytes, after it in most languages), and every computer has to order versions alike. rt-sync2e
-local less = require("rank").less
+local less, cmp = require("rank").less, require("rank").cmp
 judge.less = less
 
 -- (UTC by arithmetic: os.time works in local time, and a time zone offset taken once was an hour out across a daylight saving change. Review, 0.58.47)
@@ -197,13 +197,13 @@ end
 local function sorted_keys(t)
   local out = {}
   for k in pairs(t) do out[#out + 1] = k end
-  table.sort(out, less)
+  table.sort(out, cmp)
   return out
 end
 local function ids_of(list)
   local out = {}
   for i, x in ipairs(list) do out[i] = x.id end
-  table.sort(out, less)
+  table.sort(out, cmp)
   return out
 end
 
@@ -283,7 +283,7 @@ function judge.settled(vs, read, opt)
       else edits[#edits + 1] = x end
     end
   end
-  table.sort(s.beaten, less)
+  table.sort(s.beaten, cmp)
   if #edits == 0 then -- (every leaf a deletion, or beaten by one: gone)
     s.v = newest(#dels > 0 and dels or gones)
     s.gone = true

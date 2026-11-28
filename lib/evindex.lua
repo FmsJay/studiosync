@@ -3,7 +3,7 @@
 -- mirror.light_event, as History keeps events), and which items and parts each track holds, so a track coming back or going brings its
 -- contents to the judge in the same pass. sync.receive adds what it reads; heal and a track's contents load the rest once.
 local evindex = {}
-local less = require("rank").less -- (ids byte by byte: the same order on every computer. lib/judge.lua, rt-sync2e)
+local less, cmp = require("rank").less, require("rank").cmp -- (ids byte by byte: the same order on every computer. lib/judge.lua, rt-sync2e)
 local rooms = {} -- room dir -> { by = { oid -> { id -> version } }, on = { track oid -> { oid -> true } }, file = { file -> version } }
 
 local function room(dir)
@@ -64,7 +64,7 @@ end
 function evindex.oids(dir)
   local out = {}
   for oid in pairs(room(dir).by) do out[#out + 1] = oid end
-  table.sort(out, less)
+  table.sort(out, cmp)
   return out
 end
 -- What a track holds or has held: every item a version of which names it, and its parts (F/E/R/M with its id), sorted parts first. The whole

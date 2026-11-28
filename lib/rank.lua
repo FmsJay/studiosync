@@ -45,6 +45,7 @@ end
 -- else bytes_less. Everything that orders ids, clocks or names to decide something uses this (lib/judge.lua, rt-sync2e).
 rank.native = rank.native_ok()
 rank.less = rank.native and function(a, b) return a < b end or rank.bytes_less
+rank.cmp = not rank.native and rank.bytes_less or nil -- (for table.sort: nil sorts in C, the native order, where that is byte order)
 
 -- A rank strictly between a and b (nil a: the start, nil b: the end), as short as it can be. -> nil when a isn't before b, or the answer
 -- would pass MAX characters (rank.spread the tracks again).

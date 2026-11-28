@@ -489,7 +489,7 @@ function mirror.track_parts(chunk, oid_at)
     if u.tag == "MIDINOTENAMES" then -- (named notes only, in a fixed order: set through REAPER's API on the other side)
       local names, keys = mirror.note_names(table.concat(u.lines, "\n")), {}
       for k in pairs(names) do keys[#keys + 1] = k end
-      table.sort(keys, rank.less)
+      table.sort(keys, rank.cmp)
       if #keys > 0 then
         local b = { "<MIDINOTENAMES" }
         for _, k in ipairs(keys) do local q = names[k]:find('"') and "`" or '"'; b[#b + 1] = k .. " " .. q .. names[k] .. q end
@@ -7057,7 +7057,7 @@ function mirror.root(proj)
     local h, ev = v:match("^%d+|([^|]*)|([^|]*)")
     if h and h ~= "" then t[#t + 1] = oid:upper() .. "=" .. tostring(ev) end
   end
-  table.sort(t, rank.less)
+  table.sort(t, rank.cmp)
   local code = mirror.hash(table.concat(t, "\n"))
   mirror.root_memo[pk] = { cc = cc, n = mirror.rec_writes, at = now, code = code }
   return code

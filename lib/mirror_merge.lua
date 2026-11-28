@@ -3,7 +3,7 @@
 -- the pieces those merges cut it into (what the claim checks compare). Pure: no REAPER, no clock, no events. Moved from lib/mirror.lua as it
 -- was, which keeps mirror.merge_item = M.merge_item and so on, so its callers and tests are unchanged.
 local M = {}
-local less = require("rank").less -- (byte by byte: every computer builds a merge alike whatever its locale. lib/judge.lua, rt-sync2e)
+local less, cmp = require("rank").less, require("rank").cmp -- (byte by byte: every computer builds a merge alike whatever its locale. lib/judge.lua, rt-sync2e)
 
 -- What a chunk says differently on each platform, said one way for hashing (Mac, 0.34.3: every chain with a Cockos
 -- plug-in and every coloured item read "project differs" against Windows, for good). Windows' text is left as it
@@ -601,7 +601,7 @@ function M.merge_track(base, winner, loser)
       if c then both[#both + 1] = k end
     end
   end
-  table.sort(both, less)
+  table.sort(both, cmp)
   return out, both
 end
 
@@ -721,7 +721,7 @@ function M.pieces(kind, state)
       local s = n and string.format("%.10g", n) or tostring(v)
       if TRACK_TOGETHER[k] then lanes[#lanes + 1] = k .. "=" .. s else out[k] = s end
     end
-    table.sort(lanes, less)
+    table.sort(lanes, cmp)
     if #lanes > 0 then out["\0lanes"] = table.concat(lanes, ";") end
     return out
   end
