@@ -452,6 +452,7 @@ def cmd_run(args):
                         setup(ctx)
                     s(ctx)
                     row.update(result="pass")
+                    row.pop("why", None)  # (a retry that passed: the failed try's reason stays in "retried" only)
                 except Skip as e:
                     row.update(result="couldn't automate", why=str(e))
                 except Fail as e:

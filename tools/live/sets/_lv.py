@@ -7,7 +7,10 @@ SONG = "LV Checks"  # a song of this tool's own in Smiley Studios (made by `live
 
 def setup(ctx):
     """Before each scenario: the song open with Live sync running on every computer of the run, its tab in front on each (StudioSync's
-    Undo and the actions work on the tab in front), and nothing left over from an earlier scenario (this scenario's prefix)."""
+    Undo and the actions work on the tab in front), and nothing left over from an earlier run: every test track ("LV ..."), not only this
+    scenario's (a set run with a computer missing, or stopped half-way, left "LV late Gtr" and "LV c6twomovesaton Drums" in the song, and
+    later scenarios counted their re-sends as their own: sync2f on 0.63.0, rt-sync2g)."""
+    cleared = 0
     for w in ctx.on:
         if not ctx.raw(w, "return LV.out(P ~= nil)"):
             # (closed by an earlier scenario that stopped half-way: opened again, as the panel's Projects page does)
@@ -19,17 +22,23 @@ if was ~= P then reaper.SelectProjectInstance(P) end
 local left = LV.delete_prefix(P, %s)
 if left > 0 then LV.answer(P, "delete", true) end
 return LV.out({ live = LV.live_running(P), left = left,
-  quiet_audio = reaper.GetExtState("BandSync", "live audio mute") == "1" and reaper.GetExtState("BandSync", "live audio deaf") == "1" })""" % lua_str(ctx.prefix))
+  quiet_audio = reaper.GetExtState("BandSync", "live audio mute") == "1" and reaper.GetExtState("BandSync", "live audio deaf") == "1" })""" % lua_str(STALE))
         if r["left"]:
             from live import _answer_cleanup_ask
             _answer_cleanup_ask(ctx, w)
+            ctx.note(f"setup: {r['left']} test track(s) left from an earlier run deleted on {NAMES[w]}")
+            cleared += r["left"]
         if not r["quiet_audio"]:
             raise NoAnswer(f"{NAMES[w]}: live audio isn't muted and deafened: refusing to run (live.py song sets both)")
         if not r["live"]:
             raise NoAnswer(f"{NAMES[w]}: Live sync isn't running in {ctx.song}")
+    if cleared:  # (the leftovers' deletions gone out and landed before the scenario starts counting what goes out: f8's first try counted them)
+        ctx.quiet(timeout=120)
+        time.sleep(3)
 
 
 USER = {"d": "James", "l": "James-Laptop", "x": "LinuxBox"}
+STALE = "LV "  # every scenario's tracks start so (live.py's prefix): what setup clears
 
 
 def B(ctx):
@@ -118,8 +127,13 @@ def x_syncthing(paused):
 
 def peer_ips():
     """The desktop's and the laptop's Tailscale IPv4 addresses, asked at run time (they change)."""
-    d = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True).stdout.split()
-    l = subprocess.run(["ssh", "-o", "LogLevel=ERROR", "laptop", "tailscale ip -4"], capture_output=True, text=True).stdout.split()
+    d = subprocess.run(["tailscale", "ip", "-4"], capture_output=True, text=True, timeout=20).stdout.split()
+    # (a laptop that's off: ssh waited for its TCP timeout, minutes, in a scenario's step or clean-up. Without it, the desktop's alone. rt-sync2g)
+    try:
+        l = subprocess.run(["ssh", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=8", "-o", "BatchMode=yes", "laptop", "tailscale ip -4"],
+                           capture_output=True, text=True, timeout=20).stdout.split()
+    except subprocess.TimeoutExpired:
+        l = []
     return [ip for ip in (d[:1] + l[:1]) if ip.startswith("100.")]
 
 
