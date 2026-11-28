@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.65.3", FORMAT = 2, SECTION = "BandSync", json = json } -- (FORMAT 2: items' and automation's times in beats, lib/beats.lua; a StudioSync on 1 holds them as too new. rt-sync2f) (realtime branch builds: 0.59.49.N, above main's 0.59.49 and below its next release, as compare_versions reads every number. James, rt)
+local band = { VERSION = "0.65.4", FORMAT = 2, SECTION = "BandSync", json = json } -- (FORMAT 2: items' and automation's times in beats, lib/beats.lua; a StudioSync on 1 holds them as too new. rt-sync2f) (realtime branch builds: 0.59.49.N, above main's 0.59.49 and below its next release, as compare_versions reads every number. James, rt)
 -- (StudioSync's own json, whatever else this Lua holds: Scripts/__startup.lua runs other scripts in one Lua before Autostart, and the REAPER
 -- Daemon bridge's json was package.loaded.json there. Its null is plain nil, so every deletion failed sync.readable and the desktop's log
 -- said "skipped a change ... that StudioSync can't read" for each at every restart. Everything uses this one (band.json). rt-sync2j)
