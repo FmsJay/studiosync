@@ -422,7 +422,7 @@ end
 -- (measured, REAPER 7.83: no @init, even with a changed parameter). Which envelopes show, which is armed and how
 -- tall its lane is stay each person's own. A receive names its source track by oid (REAPER's chunk says its
 -- position); receives from a track that isn't mirrored (Real time, live views) stay as they are on each machine.
-mirror.HV = 12 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv), and raise sync.LEVEL with it (the studio's version floor). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c). 10: and its parent again, now the folder it is in for real (rt-sync2d). 11: and no depth when it has a rank (rt-floor). 12: an item's and automation's times in the units their timebase keeps (lib/beats.lua, rt-sync2f)
+mirror.HV = 13 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv), and raise sync.LEVEL with it (the studio's version floor). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c). 10: and its parent again, now the folder it is in for real (rt-sync2d). 11: and no depth when it has a rank (rt-floor). 12: an item's and automation's times in the units their timebase keeps (lib/beats.lua, rt-sync2f). 13: an item's snap offset and fades as quarter notes where they sit, not shares of its length (rt-sync2g)
 mirror.KIND = { T = "track", F = "fx", E = "env", R = "recv", M = "misc", I = "item" } -- (an oid's first letter)
 mirror.PART = { fx = "the plug-ins", env = "the automation", recv = "the sends", misc = "the groups, lock, input FX or note names" }
 mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x, R-x, M-x)
@@ -3733,6 +3733,9 @@ end
 function mirror.legacy_beats(ev)
   if type(ev) == "table" and (ev.obj == "item" or ev.obj == "env") and type(ev.state) == "string" and type(ev.tm) == "table" then
     ev.state = beats.upgrade(ev.obj, ev.state, ev.tm, ev.tb)
+  -- (an item in hash version 12's beats, its snap offset and fades shares of its length: read into today's form (beats.upgrade12). rt-sync2g)
+  elseif type(ev) == "table" and ev.obj == "item" and type(ev.state) == "string" and tonumber(ev.hv) == 12 then
+    ev.state = beats.upgrade12(ev.state)
   end
   return ev
 end
@@ -4930,7 +4933,9 @@ function W.one(w, o)
         or ev_env and mirror.hash(ev_env) == o.hash
         or o.kind == "fx" and type(ev.state) == "string" and mirror.fx_hash(ev.state) == o.hash
         -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
-        or ev_norm and mirror.rounded(ev_norm) == mirror.rounded(o.state)) then
+        or ev_norm and mirror.rounded(ev_norm) == mirror.rounded(o.state)
+        -- (or hash version 12's, its fades and snap offset read from shares of the length as near as they can be: beats.upgrade12. rt-sync2g)
+        or ev_norm and tonumber(ev.hv) == 12 and beats.near(ev_norm, o.state)) then
       remember(proj, o.oid, rev, o.hash, evid, kord); return
     end
     -- (an item with takes, the band's version from before which take plays travelled: its own author sends the pick it plays, so

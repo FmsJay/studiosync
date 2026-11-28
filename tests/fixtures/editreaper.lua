@@ -335,9 +335,15 @@ function E.new(path)
   function F.qn_of(t) return qn_in(tempo, F.base_bpm, t) end
   function F.time_of(q) return time_in(tempo, F.base_bpm, q) end
   local function g14(x) return string.format("%.14g", x) end
-  -- (REAPER's stretch of an item in beats (position, length, rate) whose length went `s` times as long: snap offset and fades with it, each
-  -- audio take's rate by the inverse; a MIDI take's notes are in beats already)
-  local function stretch(text, s)
+  -- (REAPER's stretch of an item in beats (position, length, rate) whose length went `s` times as long: each audio take's rate by the inverse
+  -- (a MIDI take's notes are in beats already); the snap offset, each fade and its auto length keep their beats where they sit, `move` (old
+  -- seconds to new): the snap offset and fade in from the item's start, the fade out from its end. Measured on REAPER 7.86, Windows and
+  -- Linux: an item at 10 s, 6 s long, a 90 bpm marker added at 10.5 s: fade in 1 -> 1.1667, its auto 0.8 -> 0.9, fade out 0.5 -> 0.6667, its
+  -- auto 0.4 -> 0.5333, snap offset 3 -> 3.8333, length 6 -> 7.8333 (a fraction of the length would give 1.2222 for the fade in). rt-sync2g)
+  local function stretch(text, s, move, p, l)
+    local np, ne = move(p), move(p + l)
+    local function from_start(v) v = tonumber(v) or 0; return v > 0 and move(p + v) - np or v end
+    local function from_end(v) v = tonumber(v) or 0; return v > 0 and ne - move(p + l - v) or v end
     local L, d, take = lines(text), 0, {}
     local takes = { take }
     for i, l in ipairs(L) do
@@ -347,10 +353,11 @@ function E.new(path)
         if k == "TAKE" then take = {}; takes[#takes + 1] = take
         elseif k == "SNAPOFFS" then
           local v, rest = st:match("^SNAPOFFS (%S+)(.*)$")
-          if v then L[i] = "SNAPOFFS " .. g14((tonumber(v) or 0) * s) .. rest end
+          if v then L[i] = "SNAPOFFS " .. g14(from_start(v)) .. rest end
         elseif k == "FADEIN" or k == "FADEOUT" then
           local sh, len, auto, rest = st:match("^%S+ (%S+) (%S+) (%S+)(.*)$")
-          if sh then L[i] = k .. " " .. sh .. " " .. g14((tonumber(len) or 0) * s) .. " " .. g14((tonumber(auto) or 0) * s) .. rest end
+          local f = k == "FADEIN" and from_start or from_end
+          if sh then L[i] = k .. " " .. sh .. " " .. g14(f(len)) .. " " .. g14(f(auto)) .. rest end
         elseif k == "PLAYRATE" then take.rate = i end
       end
       if st:find("^<SOURCE MIDI") then take.midi = true end
@@ -403,7 +410,7 @@ function E.new(path)
             local nl = move(p + l) - np
             if math.abs(nl - l) > 1e-12 then
               it.text = set_top(it.text, "LENGTH", g14(nl))
-              if l > 0 then it.text = stretch(it.text, nl / l) end
+              if l > 0 then it.text = stretch(it.text, nl / l, move, p, l) end
             end
           end
         end

@@ -9,12 +9,16 @@
 --   timebase                         | the canonical text
 --   0 time                           | the seconds as REAPER writes them (no mark)
 --   2 beats (position only)          | BANDBEAT 2; POSITION in quarter notes
---   1 beats (position, length, rate) | BANDBEAT 1; POSITION and LENGTH in quarter notes; SNAPOFFS and each FADEIN / FADEOUT length and auto
---                                    | length as fractions of the length; an audio take's PLAYRATE as source seconds per item (rate x length)
+--   1 beats (position, length, rate) | BANDBEAT 1; POSITION and LENGTH in quarter notes; SNAPOFFS and the FADEIN length and auto length as
+--                                    | quarter notes from the item's start, the FADEOUT's as quarter notes back from its end; an audio take's
+--                                    | PLAYRATE as source seconds per item (rate x length)
 --   automation, project timebase 1/2 | BANDBEAT <tb> first; each PT time, POOLEDENVINST / BANDAI place (and in 1 its length) and BANDAIPT
 --                                    | time in quarter notes. Automation with no times in it carries no mark.
 --
--- These are the quantities REAPER keeps when the map changes (rt-r4 check 1, mirror.retime's before this). Quarter notes to 1e-6, fractions
+-- These are the quantities REAPER keeps when the map changes (rt-r4 check 1, mirror.retime's before this). A fade or snap offset keeps its
+-- beats where it sits, not its share of the length: REAPER 7.86 (Windows and Linux) took an item at 10 s, 6 s long, with a 90 bpm marker
+-- added at 10.5 s, to 7.8333 s, its fade in 1 -> 1.1667 s (a share of the length would be 1.2222) and its fade out 0.5 -> 0.6667 s, and live
+-- check sync2f f4 saw the share form re-send such an item at every tempo change inside it (rt-sync2g). Quarter notes to 1e-6, the inner spans
 -- and rates to 1e-9: past that it's arithmetic, and a value moved for a map and back reads the same.
 -- Versions from before (no mark) are read once into this form where their map is known (`tm` on the version: beats.upgrade); one with no map
 -- stays as its seconds, which land as they are (the rule for versions from before rt-converge).
@@ -78,16 +82,19 @@ function beats.item(state, mode, qn)
   if not p then return state end
   local l = tonumber(state:match("\n%s*LENGTH ([^\n]+)")) or 0
   if mode == 1 and not (l > 0) then mode = 2 end -- (nothing to take fractions of)
-  local q0 = qn(p)
+  local q0, qe = qn(p), qn(p + l)
+  local function from_start(v) return f9(qn(p + v) - q0) end
+  local function from_end(v) return f9(qe - qn(p + l - v)) end
   local L, takes = item_walk(state, function(line, kw)
     if kw == "POSITION" then return "POSITION " .. q6(q0) end
     if mode ~= 1 then return line end
-    if kw == "LENGTH" then return "LENGTH " .. q6(qn(p + l) - q0) end
-    if kw == "SNAPOFFS" then local v = num_at(line, 1); return v and set_at(line, 1, f9(v / l)) or line end
+    if kw == "LENGTH" then return "LENGTH " .. q6(qe - q0) end
+    if kw == "SNAPOFFS" then local v = num_at(line, 1); return v and set_at(line, 1, from_start(v)) or line end
     if kw == "FADEIN" or kw == "FADEOUT" then
+      local span = kw == "FADEIN" and from_start or from_end
       local a, b = num_at(line, 2), num_at(line, 3)
-      if a then line = set_at(line, 2, f9(a / l)) end
-      if b then line = set_at(line, 3, f9(b / l)) end
+      if a then line = set_at(line, 2, span(a)) end
+      if b then line = set_at(line, 3, span(b)) end
     end
     return line
   end)
@@ -111,27 +118,37 @@ end
 -- item in two texts (the long soak's 5022 and 5024, a 0.01 s fade on a 2.2 s item). Whatever is written must read back as it travelled.)
 local function snapped(v, back)
   local r = math.floor(v * 1e6 + 0.5) / 1e6
-  if r ~= v and math.abs(v - r) <= 1e-6 and back(r) then return r end
+  if back and r ~= v and math.abs(v - r) <= 1e-6 and back(r) then return r end
   return v
 end
--- A canonical item text back in seconds with `time(quarter notes) -> seconds`. A text without the mark is returned as it is. Pure.
-function beats.item_seconds(state, time)
+-- A canonical item text back in seconds with `time(quarter notes) -> seconds`, and `qn` (its inverse; optional: without it no inner time is
+-- rounded to the microsecond). A text without the mark is returned as it is. Pure.
+function beats.item_seconds(state, time, qn)
   local mode = beats.mark(state)
   if not mode then return state end
   local q0 = tonumber(state:match("\n%s*POSITION ([^\n]+)")) or 0
+  local lq = tonumber(state:match("\n%s*LENGTH ([^\n]+)")) or 0
   local p = time(q0)
-  local l = mode == 1 and (time(q0 + (tonumber(state:match("\n%s*LENGTH ([^\n]+)")) or 0)) - p) or nil
+  local l = mode == 1 and (time(q0 + lq) - p) or nil
+  -- (REAPER holds the place and length as written: an inner span reads back from those)
+  local pr, lr = tonumber(g14(p)), l and tonumber(g14(l))
+  local function span_start(x)
+    return g14(snapped(time(q0 + x) - p, qn and function(r) return f9(qn(pr + tonumber(g14(r))) - qn(pr)) == f9(x) end))
+  end
+  local function span_end(x)
+    return g14(snapped(p + l - time(q0 + lq - x), qn and function(r) return f9(qn(pr + lr) - qn(pr + lr - tonumber(g14(r)))) == f9(x) end))
+  end
   local L, takes = item_walk(state, function(line, kw)
     if kw == "BANDBEAT" then return nil end
     if kw == "POSITION" then return "POSITION " .. g14(p) end
     if not l then return line end
     if kw == "LENGTH" then return "LENGTH " .. g14(l) end
-    local function frac(x) return g14(snapped(x * l, function(r) return f9(tonumber(g14(r)) / l) == f9(x) end)) end
-    if kw == "SNAPOFFS" then local v = num_at(line, 1); return v and set_at(line, 1, frac(v)) or line end
+    if kw == "SNAPOFFS" then local v = num_at(line, 1); return v and set_at(line, 1, span_start(v)) or line end
     if kw == "FADEIN" or kw == "FADEOUT" then
+      local span = kw == "FADEIN" and span_start or span_end
       local a, b = num_at(line, 2), num_at(line, 3)
-      if a then line = set_at(line, 2, frac(a)) end
-      if b then line = set_at(line, 3, frac(b)) end
+      if a then line = set_at(line, 2, span(a)) end
+      if b then line = set_at(line, 3, span(b)) end
     end
     return line
   end)
@@ -201,8 +218,8 @@ function beats.canon(kind, state, mode, qn)
   if ENV_LIKE[kind] then return beats.env(state, mode, qn) end
   return state
 end
-function beats.seconds(kind, state, time)
-  if kind == "item" then return beats.item_seconds(state, time) end
+function beats.seconds(kind, state, time, qn)
+  if kind == "item" then return beats.item_seconds(state, time, qn) end
   if ENV_LIKE[kind] then return beats.env_seconds(state, time) end
   return state
 end
@@ -266,10 +283,54 @@ function beats.upgrade(kind, state, map, mode)
   end
   return beats.canon(kind, state, tonumber(mode) or 0, function(t) return beats.map_qn(map, t) end)
 end
+-- An item's canonical text as hash version 12 had it (rt-sync2f: snap offset and fades as fractions of the length) in today's form, with no
+-- map: a fraction times the length in quarter notes is the span in quarter notes wherever the tempo holds over the item (where it changes
+-- inside the item, hash version 12's form can't say where, and this is the nearest). For history: hash version 12's changes are held by the
+-- floor (level 13), but a record (W.one's re-anchor), a merge's base and History still read them. Pure.
+function beats.upgrade12(state)
+  if beats.mark(state) ~= 1 then return state end
+  local lq = tonumber(state:match("\n%s*LENGTH ([^\n]+)")) or 0
+  local L = item_walk(state, function(line, kw)
+    if kw == "SNAPOFFS" then local v = num_at(line, 1); return v and set_at(line, 1, f9(v * lq)) or line end
+    if kw == "FADEIN" or kw == "FADEOUT" then
+      local a, b = num_at(line, 2), num_at(line, 3)
+      if a then line = set_at(line, 2, f9(a * lq)) end
+      if b then line = set_at(line, 3, f9(b * lq)) end
+    end
+    return line
+  end)
+  return join(L, state)
+end
+-- Two canonical item texts the same but for their inner spans (snap offset, fades) within 1e-7 quarter notes: what upgrade12 can promise, a
+-- share of the length at 1e-9 times a length of up to thousands of quarter notes. Pure.
+local INNER = { SNAPOFFS = true, FADEIN = true, FADEOUT = true }
+function beats.near(a, b)
+  if a == b then return true end
+  if type(a) ~= "string" or type(b) ~= "string" then return false end
+  local la, lb = {}, {}
+  for l in (a .. "\n"):gmatch("([^\n]*)\n") do la[#la + 1] = l end
+  for l in (b .. "\n"):gmatch("([^\n]*)\n") do lb[#lb + 1] = l end
+  if #la ~= #lb then return false end
+  for i, x in ipairs(la) do
+    local y = lb[i]
+    if x ~= y then
+      if not INNER[x:match("^%s*(%S+)") or ""] or x:match("^%s*(%S+)") ~= y:match("^%s*(%S+)") then return false end
+      local tx, ty = {}, {}
+      for t in x:gmatch("%S+") do tx[#tx + 1] = t end
+      for t in y:gmatch("%S+") do ty[#ty + 1] = t end
+      if #tx ~= #ty then return false end
+      for k = 2, #tx do
+        local u, v = tonumber(tx[k]), tonumber(ty[k])
+        if not (tx[k] == ty[k] or u and v and math.abs(u - v) <= 1e-7) then return false end
+      end
+    end
+  end
+  return true
+end
 -- A canonical text in seconds on `map`. Pure.
 function beats.seconds_on(kind, state, map)
   if not beats.mark(state) or not beats.map_ok(map) then return state end
-  return beats.seconds(kind, state, function(q) return beats.map_time(map, q) end)
+  return beats.seconds(kind, state, function(q) return beats.map_time(map, q) end, function(t) return beats.map_qn(map, t) end)
 end
 
 -- ---- REAPER side ------------------------------------------------------------------------------------------------------------------------
@@ -295,7 +356,7 @@ local function time_in(proj) return function(q) return reaper.TimeMap2_QNToTime(
 function beats.read_item(proj, state, tr, track_mode) return beats.item(state, beats.item_mode(proj, state, tr, track_mode), qn_in(proj)) end
 function beats.read_env(proj, state) return beats.env(state, beats.project_mode(proj), qn_in(proj)) end
 -- A travelling text in seconds on this project's map, for REAPER.
-function beats.write(proj, kind, state) return beats.seconds(kind, state, time_in(proj)) end
+function beats.write(proj, kind, state) return beats.seconds(kind, state, time_in(proj), qn_in(proj)) end
 -- Which map and timebases the canonical form is read under here, as one string (a look's reuse of what it read last time).
 function beats.map_key(proj)
   local f = { tostring(beats.project_mode(proj)) }

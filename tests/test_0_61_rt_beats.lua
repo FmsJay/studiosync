@@ -57,14 +57,15 @@ do
     "TAKE", 'NAME "m"', "SOFFS 0", "PLAYRATE 1.25 1 0 -1 0 0.0025", "<SOURCE MIDI", "HASDATA 1 960 QN", "E 0 90 3c 60", ">", ">", "BANDLANE 1", "" }, "\n")
   local c1 = beats.item(ITEM, 1, q120)
   assert(beats.mark(c1) == 1 and c1:find("^<ITEM\nBANDBEAT 1\nPOSITION 16.000000\n"), "mode 1: marked, its place on quarter note 16: " .. c1)
-  assert(num(c1, "LENGTH") == 4 and num(c1, "SNAPOFFS") == 0.25, "its length in quarter notes, its snap offset a quarter of the length")
-  assert(c1:find("\nFADEIN 1 0.125000000 0.050000000 1 0 0 0\n", 1, true) and c1:find("\nFADEOUT 2 0.250000000 0.000000000 1 0 0 0\n", 1, true), "fades and auto lengths as fractions")
+  assert(num(c1, "LENGTH") == 4 and num(c1, "SNAPOFFS") == 1, "its length in quarter notes, its snap offset in quarter notes from its start")
+  assert(c1:find("\nFADEIN 1 0.500000000 0.200000000 1 0 0 0\n", 1, true) and c1:find("\nFADEOUT 2 1.000000000 0.000000000 1 0 0 0\n", 1, true),
+    "fades and auto lengths in quarter notes (rt-sync2g: they were fractions of the length)")
   local rates = {}
   for v in c1:gmatch("\nPLAYRATE (%S+)") do rates[#rates + 1] = v end
   assert(rates[1] == "2.000000000" and rates[2] == "1.25", "an audio take's rate as source seconds (1 x 2 s), a MIDI take's as it is")
   assert(c1:find("\nSOFFS 1.5\n", 1, true) and c1:find("\nBANDLANE 1\n$"), "the source position and what follows the item stay")
   assert(beats.item(c1, 1, q120) == c1, "read twice: the same")
-  assert(beats.item_seconds(c1, t120) == ITEM, "and back to the seconds it came from, exactly")
+  assert(beats.item_seconds(c1, t120, q120) == ITEM, "and back to the seconds it came from, exactly")
   -- on another map (60 bpm): the same beats, twice as long, fades and snap with it, the audio take's rate halved
   local s60 = beats.item_seconds(c1, function(q) return q end)
   assert(num(s60, "POSITION") == 16 and num(s60, "LENGTH") == 4 and num(s60, "SNAPOFFS") == 1 and s60:find("\nFADEIN 1 0.5 0.2 1 0 0 0\n", 1, true), "on 60 bpm: " .. s60)
@@ -78,10 +79,10 @@ do
   -- reads back as it travelled, its fade not put back to a round 0.01 that reads as another fraction there (the long soak's 5022 and 5024)
   local c = beats.item("<ITEM\nPOSITION 0\nLENGTH 2.2\nFADEIN 1 0.01 0 1 0 0 0\nPLAYRATE 1 1 0 -1 0 0.0025\n>\n", 1, q120)
   for _, k in ipairs({ 1 + 2e-7, 1 - 2e-7, 1 + 9e-8, 1 }) do
-    local back = beats.item_seconds(c, function(q) return q / 2 * k end) -- (a map a hair off the sender's)
+    local back = beats.item_seconds(c, function(q) return q / 2 * k end, function(t) return t * 2 / k end) -- (a map a hair off the sender's)
     assert(beats.item(back, 1, function(t) return t * 2 / k end) == c, "read back as it travelled (" .. k .. "): " .. back)
   end
-  assert(beats.item_seconds(c, t120):find("\nFADEIN 1 0.01 0 1 0 0 0\n", 1, true), "and on the sender's own map, the round fade it had")
+  assert(beats.item_seconds(c, t120, q120):find("\nFADEIN 1 0.01 0 1 0 0 0\n", 1, true), "and on the sender's own map, the round fade it had")
   -- automation: points, automation items (place, and in 1 length) and their points; text with no times carries no mark
   local ENV = table.concat({ "<VOLENV2", "ACT 1 -1", "PT 0 1 0", "PT 4 0.5 0", "PT 6.5 1 0 0 1", "POOLEDENVINST 1 2 2 0 1 0 0 0 0 0 0 1", ">",
     "BANDAI VOLENV2 2 2 0.25 1.5 0 1 0 0 4", "BANDAIPT VOLENV2 0 2.5 0.3 0 0", "BANDFXEN 1", "" }, "\n")
@@ -210,15 +211,19 @@ local function pos(it) return tonumber(E.top_value(it.text, "POSITION")) end
 do
   local S, A, B, C = song("Beats2")
   for _, step in ipairs({
+    -- (inside Gtr (10 s to 16 s), its fade out after it: REAPER keeps each fade's beats where it sits, not its share of the length. Live check
+    -- sync2f f4 on 0.63.0: the fade out went 0.01 -> 0.0133 with the length 6 -> 7.33, and the item went out. rt-sync2g)
+    { "a 90 bpm marker at 12 s, inside Gtr", function(F) reaper.SetTempoTimeSigMarker(F.proj, -1, 12, -1, -1, 90, 4, 4, false) end },
     { "a 100 bpm marker at 6 s", function(F) reaper.SetTempoTimeSigMarker(F.proj, -1, 6, -1, -1, 100, 4, 4, false) end },
     { "the first tempo to 132", function(F) reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 132, 4, 4, false) end },
     { "a gradual tempo, 132 to 90 over 6 s", function(F) reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 132, 4, 4, true) end } }) do
     T = T + 5
     local since = os.date("!%Y-%m-%dT%H:%M:%SZ")
-    local bass, gtr = pos(S.item(A, "Bass")), pos(S.item(A, "Gtr"))
+    local bass, gtr = pos(S.item(A, "Bass")), pos(S.item(A, "Gtr")) + num(S.item(A, "Gtr").text, "LENGTH")
     A.claimed = {}
     S.edit(A, step[2])
-    assert(math.abs(pos(S.item(A, "Gtr")) - gtr) > 1e-3 and pos(S.item(A, "Bass")) == bass, step[1] .. ": REAPER moved Gtr (in beats), not Bass (set to time)")
+    assert(math.abs(pos(S.item(A, "Gtr")) + num(S.item(A, "Gtr").text, "LENGTH") - gtr) > 1e-3 and pos(S.item(A, "Bass")) == bass,
+      step[1] .. ": REAPER moved Gtr's end (in beats), not Bass (set to time)")
     local sent = obj_events(S, "James", since)
     assert(#sent == 0, step[1] .. ": nothing but the timeline goes out (" .. #sent .. ": " .. tostring(sent[1] and sent[1].oid) .. ")")
     assert(#S.events(function(v) return v.type == "timeline" and v.user == "James" and v.time >= since end) == 1, step[1] .. ": the timeline goes out")
@@ -269,8 +274,12 @@ local function crossing(name, tempo)
     assert(near(q0, 20, 1e-5) and near(q1 - q0, 15, 1e-5), name .. ", " .. c.user .. ": Gtr on quarter notes 20 to 35, as Bee made it (" .. q0 .. ", " .. q1 .. ")")
     local l = num(g.text, "LENGTH")
     local fade = tonumber(g.text:match("\nFADEIN %S+ (%S+)"))
-    assert(near(fade / l, 0.1, 1e-7) and near(num(g.text, "SNAPOFFS") / l, 1.25 / 7.5, 1e-7) and near(num(g.text, "PLAYRATE") * l, 0.8 * 7.5, 1e-6),
-      name .. ", " .. c.user .. ": its fade, snap offset and rate with its length (" .. fade .. ", " .. num(g.text, "SNAPOFFS") .. ", " .. num(g.text, "PLAYRATE") .. ")")
+    -- (the fade and snap offset keep their beats from the item's start, 1.5 and 2.5 quarter notes as Bee made them on 120 bpm: on a gradual
+    -- map that's not their share of the length. rt-sync2g)
+    local fq = reaper.TimeMap2_timeToQN(c.F.proj, pos(g) + fade) - q0
+    local sq = reaper.TimeMap2_timeToQN(c.F.proj, pos(g) + num(g.text, "SNAPOFFS")) - q0
+    assert(near(fq, 1.5, 1e-7) and near(sq, 2.5, 1e-7) and near(num(g.text, "PLAYRATE") * l, 0.8 * 7.5, 1e-6),
+      name .. ", " .. c.user .. ": its fade, snap offset in beats and rate with its length (" .. fq .. ", " .. sq .. ", " .. num(g.text, "PLAYRATE") .. ")")
     local pt
     for t, v in S.track(c, "Drums").body:gmatch("\nPT (%S+) (%S+)") do if tonumber(v) == 0.25 then pt = tonumber(t) end end
     assert(pt and near(reaper.TimeMap2_timeToQN(c.F.proj, pt), 20, 1e-5), name .. ", " .. c.user .. ": Bee's point on quarter note 20")
@@ -350,16 +359,16 @@ do
   print("rt-sync2f 5: updating sends nothing: hash version 11 records of format-1 versions are the band's, read in beats")
 end
 
--- ---- 6. format 2, hash version 12, level 12 --------------------------------------------------------------------------------------------------
+-- ---- 6. format 2, hash version 13 (rt-sync2g's fades), level 13 ------------------------------------------------------------------------------
 do
-  assert(band.FORMAT == 2 and mirror.HV == 12 and sync.LEVEL == 12 and sync.LEVEL >= mirror.HV, "format 2, hash version 12, level 12")
+  assert(band.FORMAT == 2 and mirror.HV == 13 and sync.LEVEL == 13 and sync.LEVEL >= mirror.HV, "format 2, hash version 13, level 13")
   local was = band.FORMAT
   band.FORMAT = 1 -- (a StudioSync from before: format 1)
   local too_new = sync.too_new({ type = "obj", obj = "item", format = 2, lv = 12 })
   band.FORMAT = was
   assert(too_new, "a StudioSync on format 1 holds a format-2 change as too new: it can't read beats")
   assert(not sync.too_new({ type = "obj", obj = "item", format = 1, time = "2026-11-25T10:00:00Z" }), "history in format 1 is read here")
-  print("rt-sync2f 6: format 2, hash version 12, level 12")
+  print("rt-sync2f 6: format 2, hash version 13, level 13")
 end
 
 -- ---- 7. History's preview puts a version in beats on the map then ---------------------------------------------------------------------------
@@ -397,6 +406,53 @@ do
   put({ id = "Cee-20261125-100400Z-00003-0003", base_ev = "Cee-20261125-100100Z-00002-0002", rev = 3, hlc = 6, unfolder = "T-F" })
   assert(mirror.moved_since(R, mirror.event_file(R, "Cee-20261125-100400Z-00003-0003"), "Cee-20261125-100100Z-00002-0002", "unfolder") == "T-F", "a move between is taken back, as before")
   print("rt-sync2f 8: a move is taken back only from the versions between (the long soak's 9033)")
+end
+
+-- ---- 9. (rt-sync2g) updating from hash version 12 sends nothing: its snap offset and fades as shares of the length read into beats -----------
+do
+  local S, A = song("Beats9")
+  T = T + 5
+  S.as(A)
+  -- (snap offsets and longer fades on every item first, as the band's: then James's records as hash version 12 left them)
+  S.edit(A, function(F)
+    for _, t in ipairs(F.tracks) do
+      for _, it in ipairs(t.items) do F.set_text(it, E.set_top(E.set_top(it.text, "SNAPOFFS", "0.5"), "FADEOUT", "1 0.25 0.05 1 0 0 0")) end
+    end
+  end)
+  local function v12(state) -- (today's form, uniform 120 bpm here, back in hash version 12's: spans in quarter notes as shares of the length)
+    local lq = num(state, "LENGTH")
+    return (state:gsub("\n(SNAPOFFS) (%S+)", function(k, v) return "\n" .. k .. " " .. beats.f9(tonumber(v) / lq) end)
+      :gsub("\n(FADE%u+) (%S+) (%S+) (%S+)", function(k, sh, a, b) return "\n" .. k .. " " .. sh .. " " .. beats.f9(tonumber(a) / lq) .. " " .. beats.f9(tonumber(b) / lq) end))
+  end
+  local ids, n = {}, 0
+  for _, o in ipairs(mirror.scan(A.F.proj, "James", S.media, false)) do
+    if o.kind == "item" and beats.mark(o.state) == 1 then
+      n = n + 1
+      local rev, _, evid = mirror.known(A.F.proj, o.oid)
+      local ev = files[S.dir .. "/events/" .. evid .. ".json"]
+      local old = v12(ev.state)
+      assert(old ~= ev.state, "(hash version 12's form differs: " .. o.oid .. ")")
+      local id = "James-20261126-100000Z-0000" .. n .. "-0001"
+      files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "item", oid = o.oid, track = o.track, name = ev.name, user = "James", rev = rev, hlc = 1,
+        time = "2026-11-26T10:00:00Z", id = id, format = 2, hv = 12, lv = 12, state = old, hash = mirror.hash(old) }
+      mirror.remember(A.F.proj, o.oid, rev, mirror.hash(old), id, mirror.order_of(files[S.dir .. "/events/" .. id .. ".json"]))
+      ids[#ids + 1] = o.oid
+    end
+  end
+  assert(n >= 3, "items in beats (position, length, rate) here (" .. n .. ")")
+  mirror.anchor_seen = {}
+  T = T + 5
+  local since = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  S.settle(A)
+  local sent = obj_events(S, "James", since)
+  assert(#sent == 0, "the first look after updating from hash version 12 sends nothing (" .. #sent .. ": " .. tostring(sent[1] and sent[1].oid) .. ")")
+  for _, oid in ipairs(ids) do
+    local _, h = mirror.known(A.F.proj, oid)
+    local here
+    for _, o in ipairs(mirror.scan(A.F.proj, "James", S.media, false)) do if o.oid == oid then here = o.hash end end
+    assert(h == here, "and records each as the band's, in today's form (" .. oid .. ")")
+  end
+  print("rt-sync2g 9: updating from hash version 12 sends nothing: its shares of the length read as quarter notes")
 end
 
 print("ok rt-sync2f")
