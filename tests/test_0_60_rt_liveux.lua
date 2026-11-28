@@ -55,6 +55,10 @@ assert(plan({ talkback = "Bo" }, false) == "false/Bo", "talkback without the ext
 assert(plan({ talkback = "Bo", recording = true }, true) == "false/Bo" and la.mic_label({ talkback = "Bo", recording = true }, true) == "Talkback off: recording",
   "talkback goes quiet while recording (a cue never lands on a take)")
 assert(plan({ talking = true, recording = true }, true) == "true/nil", "held talk to everyone while recording: as asked")
+-- (the start line says it's muted with Mute me on, not "sending input 2": rt-fixlive1)
+assert(la.on_words(1, 1, 64, false):find("^live audio on %(muted%)") and not la.on_words(1, 1, 64, false):find("sending", 1, true),
+  "muted: says so, not 'sending'")
+assert(la.on_words(1, 2, 64, true):find("live audio on: sending input 2-3 at 64 kbit/s", 1, true), "sending: as before")
 local g, m = la.hear_plan({ gain = 0.5 }, { volume = 2 })
 assert(g == 1 and m == false, "their level times the master")
 g, m = la.hear_plan(nil, { volume = 1, deaf = true })

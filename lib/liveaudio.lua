@@ -110,6 +110,13 @@ function liveaudio.me()
   return { mute = ext("mute") == "1", deaf = ext("deaf") == "1", ptt = ext("ptt") == "1", talking = talking, talkback = tb and tb_name or nil,
     volume = math.max(0, math.min(4, tonumber(ext("volume")) or 1)), recording = (math.floor(tonumber(reaper.GetPlayState()) or 0) & 4) == 4 }
 end
+-- What the log says as live audio starts: "sending input N" only while it sends; with Mute me (or Deafen, push-to-talk) on, that it's muted.
+-- It said "sending" with Mute me on, which alarmed (rt-live "also seen", rt-fixlive1). Pure.
+function liveaudio.on_words(first, nch, kbps, sending)
+  local input = string.format("input %d%s at %d kbit/s", first + 1, nch > 1 and ("-" .. (first + nch)) or "", kbps)
+  if not sending then return "live audio on (muted): nothing of yours goes to the others until you unmute (" .. input .. "); theirs comes out of your first output pair" end
+  return "live audio on: sending " .. input .. " to the others here; theirs comes out of your first output pair"
+end
 -- What this computer sends: on, and to whom only (a bandmate name: talkback), or nil for everyone. Held talk (and talkback) wins over Mute
 -- and Deafen for as long as it's held: holding is asking. Talkback without the extension's per-bandmate send sends nothing rather than
 -- reaching everyone, and talkback goes quiet while recording (James's pick, docs/realtime-roadmap.md: a cue never lands on a take). Pure.
@@ -878,10 +885,7 @@ function liveaudio.tick(cfg, b, proj)
       S.play_asked, S.hub_asked = nil, nil -- (a new engine: Play and the hub's mix asked for again)
       liveaudio.update_sources(proj)
       liveaudio.apply() -- (at once: a muted computer never sends its first half second)
-      if first ~= liveaudio.SILENT then
-        band.log(string.format("live audio on: sending input %d%s at %d kbit/s to the others here; theirs comes out of your first output pair", first + 1,
-          nch > 1 and ("-" .. (first + nch)) or "", kbps))
-      end
+      if first ~= liveaudio.SILENT then band.log(liveaudio.on_words(first, nch, kbps, liveaudio.send_plan(liveaudio.me(), true))) end
       if ext("first said") ~= "1" and not S.first_logged then
         S.first_logged = true
         band.log("live audio is on for this studio: the others here hear your input while Live sync runs. Mute me and Deafen are in the panel's top bar; headphones stop echo")
