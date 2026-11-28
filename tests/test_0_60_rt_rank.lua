@@ -14,7 +14,7 @@
 -- 10. A room with ranks goes by them, not by a newer order list (rt-floor: the list is no longer rewritten to match the ranks for old
 --     computers), and an older StudioSync's move
 --     merged with a new edit keeps its place.
--- 11. The order comes from the versions held, not from a rank left on a track (a version recorded without being put in place: sync.set_back).
+-- 11. The order comes from the versions held, not from a rank left on a track (a version recorded without being put in place, as sync.set_back did).
 -- 12. A receive pass that lands a track sorts the whole order by rank (sync.receive), not only the track that landed.
 -- 13. A bandmate's move waits while this computer plays or records, and lands at the stop (rt-live bug 4).
 -- 14. An empty room's first tracks go out with their rank and folder the first time: no switch-over versions or lines (rt-live bug 6).
@@ -354,11 +354,11 @@ do
   T = T + 5
   S.move(A, "Keys", 0) -- (James: Keys to the top)
   local mv = S.events(function(v) return v.obj == "track" and v.name == "Keys" and v.moved ~= nil end)[1]
-  -- Bee's computer records James's version without putting it in place, as a claimer's answer to a rename does (sync.set_back): the rank
-  -- left on her Keys is the old one
+  -- Bee's computer records James's version without putting it in place, as a claimer's answer to a rename did (sync.set_back, gone since
+  -- rt-sync2h; the record alone, as it wrote it): the rank left on her Keys is the old one
   S.as(B)
-  mirror.set_back(B.F.proj, mv, "(test)")
-  reaper.SetProjExtState(B.F.proj, sync.APPLIED, mv.id, "1") -- (and marks it done, as sync.receive's set_back does)
+  mirror.remember(B.F.proj, mv.oid, mv.rev or 0, mv.hash or "set back", mv.id, mirror.order_of(mv))
+  reaper.SetProjExtState(B.F.proj, sync.APPLIED, mv.id, "1") -- (and marks it done, as sync.receive's set_back did)
   S.keep(B); S.keep(A)
   assert(S.names(B) == "Keys, Drums, Bass, Gtr" and S.names(A) == S.names(B), "Bee's goes by the version she holds: " .. S.names(B) .. " / " .. S.names(A))
   assert(S.rank(B, "Keys") == mv.state.rank, "and the rank on her Keys is that version's again")

@@ -3376,14 +3376,13 @@ mirror.missing_since = {} -- room dir \0 oid -> when its answer was first incomp
 local READABLE = { track = "table" }
 -- The judge's answer for object `oid` here: from its versions in the index (lib/evindex.lua), the ones given (`news`: what a receive pass read
 -- for it) and what this computer holds (a merge's sides too; a version held that can't be read here stands in from its record, so nothing
--- older is put back over it, as `wins` did). Never a change too new for this version (sync.too_new), nor one in `skip` (ids refused here for
--- now, or waiting for their tempo map: sync.receive). `proj` nil: nothing held. -> judge.settled's answer, with s.oid and s.held = { rev, h,
+-- older is put back over it, as `wins` did). Never a change too new for this version (sync.too_new). `proj` nil: nothing held. -> judge.settled's answer, with s.oid and s.held = { rev, h,
 -- id, order } from the record. Replaces wins, merge_for (and its first_seen), gone_race, beaten_by and lands_over: arrival order and how long
 -- anything took decide nothing. Cost: the object's versions sorted, and a walk per leaf pair and per deletion.
-function mirror.judge(proj, oid, room_dir, news, skip)
+function mirror.judge(proj, oid, room_dir, news)
   local too_new, vs, seen = require("sync").too_new, {}, {}
   local function add(v)
-    if type(v) == "table" and type(v.id) == "string" and not seen[v.id] and not (skip and skip[v.id]) and v.oid == oid and type(v.rev) == "number"
+    if type(v) == "table" and type(v.id) == "string" and not seen[v.id] and v.oid == oid and type(v.rev) == "number"
         and not (v.type ~= nil and too_new(v)) then
       seen[v.id] = true
       vs[#vs + 1] = v
@@ -3401,7 +3400,7 @@ function mirror.judge(proj, oid, room_dir, news, skip)
       if w then flat(w, depth + 1); flat(l, depth + 1); return end
       local v = mirror.event_file(room_dir, id)
       if v then add(v)
-      elseif id == kev and not (skip and skip[id]) then -- (its file not readable here: what it was, from the record)
+      elseif id == kev then -- (its file not readable here: what it was, from the record)
         -- (held as absent here, a deletion (or gone with its track): it counts as one, so an edit made without seeing it doesn't bring the
         -- thing back while its file is on its way (the soak's seed 8059: heal undid a deletion that had come over the link))
         local ms, who = judge.order_parts(kord)
@@ -4632,7 +4631,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   if o.kind == "track" and opts.local_mix then ev.state, ev.local_mix = mirror.band_faders(state, last and not last.gone and last.state), true end
   if o.kind == "track" and w.moved_from then ev.moved = w.moved_from[o.oid] end -- (the track it sat under before you moved it: mirror.moved_since)
   if o.kind == "track" then ev.rk = 1 end -- (its rank is meant: mirror.rank_in. rt-sync2c)
-  if w.unasked[o.oid] then ev.unasked = true end -- (sent past an auto-claim whose claimer couldn't be asked: W.refuse, sync.receive's soft_ok)
+  if w.unasked[o.oid] then ev.unasked = true end -- (sent past an auto-claim whose claimer couldn't be asked: W.refuse; the claimer's log says so, sync.receive)
   if ev.moved ~= nil then w.order_out = true end -- (a move of yours goes out: the studio's order list follows, after this look's sends)
   if o.kind == "item" and type(state) == "string" and state:find("BANDLANE", 1, true) then -- (a comp piece's source lane: mirror.comp_from)
     local others, t = {}, by_oid[o.track]
@@ -4655,8 +4654,7 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     end
   end
   if mirror.auto[tostring(proj) .. o.oid] then ev.auto, mirror.auto[tostring(proj) .. o.oid] = true, nil end
-  local sb = mirror.set_backs[rk]
-  ev.note = credit[o.oid] or (sb and sb.id == evid and sb.note) or bus_note(o, name, last) -- (said on every machine as it lands: sync.receive)
+  ev.note = credit[o.oid] or bus_note(o, name, last) -- (said on every machine as it lands: sync.receive)
   if ev.note and not credit[o.oid] then band.log(ev.note) end
   if o.kind == "fx" then
     -- (samples, IRs, models it loads; and the presets REAPER shows on it from your own preset folder, looked through, never in the event:
@@ -4724,14 +4722,6 @@ function mirror.refusal_words(mode, where, me, driver, claimer, to)
   end
   if mode == "admins" then return "only admins, and whoever an admin lets edit here, change what nobody has claimed in this room" end
   return "it isn't yours to change right now"
-end
--- A bandmate's change to a track that wasn't theirs to make, answered instead of applied (sync.receive: a rename of a track you've claimed,
--- from a StudioSync that didn't ask). It's noted as the band's newest version without being put in place, so the next look finds the track
--- differs from it and sends it as it is here, built on theirs: it goes back on every computer. `note`: said in everyone's log as it lands.
-mirror.set_backs = mirror.set_backs or {} -- tostring(proj) .. oid -> { id = the answered change, note }
-function mirror.set_back(proj, ev, note)
-  remember(proj, ev.oid, ev.rev or 0, ev.hash or "set back", ev.id, mirror.order_of(ev))
-  mirror.set_backs[tostring(proj) .. ev.oid] = { id = ev.id, note = note }
 end
 function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
@@ -5097,8 +5087,7 @@ function W.one(w, o)
   -- (a wet take StudioSync just made: whoever is to print it may send it, whatever the claims: prints.printer)
   local auto = o.kind == "item" and mirror.auto[tostring(proj) .. o.oid]
   local ok_now = auto or allowed(o, name, o.pos) or (o.kind == "track" and last ~= nil and allowed(o, last.name or "", last.pos))
-  -- (or it answers a change that wasn't its sender's to make: mirror.set_back. A claim on the name that change gave it doesn't stand in front)
-  local ok_before = auto or not last or last.gone or allowed(o, last.name or "", last.pos) or (mirror.set_backs[rk] or {}).id == evid
+  local ok_before = auto or not last or last.gone or allowed(o, last.name or "", last.pos)
   if ok_now and ok_before then return W.send(w, o, rk, rev, evid, kord, last, name, knobs) end
   -- (held back only by a bandmate's auto-claim, Claims mode: an item, automation or track settings that merge with their change go out, and
   -- only an edit to the same note, point or setting asks them. Asked, two people adding notes to one part waited 30 s and were put back:
@@ -6543,7 +6532,7 @@ end
 -- The studio's track order by rank, as oids. `except`: one left out (a track being placed).
 -- A track's place as the version held here gives it (mirror.rank_from): its rank, or none and the track its version sits under. A track
 -- with no version yet (made here, not sent): the rank on it. The order is worked out from the versions every computer holds, not from what
--- happens to be on each track: a claimer's answer to a rename (sync.set_back) records the bandmate's version without putting it in place, and
+-- happens to be on each track: a claimer's answer to a rename (sync.set_back, gone since rt-sync2h) recorded the bandmate's version without putting it in place, and
 -- the rank left on the track kept that computer in another order for good (the soak's 15005). rt-sync2c
 local function held_place(proj, room_dir, tr, oid)
   local _, h, evid = mirror.known(proj, oid)

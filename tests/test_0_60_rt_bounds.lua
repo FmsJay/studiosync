@@ -1,5 +1,5 @@
 -- Tables that grew all session, bounded (James, rt): streams' once-per-file tables drop entries over an hour old (a streamed take only once its
--- stream is gone too), and sync's refused_at forgets an hour-old refusal. Anything recent is kept as it was. (Live sync's seen_ev and fired:
+-- stream is gone too). Anything recent is kept as it was. (Live sync's seen_ev and fired:
 -- in the script, checked in REAPER.)
 package.path = "lib/?.lua;" .. package.path
 local clock = 1000
@@ -23,14 +23,8 @@ local asked = { k = { at = clock - 4000, tries = 3 }, j = { at = clock - 5, trie
 streams.forget_old(asked, clock, function(a) return a.at end)
 assert(asked.k == nil and asked.j.tries == 1, "catch-up asks: an hour-old one forgotten, a recent one's count kept")
 
--- ---- sync.refused_since ----
-local sync = require("sync")
-local first = sync.refused_since("ev1")
-clock = clock + 30
-assert(sync.refused_since("ev1") == first, "the first time it was refused is kept")
-clock = clock + 3700
-local again = sync.refused_since("ev2") -- (any call sweeps, at most every 10 minutes)
-assert(again == clock and sync.refused_since("ev1") == clock, "an hour on, ev1's refusal was forgotten: its minute starts again")
+-- (sync.refused_since, the refusal minute's table, went with the refusal itself: nothing is refused on receive since rt-sync2h)
+assert(require("sync").refused_since == nil, "no refusal minute on receive")
 
 -- ---- the stream trace rolls at TRACE_MAX, one older copy kept ----
 local log = (os.getenv("TEMP") or os.getenv("TMPDIR") or "/tmp"):gsub("\\", "/") .. "/studiosync_trace_test.log" -- (os.tmpname is the drive's root on Windows)

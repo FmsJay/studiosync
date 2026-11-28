@@ -589,7 +589,6 @@ end
 -- would look alike, so a file is trusted from cache only once it was read CLAIMS_SETTLE s after its time. The listing is band.listing's
 -- (a fraction of a second, longer while the folder's time stands still). The tables are shared: never change them. (James, rt)
 sync.CLAIMS_SETTLE = 60
-sync.track_claims = {} -- "<song>/<room>" -> lower track name -> { user, time, name, auto }, as of the last sync.authority for that room
 local claims_cache = {} -- dir -> f -> { key, c, settled }
 function sync.claims_files(dir)
   local stat = reaper and reaper.JS_File_Stat
@@ -694,7 +693,9 @@ function sync.authority(cfg, song, room, s)
   -- edit held that edit back a minute. The soak's bug 3. A claim that was there then and is released since is no longer known, and doesn't
   -- refuse either. sync.receive passes it; a look judges this person's own edit by the claims now. rt-converge)
   -- (nor one made in the same second: the times are whole seconds from two clocks, and a claim that young hadn't reached the change's
-  -- maker. Two edits 20 ms apart, each auto-claiming, held each other's change back a minute: P1-1 and P1-2's "61 s", rt-r2)
+  -- maker. Two edits 20 ms apart, each auto-claiming, held each other's change back a minute: P1-1 and P1-2's "61 s", rt-r2. Since nothing
+  -- is refused on receive (rt-sync2h), `at` only decides sync.receive's "which you've claimed ... didn't ask" word, and these keep it from
+  -- naming a change made before the claim could reach its maker)
   local function then_(c, at) return c and not (at and type(c.time) == "string" and c.time >= at) and c or nil end
   local function in_time(pos, at)
     for _, t in ipairs(pos and times or {}) do if pos >= t.from and pos < t.to and then_(t, at) then return t end end
@@ -723,7 +724,6 @@ function sync.authority(cfg, song, room, s)
   local granted = mode == "admins" and require("grants").list(cfg, song, room) or {} -- (Admins only: who an admin let edit in this room)
   sync.owner_of = owner -- for messages ("... is James's to change")
   sync.is_claimed = claimed -- (sync.maker_may)
-  sync.track_claims[song .. "/" .. room] = tracks -- (who holds each track name and since when, per room: sync.receive's rename judgement)
   return function(user, track, pos, take, drv, at) -- drv: the driver to judge by (an event's own time), else today's; at: that time, for claims
       if mode == "driver" then return user == (drv or driver) end
       if mode == "everyone" then return true end -- (Open: claims off)
@@ -1244,7 +1244,6 @@ end
 function sync.note_item(proj, ev)
   return (ev.take and band.find_take(proj, ev.take)) or (type(ev.item) == "string" and require("mirror").find(proj, "item", ev.item)) or nil
 end
-sync.RENAME_BACK = 600 -- seconds within which a rename of your claimed track, from a StudioSync that didn't ask, is put back (sync.receive)
 sync.CUE_OLD = 120 -- seconds after which a start or stop that arrives is only history (sync.receive)
 -- Whether a change that isn't an object's changes this project: a play or stop together, a driver change and a note on nothing here don't.
 -- (only then an arrival's undo block: opened for every bandmate's event, it closed empty on top of REAPER's list and sent Ctrl+Z StudioSync's
@@ -1905,17 +1904,6 @@ function sync.floor_words(f)
     .. "others until you update StudioSync. You still get their changes.", band.VERSION, sync.LEVEL, tostring(f.level))
 end
 sync.version_looked = {} -- proj -> true: its skipped changes were looked at for this version
--- A bandmate's deletion `ev`, held back here only by this computer's own auto-claim on its track: made before that claim? Then its maker couldn't
--- ask (the claim didn't exist), and the claim came from an edit made without seeing the deletion (the track is still here): the deletion lands
--- now, as a deletion beats an edit made without seeing it (the judge's deletion rule, lib/judge.lua). Refused, it waited the minute a refused change waits: LinuxBox
--- moved an item on XT R1 take with Live sync off, auto-claimed the track as the move went out at the start, and James's deletion, in the link's
--- inbox since before, applied 61 s later (rt-linkmove round 5 C, rt-r1). A deletion made after the claim waits its minute, as before. rt-fix6a
-function sync.gone_before_claim(cfg, song, room, ev)
-  local c = sync.my_claims(cfg, song, room)
-  local k = c and type(ev.name) == "string" and ev.name ~= "" and sync.claim_key("tracks", base_name(ev.name))
-  local since = k and type(c.since) == "table" and c.since[k]
-  return type(since) == "string" and type(c.auto) == "table" and c.auto[k] ~= nil and type(ev.time) == "string" and ev.time < since
-end
 function sync.receive(proj, cfg, song, room, can)
   local pk = tostring(proj)
   -- (changes skipped for good (unreadable, failed five times) are tried once more when StudioSync's version changes: a newer version may read
@@ -2027,101 +2015,34 @@ function sync.receive(proj, cfg, song, room, can)
       break
     end
   end
-  -- (held back only by someone else's auto-claim, Claims mode: a change that merges with the claimer's own to it lands at once, as its sender
-  -- sent it; one to the same note, point or setting is refused as before. sync.soft: Live sync's, for its own room. rt-merge)
-  local function soft_ok(ev)
-    local m = require("mirror")
-    local who = sync.soft and sync.soft.room == room and sync.soft.fn(ev.name or "", ev.pos, ev.user)
-    if not who then return false end
-    -- (its sender couldn't ask the claimer: the link doesn't reach them, and an auto-claim doesn't hold then (claimask.unreachable). It went
-    -- out saying so, and lands here as it went out there: held back for the auto-claim, the computers the link does reach got it a minute
-    -- or two after the sender said "your edit went out" (rt-r3). A sender's word, like every claim check: a lasting claim still refuses,
-    -- and a refused change lands after its minute anyway. rt-converge)
-    if ev.unasked == true then return true end
-    -- (an Undo or Redo of the sender's own change: what it's built on is theirs, so nothing of the claimer's is in it. Their sends it as the edit
-    -- went, mirror.revert; a deletion among them, which isn't something to merge. rt-edits)
-    if (ev.undoes or ev.redoes) and ev.base_ev then
-      local built_on = m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)
-      if built_on and built_on.user == ev.user then return true end
-    end
-    if ev.gone and who == cfg.user then return sync.gone_before_claim(cfg, song, room, ev) end
-    if not m.mergeable(ev) then return false end
-    -- (from the version its maker's computer held, the change's own base, as its sender judged it: not what this computer holds)
-    if not ev.base_ev then return true end -- (new: nothing of the claimer's is in it)
-    local from = m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)
-    return from ~= nil and not m.clashes(sync.room_dir(cfg, song, room), ev.obj, ev.state, from, who)
-  end
-  -- (a track change that renames the track here is judged by the name it has here too, which is the name its claim is on. By its new name
-  -- nobody has claimed it, so only the sender judged a rename, and a StudioSync from before 0.59.49.74 renamed a bandmate's claimed track
-  -- for everyone. -> refused, and the name it has here when that's why. rt-edits, backlog 1)
-  -- (two holders: claims go by name, so once a track is renamed two names mean it, and two people can each hold it by one. Each computer
-  -- then judged the other's version "a rename of my claimed track" and answered it (set_back below), back and forth for good, an event file
-  -- each way every 2 s: the soak's bug 2. Two things end it, the same on every computer:
-  --   only a change that itself renames is a rename: its name against the version it was built on, not against the name here. A fader moved
-  --   by someone who hadn't the rename yet names the old name and renames nothing: it waits its minute if it looks refused, and merges.
-  --   of two claims on one track, by its old name and its new, the newer holds it, as for two claims on one name (sync.authority): a rename
-  --   by whoever's claim on the new name is the newer of the two stands, and isn't answered. rt-converge)
-  local function renames(ev) -- -> false when the version it was built on has the same name; true when another, or it can't be read (as before)
-    local m = require("mirror")
-    local from = type(ev.base_ev) == "string" and m.event_file(sync.room_dir(cfg, song, room), ev.base_ev)
-    if not (from and type(from.name) == "string") then return true end
-    return from.name:lower() ~= tostring(ev.name or ""):lower()
-  end
-  local function rename_stands(ev, old)
-    local tc = sync.track_claims[song .. "/" .. room] or {}
-    local theirs, held = tc[(base_name(tostring(ev.name or "")) or ""):lower()], tc[(base_name(old) or ""):lower()]
-    if not (theirs and held and theirs.user == ev.user and held.user ~= ev.user) then return false end
-    return theirs.time > held.time or (theirs.time == held.time and less(held.user, theirs.user))
-  end
-  local function refused(ev)
-    if ev.type == "obj" and ev.obj == "track" and not ev.gone and not ev.alone and ev.user ~= cfg.user then
-      local tr = require("mirror").find(proj, "track", ev.oid)
-      local old = tr and select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)) or ""
-      if old ~= "" and old:lower() ~= tostring(ev.name or ""):lower() and not rename_stands(ev, old)
-          and not sync.obj_allowed(setmetatable({ name = old }, { __index = ev }), can, driver_at(ev.time)) then
-        return true, renames(ev) and old or nil -- (the name it has here only for a rename: what set_back answers)
-      end
-    end
-    return not (sync.ANYONE[ev.type] or ev.alone or (ev.type == "obj" and (sync.obj_allowed(ev, can, driver_at(ev.time)) or soft_ok(ev)))
-      or (ev.type ~= "obj" and can(ev.user, ev.was or ev.track, ev.pos, ev.take, driver_at(ev.time), ev.time)))
-  end
-  -- Newer of two changes to one object, as mirror sync orders them (rev, then clock, then name): set_back answers only the newest.
-  local function mirror_newer(a, x)
-    local mirror = require("mirror")
-    return mirror.newer({ rev = a.rev, time = mirror.order_of(a) }, { rev = x.rev, time = mirror.order_of(x) })
-  end
   -- An object change StudioSync can read. (Checked before the newest of each object is picked: a malformed or newer-format one, picked as the
   -- newest, marked the readable ones before it superseded, and was then skipped itself. 0.59.14, review)
   local function readable(ev)
     return type(ev.oid) == "string" and (ev.obj == "item" or ev.obj == "track" or require("mirror").PART[ev.obj]) and type(ev.rev) == "number"
       and (ev.gone or type(ev.state) == (ev.obj == "track" and "table" or "string")) and ev.state ~= require("json").null and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")
   end
-  local latest = {}
-  -- A rename refused as above, of a track that is this person's to change under the name it has here (their claim, an auto-claim too), made in
-  -- the last RENAME_BACK seconds: not put in place. It's noted as the band's newest version of the track (mirror.set_back), so the next look
-  -- sends the track as it is here, built on the rename, and the old name comes back on every computer, the renamer's too. The others on this
-  -- StudioSync hold the rename for the minute a refused change waits, so they never show it. Only whoever holds the track answers: one
-  -- answer, from the computer whose claims are its own and current. An older rename (the claimer was away) lands as before, after its
-  -- minute, and the claim follows the track (sync.follow_claims): a name everyone has had for a while isn't taken back. rt-edits, backlog 1
-  local function set_back(ev)
-    if ev.obj ~= "track" or ev.gone or latest[ev.oid] ~= ev or sync.loading[tostring(proj)] or band.age(ev.time) > sync.RENAME_BACK then return false end
-    local no, old = refused(ev)
-    if not (no and old and can(cfg.user, old, ev.pos)) then return false end
-    require("mirror").set_back(proj, ev, string.format("%s has claimed %s: %s's rename to %s is put back (it crossed with the claim, or their StudioSync is older and didn't ask first)",
-      cfg.user, old, tostring(ev.user), tostring(ev.name)))
-    setext(proj, sync.APPLIED, ev.id, "1")
-    stamp(proj, ev)
-    band.log(string.format("%s renamed %s, which you've claimed, to %s, without asking (the rename crossed with your claim, or their StudioSync is "
-      .. "older): the name is put back for everyone. Rename it yourself if you want the new name", tostring(ev.user), old, tostring(ev.name)))
-    return true
-  end
-  for _, ev in ipairs(pending) do
-    -- (not one too new for this version: it waits, sync.too_new, and picked as the newest it marked the older ones done, so this computer stayed
-    -- on an even older state until it updated. Round 3 review, 0.59.48)
-    if ev.type == "obj" and readable(ev) and not sync.too_new(ev) then
-      local cur = latest[ev.oid]
-      if not cur or mirror_newer(ev, cur) then latest[ev.oid] = ev end
+  -- Every readable change lands, judged by the judge alone: claims, room modes, asks, holds and put-backs are enforced where the edit is made
+  -- (mirror.watch's W.refuse, lib/claimask.lua, the web pages), and the studio's floor holds every change from a StudioSync too old to ask
+  -- (sync.held_by_floor). Refused here, a change waited a minute and then landed anyway, which made computers differ for that minute and
+  -- needed five special cases (soft_ok, unasked, gone_before_claim, rename_stands, the same second), and a claimer's computer answered a
+  -- rename with one of its own (set_back), which lost a Redo everywhere (the soak's 127, 6006). rt-sync2 section 4, option A; rt-sync2h.
+  -- What's left is a word to the claimer: a bandmate's change to this computer's claim that went out without asking (their claim check
+  -- crossed with yours, the direct link couldn't reach you for an auto-claim, or a modified StudioSync) is said, once a minute per person and
+  -- thing. -> the name it's claimed under here, or nil. By the claims as they stood when it was made (sync.authority's `at`).
+  local function past_mine(ev)
+    if ev.type ~= "obj" or ev.user == cfg.user or ev.alone or sync.room_mode == "driver" or sync.room_mode == "everyone" then return nil end
+    local name = ev.name or ""
+    if ev.obj == "track" and not ev.gone then -- (a rename: the claim is on the name it has here)
+      local tr = require("mirror").find(proj, "track", ev.oid)
+      local here = tr and select(2, reaper.GetSetMediaTrackInfo_String(tr, "P_NAME", "", false)) or ""
+      if here ~= "" then name = here end
     end
+    local drv = driver_at(ev.time)
+    if not (sync.is_claimed and sync.is_claimed(name, ev.pos, ev.time) and can(cfg.user, name, ev.pos, nil, drv, ev.time)) then return nil end
+    if sync.obj_allowed(setmetatable({ name = name }, { __index = ev }), can, drv) then return nil end
+    -- (an auto-claim of mine: its sender asks only for an edit that clashes with mine, and one that merges goes out unasked by design)
+    if not ev.unasked and sync.soft and sync.soft.room == room and sync.soft.fn(name, ev.pos, ev.user) == cfg.user then return nil end
+    return name
   end
   sync.ev_cache[dir] = kept
   local t0, budget_out = reaper.time_precise(), false -- (and a quarter second of applying per pass, a second while loading: the rest next pass)
@@ -2161,8 +2082,7 @@ function sync.receive(proj, cfg, song, room, can)
   -- Object changes are gathered per object (`groups`, in the order their first change came) and judged once each below. The rest land in
   -- time order around them: a tempo map (and inserted time) after the tracks and before their parts and items (a region names the tracks it
   -- renders; an item lands on its beat under the map in place, mirror.on_map), anything else after them all (a note names an item).
-  -- `skip`: object changes this pass leaves out of the judge (refused here for now, or waiting for their tempo map).
-  local groups, gorder, skip, maps, later = {}, {}, {}, {}, {}
+  local groups, gorder, maps, later = {}, {}, {}, {}
   for _, ev in ipairs(pending) do
     if budget_out then break end
     local obj = ev.type == "obj"
@@ -2195,20 +2115,6 @@ function sync.receive(proj, cfg, song, room, can)
     elseif ev.user == cfg.user and not obj and not (ev.type == "timeline" and newest_map == ev.id) then
       setext(proj, sync.APPLIED, ev.id, "1") -- our own: already true here
       stamp(proj, ev) -- and what we change next comes after it, even one stamped while our clock ran ahead
-    elseif not obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
-      -- (the older kinds of change) not theirs to change, as far as this machine knows: their claim or the handover may simply not have
-      -- synced here yet, so it waits a minute from when it arrived, then lands like any other, as an object change does. Dropped once
-      -- 10 minutes old, one that came in before the handover it rested on was lost for good. Review, 0.58.91
-      sync.deferred[ev.id] = true
-    elseif obj and set_back(ev) then -- (answered, not applied: this computer's next look sends the track as it is here)
-    elseif obj and refused(ev) and reaper.time_precise() - sync.refused_since(ev.id) <= 60 then
-      -- (the minute is from when it arrived here, not the sender's own clock: one running a minute or more behind had a refused change land at
-      -- once. Review, 0.58.92)
-      -- An object change: the sender checked it against the claims as they had them when they made it. What looks
-      -- refused here is most likely a claim or handover still on its way, either way: it waits a minute, then lands
-      -- like any other. Judging it by today's claims and dropping it after 10 minutes left a machine that was away
-      -- (or a claim released since) with a different project for good, and nothing said so (review, 2026-10-31).
-      sync.deferred[ev.id], skip[ev.id] = true, true
     elseif obj then
       if not groups[ev.oid] then groups[ev.oid] = {}; gorder[#gorder + 1] = ev.oid end
       table.insert(groups[ev.oid], ev)
@@ -2288,11 +2194,12 @@ function sync.receive(proj, cfg, song, room, can)
       local wkey = ev and ev.id or ("obj " .. oid) -- (the newest change's id: as each change's own was before)
       local waited = sync.waited[wkey]
       local had = oid:sub(1, 1) == "T" and m.find(proj, "track", oid) ~= nil
+      local past = ev and past_mine(ev) -- (before it lands: a rename's claim is on the name it has here now)
       if groups[oid] and not ev then goto next_obj end
       -- (whether it lands, inside the same pcall: the judge reads events too, and an error there stopped the pass with an undo block open.
       -- 0.59.14, review) (nor on its first wait, where that's cheap to know: mirror.will_wait. Round 3 review, 0.59.48)
       local ok, res = pcall(function()
-        local s = m.judge(proj, oid, rdir, list, skip)
+        local s = m.judge(proj, oid, rdir, list)
         local lands = m.lands(proj, s, force[oid])
         if lands and not waited and m.will_wait(proj, s.v) then waited = true end
         if lands and not waited and not undo_open then reaper.Undo_BeginBlock2(proj); undo_open = true end
@@ -2314,6 +2221,13 @@ function sync.receive(proj, cfg, song, room, can)
       elseif res then
         local theirs = not m.dropped
         for _, x in ipairs(list) do if x == ev then after(x, theirs) else setext(proj, sync.APPLIED, x.id, "1"); stamp(proj, x) end end
+        local pk2 = past and (pk .. "\0" .. ev.user .. "\0" .. past:lower())
+        if pk2 and theirs and reaper.time_precise() - (sync.past_said[pk2] or -math.huge) > 60 then
+          sync.past_said[pk2] = reaper.time_precise()
+          local renamed = ev.obj == "track" and not ev.gone and past:lower() ~= tostring(ev.name or ""):lower()
+          band.log(string.format("%s %s %s, which you've claimed%s: their StudioSync %s", ev.user, ev.gone and "deleted" or renamed and "renamed" or "changed",
+            past, renamed and (", to " .. tostring(ev.name)) or "", ev.unasked and "couldn't reach you to ask" or "didn't ask"))
+        end
         if not ev and theirs then applied = applied + 1 end
         if reaper.time_precise() - t0 > budget then budget_out, sync.backlog = true, true end
         if had ~= (oid:sub(1, 1) == "T" and m.find(proj, "track", oid) ~= nil) then
@@ -2475,21 +2389,10 @@ sync.ev_cache = {} -- events dir -> { file -> decoded event }, for the files sti
 sync.contents_due = {} -- tostring(proj) -> { oid = true }: what a track that came back or went holds, not put in place yet (sync.receive)
 sync.waited = {} -- event id -> true: its apply said "later" last pass (no undo block is opened for it again: sync.receive)
 
--- Events refused for now (authority not synced here yet): retried until 10 minutes old. And the room's driver
+-- Events set aside: too new for this version, or made below the studio's floor (sync.too_new). And the room's driver
 -- changes, read once and then kept up to date from incoming events: { [id] = { time, user } }.
 sync.deferred = {}
-local refused_at, refused_pruned = {}, -math.huge -- event id -> when it was first found refused here
--- (a refused change lands after a minute anyway, so an entry an hour old is spent: they're dropped every 10 minutes, as the table grew all
--- session. One still waiting then would wait one more minute. James, rt)
-function sync.refused_since(id)
-  local now = reaper.time_precise()
-  if now - refused_pruned > 600 then
-    refused_pruned = now
-    for k, at in pairs(refused_at) do if now - at > 3600 then refused_at[k] = nil end end
-  end
-  refused_at[id] = refused_at[id] or now
-  return refused_at[id]
-end
+sync.past_said = {} -- tostring(proj) \0 user \0 lower name -> when "which you've claimed ... didn't ask" was last said (sync.receive)
 sync.unreadable = {} -- event file id -> when it was first found unreadable (sync.receive)
 sync.UNREADABLE_SECS = 600 -- how long a file may stay unreadable before it's skipped for good
 local driver_cache = {}

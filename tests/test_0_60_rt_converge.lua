@@ -4,7 +4,8 @@
 --     travel in beats (lib/beats.lua): put in place on another map a version lands on its beat (mirror.apply), versions made under different
 --     maps merge as they are, a version from before that names its map (`tm`) is read into beats by it (mirror.legacy_beats), and what REAPER
 --     moves for a map reads the same, so a hand edit after a bandmate's map is simply an edit.
---  2. A received change is judged by the claims as they stood when it was made (sync.authority's `at`): bug 3.
+--  2. A received change is judged by the claims as they stood when it was made (sync.authority's `at`): bug 3. (Since rt-sync2h that judgement
+--     only decides the claimer's "didn't ask" word: every readable change lands.)
 --  3. A track change moves its track only when its place is what it changes (mirror.receive): bug 6.
 --  4. A track that comes back brings its items back on every computer (mirror.apply's note, mirror.heal): bug 4.
 --  5. Two holders of one track, by its old name and its new, don't answer each other's rename for ever (sync.receive): bug 2.
@@ -28,7 +29,8 @@
 -- 22. Undo of a marker change made before a bandmate's tempo change compares the markers on the map in place (sync.undo_timeline).
 -- 23. Undo of a timeline change goes back to the version it was made on, not the one before it by order (sync.post's built_on).
 -- 24. A note the claimer moved is still theirs after your own change to it: a second move of it asks (mirror.clashes): rt-r3's P1-8, part two.
--- 25. A change sent past an auto-claim whose claimer the link can't reach says so, and lands at once elsewhere too (`unasked`): rt-r3.
+-- 25. A change sent past an auto-claim whose claimer the link can't reach says so, and lands at once elsewhere too (`unasked`): rt-r3. And
+--     since rt-sync2h, so does one past a lasting claim.
 -- 26. A track you deleted lets go of your auto-claim on it (lib/claimask.lua), and an edit held for the deleter's answer goes with the track: rt-r3.
 -- 27. A deleted track comes back where it sat when it was deleted (`was_after`, mirror.revert).
 -- 28. An item's older versions don't wait for ever where its newest sits on a track deleted since (mirror.receive).
@@ -44,6 +46,8 @@
 -- 36. StudioSync's Undo asks without a modal box (lib/undo.lua, claimask.tick, claimask.bar). And 22: the Undo's words for a marker change.
 -- 37. A change of another setting than a bandmate's live preview shows goes out at once (W.past_preview): rt-r6's G.
 -- 38. An item kept as new work when its track went is taken by its deleter's own deletion of it (mirror.kept_new): rt-r6's H.
+-- 39. Nothing is refused on receive (rt-sync2h): a change past a claim, or a non-driver's timeline in Driver only, lands at once; the claimer
+--     is told their StudioSync didn't ask (or couldn't reach them), once a minute per person and thing (sync.receive's past_mine).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -171,7 +175,7 @@ do
   local ev = { type = "obj", obj = "track", oid = "T-JAMES-1", user = "James", name = "Bass", time = iso(T - 3600), state = { name = "Bass" } }
   assert(sync.obj_allowed(ev, can) == true, "sync.receive's judgement of a change (obj_allowed) goes by its own time")
   ev.time = iso(T + 5)
-  assert(sync.obj_allowed(ev, can) == false, "and still refuses one made under the claim")
+  assert(sync.obj_allowed(ev, can) == false, "and one made under the claim is past it (since rt-sync2h, only the claimer's \"didn't ask\" word)")
   print("rt-converge 2: a received change is judged by the claims of its own time")
 end
 
@@ -1304,7 +1308,8 @@ do
   assert(sent and sent.unasked == true, "the change says its sender couldn't ask")
   S.recv(B)
   assert(pos_of(B) == 5, "and it lands on Bee's at once, as it went out (was: held back a minute for Cee's auto-claim): " .. pos_of(B))
-  -- a lasting claim of Cee's still holds on Bee's, whatever a change says
+  -- a lasting claim of Cee's, and a change past it (a modified StudioSync's, say): it lands on Bee's at once too. Nothing is refused on receive
+  -- (rt-sync2h, option A): a lasting claim is held by the editor's own StudioSync (W.refuse), and the studio's floor keeps out one too old to ask
   files[S.dir .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Keys" }, since = { ["tracks:keys"] = iso(T - 60) } }
   local forged = band.json_decode(band.json_encode(sent))
   forged.id, forged.rev, forged.base, forged.base_ev, forged.hlc, forged.time = "James-20270115-130100Z-00009-0025", sent.rev + 1, sent.rev, sent.id, sent.hlc + 9000, iso(T + 1)
@@ -1312,7 +1317,7 @@ do
   files[S.dir .. "/events/" .. forged.id .. ".json"] = forged
   T = T + 2
   S.recv(B, true)
-  assert(pos_of(B) == 5, "a change marked unasked doesn't pass a claim made on purpose: " .. pos_of(B))
+  assert(pos_of(B) == 3.5, "a change past a claim made on purpose lands at once as well (was: held back a minute, then landed anyway): " .. pos_of(B))
   claimask.reachable = function() return nil end
   here_now = {}
   print("rt-converge 25: a change sent past an unreachable auto-claimer lands at once on the computers the link reaches")
@@ -1894,6 +1899,87 @@ do
   S.recv(A, true)
   assert(S.track(A, "Tmp2 (yours, not sent)") and S.items(A, "Tmp2 (yours, not sent)") == 1, "an item Bee never had stays James's: " .. names(A))
   print("rt-converge 38: an item kept as new work when its track went is taken by its deleter's own deletion of it")
+end
+
+-- ---- 39. nothing is refused on receive (rt-sync2h, rt-sync2 section 4 option A): a change past a claim lands at once on every computer, and
+-- the claimer's log says the sender's StudioSync didn't ask ------------------------------------------------------------------------------------
+do
+  local S = studio("Conv39", "open")
+  local A, B, C = S.computer("James"), S.computer("Bee"), S.computer("Cee")
+  S.edit(A, function(F) F.add_item(F.add_track("Keys"), midi(1, 2)); F.add_item(F.add_track("Bass"), midi(1, 2)) end)
+  S.recv(B); S.recv(C)
+  T = T + sync.AUTO_IDLE + 120 -- (sharing the song is nobody's work in progress any more)
+  local function pos_of(c, name) return num(S.track(c, name).items[1].text, "POSITION") end
+  local n = 0
+  local function bees(name, qn, extra) -- (Bee's move of the item on `name` as a StudioSync that didn't ask writes it: on the newest version)
+    local oid = S.track(A, name).items[1].ext.band_oid
+    local last
+    for _, v in ipairs(S.events(function(v) return v.oid == oid end)) do if not last or v.rev > last.rev then last = v end end
+    n = n + 1
+    local ev = band.json_decode(band.json_encode(last))
+    ev.id, ev.rev, ev.base, ev.base_ev, ev.hlc, ev.user, ev.time = string.format("Bee-20270115-14%04dZ-%05d-0039", n, n), last.rev + 1, last.rev, last.id,
+      math.floor(T * 1000) + n, "Bee", iso(T)
+    ev.state, ev.hash, ev.pos, ev.unasked = last.state:gsub("POSITION [^\n]+", string.format("POSITION %.6f", qn)), nil, qn / 2, nil
+    for k, v in pairs(extra or {}) do ev[k] = v end
+    files[S.dir .. "/events/" .. ev.id .. ".json"] = ev
+    return ev
+  end
+  local function james_sent() return #S.events(function(v) return v.user == "James" and v.type == "obj" and v.time > iso(T - 1) end) end
+  -- James claims Keys for good, and Bass by an auto-claim (his edit a moment ago); Bee's StudioSync hasn't the claims (they crossed)
+  files[S.dir .. "/claims/James.json"] = { user = "James", time = iso(T), tracks = { "Keys", "Bass" },
+    since = { ["tracks:keys"] = iso(T), ["tracks:bass"] = iso(T) }, auto = { ["tracks:bass"] = iso(T) } }
+  T = T + 5
+  -- a. past a lasting claim: lands at once on Cee's and on the claimer's, who is told; nothing goes back
+  bees("Keys", 6)
+  logged = {}
+  S.recv(C, true)
+  assert(pos_of(C, "Keys") == 3, "Bee's move lands on Cee's at once (was: held a minute, then landed anyway): " .. pos_of(C, "Keys"))
+  assert(not told("which you've claimed"), "Cee isn't told: not her claim")
+  local before = james_sent()
+  S.recv(A)
+  assert(pos_of(A, "Keys") == 3, "and on James's, the claimer's, at once: " .. pos_of(A, "Keys"))
+  assert(told("^Bee changed Keys, which you've claimed: their StudioSync didn't ask$"), "James is told who didn't ask: " .. tostring(logged[#logged]))
+  assert(james_sent() == before, "and his computer sends nothing back")
+  -- said once a minute per person and thing
+  T = T + 2
+  bees("Keys", 8)
+  logged = {}
+  S.recv(A, true)
+  assert(pos_of(A, "Keys") == 4 and not told("which you've claimed"), "a second move at once lands, said once already: " .. pos_of(A, "Keys"))
+  A.F.clock = A.F.clock + 61
+  T = T + 2
+  bees("Keys", 10)
+  S.recv(A, true)
+  assert(pos_of(A, "Keys") == 5 and told("^Bee changed Keys, which you've claimed"), "a minute on, said again")
+  -- b. an auto-claim of James's: an edit that merges goes out unasked by design, so nothing is said; one sent past it unasked (the link
+  -- couldn't reach him) says so
+  T = T + 2
+  bees("Bass", 6)
+  logged = {}
+  S.recv(A, true)
+  assert(pos_of(A, "Bass") == 3 and not told("which you've claimed"), "a merge past his auto-claim lands and isn't news: " .. pos_of(A, "Bass") .. " " .. table.concat(logged, " | "))
+  T = T + 2
+  bees("Bass", 8, { unasked = true })
+  S.recv(A, true)
+  assert(pos_of(A, "Bass") == 4 and told("^Bee changed Bass, which you've claimed: their StudioSync couldn't reach you to ask$"),
+    "one sent past it unasked lands, and says the link couldn't reach him: " .. tostring(logged[#logged]))
+  -- c. not a claim of his any more (released on an ask): lands, nothing said
+  files[S.dir .. "/claims/James.json"] = { user = "James", time = iso(T + 1), tracks = {}, since = {} }
+  T = T + 5
+  bees("Keys", 12)
+  logged = {}
+  S.recv(A, true)
+  assert(pos_of(A, "Keys") == 6 and not told("which you've claimed"), "an edit made after his release: nothing to say")
+  -- d. a timeline change from someone who isn't driving, Driver only: lands at once (the older kinds of change waited the same minute)
+  files[S.dir .. "/mode.json"] = { mode = "driver", by = "James" }
+  files[S.dir .. "/driver.json"] = { driver = "James", since = iso(T - 60) }
+  T = T + 2
+  files[S.dir .. "/events/Bee-20270115-150000Z-00001-0039.json"] = { type = "timeline", id = "Bee-20270115-150000Z-00001-0039", user = "Bee",
+    time = iso(T), format = band.FORMAT, lv = sync.LEVEL, tempo = { { time = 0, bpm = 100, num = 4, denom = 4, linear = false } }, markers = {} }
+  S.recv(C, true)
+  assert(band.capture_tempo(C.F.proj)[1].bpm == 100, "Bee's tempo lands on Cee's at once though James drives (was: a minute): " .. band.capture_tempo(C.F.proj)[1].bpm)
+  files[S.dir .. "/mode.json"], files[S.dir .. "/driver.json"] = { mode = "open", by = "James" }, nil
+  print("rt-converge 39: nothing refused on receive: a change past a claim lands at once everywhere; its claimer is told who didn't ask")
 end
 
 print("ok rt-converge")

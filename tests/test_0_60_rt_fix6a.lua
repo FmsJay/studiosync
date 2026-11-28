@@ -83,10 +83,9 @@ do
   local cfg = { root = "R", user = "Bee" }
   local cl = R .. "/claims/Bee.json"
   files[cl] = { user = "Bee", time = iso(T), tracks = { "Take" }, since = { ["tracks:take"] = iso(T) }, auto = { ["tracks:take"] = iso(T) } }
-  assert(sync.gone_before_claim(cfg, "S", "main", { gone = true, name = "Take", time = iso(T - 60) }), "a deletion made before my auto-claim: it lands")
-  assert(not sync.gone_before_claim(cfg, "S", "main", { gone = true, name = "Take", time = iso(T + 5) }), "one made after it: it waits its minute, as before")
-  files[cl].auto = nil
-  assert(not sync.gone_before_claim(cfg, "S", "main", { gone = true, name = "Take", time = iso(T - 60) }), "a lasting claim: as before")
+  -- (sync.gone_before_claim, which let a deletion made before my auto-claim past the refusal minute, went with the refusal: since rt-sync2h
+  -- every readable deletion lands at once, made before the claim or after it. Part 2 below: the deletion lands within three passes)
+  assert(sync.gone_before_claim == nil and sync.refused_since == nil, "no refusal on receive, so nothing to let past it")
   files[cl] = nil
   -- 3: an edit of this person's behind a look
   mirror.edit_seen = {}

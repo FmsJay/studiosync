@@ -1541,9 +1541,10 @@ do
   mirror.MERGE_SINCE = since
   print("rt-edits: Undo leaves a track where it sits unless a move is undone; a track order that came apart is put right mid-session; no late merges")
 end
--- ---- a claimed track renamed by a computer whose StudioSync doesn't ask (one from before 0.59.49.74): only the sender judged a rename, and
--- receivers took it by its new name, which nobody has claimed (backlog 1). Now every receiver judges it by the name the track has there:
--- the others hold it, and the claimer's computer answers with the track as it is, so the old name comes back on the renamer's too ----
+-- ---- a claimed track renamed by a computer whose StudioSync doesn't ask (a modified one: one too old to ask is held by the studio's floor).
+-- From rt-edits to rt-sync2g every receiver judged it by the name the track had there and held it a minute, and the claimer's computer answered
+-- with the track as it was (set_back), which lost a crossing Redo everywhere (the soak's 127). Since rt-sync2h (option A) it lands on every
+-- computer at once, judged by the judge alone, nothing is answered, and the claimer's log says their StudioSync didn't ask ----
 do
   build("Edits rename")
   local C = computer("Cee", "C:/C/Edits rename.rpp")
@@ -1567,45 +1568,38 @@ do
     return sync.authority(c.cfg, song, room, session())
   end
   local function receive(c, can) as(c); c.F.clock = c.F.clock + 1; logged = {}; sync.receive(c.F.proj, c.cfg, song, room, can) end
-  -- the desktop holds Bass, by an auto-claim
+  -- the desktop holds Bass and Keys, lastingly
   local iso = os.date("!%Y-%m-%dT%H:%M:%SZ")
   files[sync.claims_path(A.cfg, song, room, "James")] = { user = "James", time = iso, tracks = { "Bass", "Keys" }, regions = {},
-    since = { ["tracks:bass"] = iso, ["tracks:keys"] = iso }, auto = { ["tracks:bass"] = iso } }
-  -- the laptop's StudioSync doesn't ask: its rename goes out (look() sends whatever changed, as that version did)
+    since = { ["tracks:bass"] = iso, ["tracks:keys"] = iso } }
+  tick()
+  -- the laptop's StudioSync doesn't ask: its rename goes out (look() sends whatever changed)
   rename(B, "Bass", "Bass 2")
   tick()
-  assert(next((look(B, true))), "(the older StudioSync sends the rename)")
+  assert(next((look(B, true))), "(the StudioSync that doesn't ask sends the rename)")
   tick()
-  -- a third computer holds it, as any change its sender may not make
   local can_c = claims(C)
   assert(can_c("Bee", "Bass", 0) == false and can_c("Bee", "Bass 2", 0) == true, "(Bass is the desktop's; nobody has claimed the new name)")
   receive(C, can_c)
-  assert(track(C, "Bass") and not track(C, "Bass 2"), "a bandmate's computer doesn't take a rename of a claimed track by its new name")
-  -- the claimer's computer doesn't take it either, and answers
+  assert(track(C, "Bass 2") and not track(C, "Bass"), "a bandmate's computer takes the rename at once (was: held a minute, then the claimer's answer)")
+  assert(not said("which you've claimed"), "and says nothing: it isn't Cee's claim")
   local can_a, who_a = claims(A)
   receive(A, can_a)
-  assert(track(A, "Bass") and not track(A, "Bass 2"), "the claimer's track keeps its name")
-  assert(said("Bee renamed Bass, which you've claimed, to Bass 2"), "and its log says what happened")
+  assert(track(A, "Bass 2") and not track(A, "Bass"), "so does the claimer's computer: nothing is answered on receive")
+  assert(said("Bee renamed Bass, which you've claimed, to Bass 2: their StudioSync didn't ask"), "and its log says who didn't ask: " .. table.concat(logged, " | "))
   as(A)
   A.F.clock = A.F.clock + 1
   mirror.watch(A.F.proj, A.cfg, song, room, { can = can_a, mode = "open", quick = true, is_claimed = who_a.is_claimed, owner_of = who_a.owner_of })
-  local back
-  for _, ev in ipairs(new_events()) do if ev.obj == "track" and ev.user == "James" then back = ev end end
-  assert(back and back.name == "Bass" and tostring(back.note):find("Bee's rename to Bass 2 is put back", 1, true), "the track goes out as it is here, saying why")
-  -- the renamer's computer takes that as any change: the old name is back there, and its log has the line
+  for _, ev in ipairs(new_events()) do assert(not (ev.obj == "track" and ev.user == "James"), "the claimer's look sends nothing back (was: set_back's answer)") end
   tick()
-  logged = {}
   recv(B)
-  assert(track(B, "Bass") and not track(B, "Bass 2"), "the name is back on the computer that renamed it")
-  assert(said("James has claimed Bass: Bee's rename to Bass 2 is put back"), "and that computer's log says why")
-  receive(C, can_c)
-  assert(track(C, "Bass") and not track(C, "Bass 2"), "the third computer never showed the new name")
+  assert(track(B, "Bass 2") and not track(B, "Bass"), "the renamer keeps its name")
   tick()
   recv(C)
-  same(A, B, "rename put back: the renamer")
-  same(A, C, "rename put back: the third computer")
+  same(A, B, "rename lands: the renamer")
+  same(A, C, "rename lands: the third computer")
   -- the claimer's own rename lands at once
-  rename(A, "Bass", "Bass DI")
+  rename(A, "Bass 2", "Bass DI")
   tick()
   as(A)
   A.F.clock = A.F.clock + 1
@@ -1614,23 +1608,11 @@ do
   tick()
   receive(C, can_c)
   assert(track(C, "Bass DI"), "the claimer's own rename lands at once")
+  assert(not said("which you've claimed"), "and is nobody's word")
   tick()
   recv(B)
-  -- a rename from long ago (the claimer was away): it lands after the minute a refused change waits, and isn't taken back
-  rename(B, "Keys", "Keys 2")
-  tick()
-  assert(next((look(B, true))), "(another rename, of a lastingly claimed track)")
-  tick(sync.RENAME_BACK + 60)
-  files[sync.claims_path(A.cfg, song, room, "James")].auto = {}
-  can_a = claims(A)
-  assert(can_a("Bee", "Keys", 0) == false, "(Keys is still the desktop's)")
-  receive(A, can_a)
-  assert(track(A, "Keys") and not said("put back"), "an old rename waits its minute")
-  A.F.clock = A.F.clock + 61
-  receive(A, can_a)
-  assert(track(A, "Keys 2"), "then lands: a name everyone has had for a while isn't taken back")
   files[sync.claims_path(A.cfg, song, room, "James")] = nil
-  print("rt-edits: a claimed track renamed by a StudioSync that doesn't ask keeps its name everywhere")
+  print("rt-edits: a claimed track renamed by a StudioSync that doesn't ask lands everywhere at once, and its claimer is told")
 end
 -- ---- a timeline change of yours that hasn't gone out when a bandmate's lands is made again on top of theirs (backlog 1): the timeline
 -- travels whole, so theirs replaced yours and nothing said so ----

@@ -1,6 +1,6 @@
 {
  "name": "rename-redo-autoclaim",
- "what": "rt-converge's 6006 class (an accepted limit, as 127; phase 6 ends it): James renames Drums to T1, undoes it, and redoes it in the same moment Cee turns Drums' fader, which auto-claims Drums for Cee under its old name; the two cross (James and Cee can't reach each other from 58 to 64 s). If Cee's computer answers the rename (sync.set_back), the Redo is lost. Both must stand on all three: T1, at Cee's 0.5. Passes at bf500ba (sync.receive's soft_ok: a change that merges with the auto-claimer's own lands at once, so the fader and the rename merge by setting); the 6006 seed's own sequence no longer fails there either. Kept as the guard for that path through phase 6.",
+ "what": "rt-converge's 6006 class (an accepted limit, as 127; phase 6 ends it): James renames Drums to T1, undoes it, and redoes it in the same moment Cee turns Drums' fader, which auto-claims Drums for Cee under its old name; the two cross (James and Cee can't reach each other from 58 to 64 s). If Cee's computer answers the rename (sync.set_back), the Redo is lost. Both must stand on all three: T1, at Cee's 0.5. Passed at bf500ba through sync.receive's soft_ok (a change that merges with the auto-claimer's own landed at once); since phase 6 (rt-sync2h) every readable change lands, so it passes without soft_ok, and the 6006 seed passes too. Kept as the guard.",
  "phase": 6,
  "today": "passes",
  "seed": 6,

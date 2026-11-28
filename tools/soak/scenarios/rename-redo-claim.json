@@ -1,8 +1,8 @@
 {
  "name": "rename-redo-claim",
- "what": "rt-converge's 127 class (an accepted limit under today's claims by name; phase 6, option A, ends it): James renames Drums to T1, undoes it (Drums again), and redoes it just as Bee claims Drums by hand, the two crossing (James and Bee can't reach each other from 58 to 64 s, so James's Redo goes out not knowing). Today Bee's computer answers the rename of a track it holds by its old name (sync.set_back): the Redo is lost everywhere (reproduced at bf500ba: \"Bee has claimed Drums: James's rename to T1 is put back\" on all three). Under option A a current StudioSync's change isn't answered on receive: T1 must stand on all three.",
+ "what": "rt-converge's 127 class: James renames Drums to T1, undoes it (Drums again), and redoes it just as Bee claims Drums by hand, the two crossing (James and Bee can't reach each other from 58 to 64 s, so James's Redo goes out not knowing). Up to rt-sync2g Bee's computer answered the rename of a track it holds by its old name (sync.set_back) and the Redo was lost everywhere (reproduced at bf500ba: 'Bee has claimed Drums: James's rename to T1 is put back' on all three). Phase 6 (rt-sync2h, option A): nothing is refused or answered on receive, so T1 stands on all three.",
  "phase": 6,
- "today": "fails",
+ "today": "passes",
  "signature": "intent:James: James's Redo stands: the track is",
  "seed": 5,
  "faults": "clean",
