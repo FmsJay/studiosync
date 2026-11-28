@@ -15,6 +15,7 @@
 --  9. (merge) a track's folder is its parent and depth together: one side's parent never goes with the other's depth.
 -- 10. A version whose folder or rank is off the tree (a stale depth, a rank out of the tree's order) is said again, by any computer holding
 --     the same versions as a caught-up bandmate, so an older StudioSync (depths, ranks alone) shows the same folders and order.
+-- 11. Such a version (StudioSync's own, `auto`) on a bandmate's track your Undo brought back doesn't keep it from your Redo (the soak's 5016).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -370,6 +371,36 @@ do
   assert(bees() == 2, "once")
   presence.peers = peers
   print("rt-folders 10: a version off the tree is said again by a computer holding what a caught-up bandmate holds, its depth and rank the tree's")
+end
+
+-- ---- 11. StudioSync's own version on a track your Undo brought back doesn't keep it from your Redo --------------------------------------------
+do
+  local S, A, B = song("Fold11")
+  local undo = require("undo")
+  T = T + 5
+  S.edit(B, function(F) F.add_track("Bee1") end) -- (Bee's track)
+  S.recv(A)
+  T = T + 5
+  S.edit(A, function() reaper.DeleteTrack(S.track(A, "Bee1")) end) -- (James deletes it)
+  T = T + 5
+  S.as(A); undo.step(A.F.proj, A.cfg, S.b, false, {}); S.settle(A) -- (and undoes that: back)
+  assert(S.track(A, "Bee1"), "James's Undo brings Bee1 back")
+  -- a bandmate's computer says Bee1's folder again from the tree (StudioSync's own act, auto), built on James's Undo
+  local u = S.events(function(v) return v.obj == "track" and v.name == "Bee1" and v.user == "James" and not v.gone end)
+  table.sort(u, function(x, y) return x.rev < y.rev end)
+  local v = u[#u]
+  local st = band.json_decode(band.json_encode(v.state))
+  st.depth = 0
+  local id = "Bee-20270101-000001Z-00001-0011"
+  files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "track", oid = v.oid, id = id, user = "Bee", name = "Bee1", rev = v.rev + 1, base = v.rev,
+    base_ev = v.id, state = st, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (v.hlc or 0) + 1000, rk = 1, pk = 1, hv = 10, auto = true }
+  S.recv(A)
+  T = T + 5
+  S.as(A)
+  local said = undo.step(A.F.proj, A.cfg, S.b, true, {})
+  S.settle(A)
+  assert(not S.track(A, "Bee1"), "James's Redo deletes Bee1 again (was: kept as a bandmate's change since): " .. tostring(said))
+  print("rt-folders 11: StudioSync's own version on a track doesn't keep it from your Redo")
 end
 
 print("ok rt-folders")

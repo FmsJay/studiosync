@@ -6401,8 +6401,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     -- (opts.exact: a room made to look at that moment, where nothing is anybody's to keep)
     -- (nor what your own Undo brought back: its Redo takes it away again, as the deletion it redoes did. "0 change(s) brought back (kept
     -- what collaborators added since)" left a bandmate's item you had deleted, undone, and redone. The soak's bug 9. rt-converge)
-    local theirs_new = not opts.exact and not p.t and not mirror.is_creator(p.oid, cfg.user) and not ((opts.undoes or opts.redoes) and last and last.user == cfg.user)
-      and not (last and last.user == cfg.user and last.revived)
+    -- (by the last version a person made: StudioSync's own (`auto`: a rank, a folder said again from the tree) is nobody's change. A bandmate's
+    -- computer saying the folder of a track your Undo had brought back kept it from your Redo, as theirs. rt-sync2d)
+    local real, hops = last, 0
+    while type(real) == "table" and real.auto and real.base_ev and hops < 20 do real, hops = event_file(room_dir, real.base_ev), hops + 1 end
+    local theirs_new = not opts.exact and not p.t and not mirror.is_creator(p.oid, cfg.user) and not ((opts.undoes or opts.redoes) and real and real.user == cfg.user)
+      and not (real and real.user == cfg.user and real.revived)
     local mine_gone = p.t and last and last.gone and last.user == cfg.user
     if not p.t and (h or "") == "" then -- gone then, gone now
     elseif p.t and evid == p.t.id and ((h or "") ~= "" or p.t.obj ~= "track" and not (p.t.track and mirror.find(proj, "track", p.t.track))) then -- already that revision
