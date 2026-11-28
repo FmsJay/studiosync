@@ -12,8 +12,12 @@ if ($before.Count -eq 0) { Set-Content $log "not restarted: REAPER isn't running
 Remove-Item $log -ErrorAction SilentlyContinue
 $tfile = Join-Path $env:TEMP "rp_restart_test.txt"  # (restart_reaper.lua gives this test to the new REAPER at its start)
 if ($Test) { Set-Content $tfile $Test } else { Remove-Item $tfile -ErrorAction SilentlyContinue }
-& $Reaper -nonewinst (Join-Path $here "restart_reaper.lua")
+# (not `& $Reaper ...`: with this script's output piped (restart_desktop.ps1), PowerShell waits for that reaper.exe to exit, and a launcher
+# that didn't hand the script over became a second REAPER and held the restart until live.py's 400 s timeout, the old REAPER still open.
+# rt-fixlive3. Now: the launcher gets 30 s, then a stray one of ours is stopped: it's seconds old, with no project)
+$launcher = Start-Process -FilePath $Reaper -ArgumentList '-nonewinst', ('"' + (Join-Path $here "restart_reaper.lua") + '"') -PassThru
 for ($i = 0; $i -lt 40 -and -not (Test-Path $log); $i++) { Start-Sleep -Milliseconds 250 }
+if (-not $launcher.WaitForExit(30000)) { Stop-Process -Id $launcher.Id -Force -ErrorAction SilentlyContinue; Add-Content $log "the -nonewinst launcher didn't hand over in 30 s: stopped" }
 if (-not (Select-String -Path $log -Pattern "^quitting" -Quiet -ErrorAction SilentlyContinue)) { exit 1 }  # (the reason is in the log)
 Add-Type -Name P -Namespace RPW -MemberDefinition @'
 public delegate bool EP(IntPtr h, IntPtr l);
