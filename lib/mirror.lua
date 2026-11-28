@@ -6712,22 +6712,22 @@ end
 -- version), so two computers with the same code could show their tracks in another order with nothing said. rt-undo
 function mirror.order_code(proj) return mirror.hash(table.concat(mirrored_order(proj), ",")) end
 -- The song's contents as one code, beside `mirror` in the status (rt-sync2 5c): a hash over each object's (oid, the version held, what that
--- version holds). A change holds what it was sent with (its own `hash`); a merge what this computer puts together for it (its state hashed),
--- so two caught-up computers with equal `mirror` codes and different content codes hold the same changes put together into different songs.
+-- version holds). A change is named by its id (a change never changes: nothing is read for it); a merge by what this computer puts together
+-- for it (its state hashed), so two caught-up computers with equal `mirror` codes and different content codes hold the same changes put
+-- together into different songs. (rt-sync2 5c named a change's own `hash`: reading every held change's file each start, state and all,
+-- buys nothing its id doesn't say.)
 -- And 16 bucket codes (6 hex digits each: the oids whose own hash starts with 0, 1 ... f), so what differs is looked for in the buckets that
 -- differ. Held as mirror.root is. -> code, buckets (96 characters), how many versions held here don't read here (their content is "?").
 mirror.content_memo = {} -- room dir \0 version id -> what it holds (versions never change; one that doesn't read yet isn't kept)
 local function version_content(room_dir, id)
+  if not mirror.split_merge(id) then return id end
   local key = room_dir .. "\0" .. id
   local c = mirror.content_memo[key]
   if c then return c end
   local v = event_file(room_dir, id)
   if type(v) ~= "table" then return "?" end
-  if v.gone then c = "gone"
-  elseif mirror.split_merge(id) then
-    local st = v.state
-    c = mirror.hash(tostring(v.track or "") .. "\n" .. (type(st) == "table" and require("band").json_encode(st) or tostring(st)))
-  else c = v.hash or mirror.hash(id) end
+  local st = v.state
+  c = v.gone and "gone" or mirror.hash(tostring(v.track or "") .. "\n" .. (type(st) == "table" and require("band").json_encode(st) or tostring(st)))
   mirror.content_memo[key] = c
   return c
 end

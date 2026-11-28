@@ -208,6 +208,10 @@ do
   assert(mirror.heal(B.F.proj, S.dir, false, only) == 1, "heal brings that one change in")
   S.settle(B)
   assert(item_pos(B, "Keys") == 9 and S.status(B).content == stA.content, "and the codes agree")
+  -- (a change is named by its id: nothing is read for it, so one whose file isn't readable here doesn't count as unread; only a merge does)
+  S.as(B)
+  mirror.remember(B.F.proj, "I-NOFILE-1", 1, "x", "Nobody-20261128-100000Z-00001-0001", "1|Nobody")
+  assert(select(3, mirror.contents(B.F.proj, S.dir)) == 0, "a change held whose file isn't here: not read, not unread")
   print("rt-sync2j 2: the content code and buckets; a change that never landed is healed at once, in its bucket")
 end
 
