@@ -2,7 +2,7 @@
 -- encode: arrays are tables with only 1..n integer keys (empty table -> []), objects have sorted keys.
 -- decode: strict JSON; objects and arrays -> tables; null -> json.null.
 
-local json = {}
+local json = { STUDIOSYNC = true } -- (StudioSync's own: lib/band.lua tells it from another script's "json" in the same Lua)
 json.null = setmetatable({}, { __tostring = function() return "null" end })
 
 local function is_array(t)

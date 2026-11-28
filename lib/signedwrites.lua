@@ -14,7 +14,7 @@
 -- shortcut: a computer that has never seen a file takes the first validly signed copy it's handed, however old (trust on first use, as the
 -- pins); the hub or the inviter's welcome would hand over the newest sequence numbers to close that. Unreviewed (security reviews come after
 -- all features, James 2026-11-19).
-local json = require("json")
+local json = require("band").json -- (StudioSync's own: lib/band.lua)
 local sw = { LABEL = "StudioSync signed file v1\n", SIDE_MAX = 2048, FUTURE_MS = 86400 * 1000, TAG = "SSK" }
 
 local B32 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567"

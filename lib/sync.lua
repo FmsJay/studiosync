@@ -1910,6 +1910,13 @@ function sync.floor_words(f)
     .. "others until you update StudioSync. You still get their changes.", band.VERSION, sync.LEVEL, tostring(f.level))
 end
 sync.version_looked = {} -- proj -> true: its skipped changes were looked at for this version
+-- An object change StudioSync can read. (Checked before the newest of each object is picked: a malformed or newer-format one, picked as the
+-- newest, marked the readable ones before it superseded, and was then skipped itself. 0.59.14, review) (A JSON null is StudioSync's own json's,
+-- band.json: another script's "json" in Autostart's Lua read null as nil, and every deletion as unreadable. rt-sync2j)
+function sync.readable(ev)
+  return type(ev.oid) == "string" and (ev.obj == "item" or ev.obj == "track" or require("mirror").PART[ev.obj]) and type(ev.rev) == "number"
+    and (ev.gone or type(ev.state) == (ev.obj == "track" and "table" or "string")) and ev.state ~= band.json.null and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")
+end
 function sync.receive(proj, cfg, song, room, can)
   local pk = tostring(proj)
   -- (changes skipped for good (unreadable, failed five times) are tried once more when StudioSync's version changes: a newer version may read
@@ -2021,12 +2028,7 @@ function sync.receive(proj, cfg, song, room, can)
       break
     end
   end
-  -- An object change StudioSync can read. (Checked before the newest of each object is picked: a malformed or newer-format one, picked as the
-  -- newest, marked the readable ones before it superseded, and was then skipped itself. 0.59.14, review)
-  local function readable(ev)
-    return type(ev.oid) == "string" and (ev.obj == "item" or ev.obj == "track" or require("mirror").PART[ev.obj]) and type(ev.rev) == "number"
-      and (ev.gone or type(ev.state) == (ev.obj == "track" and "table" or "string")) and ev.state ~= require("json").null and (ev.name == nil or type(ev.name) == "string") and (ev.pos == nil or type(ev.pos) == "number")
-  end
+  local readable = sync.readable
   -- Every readable change lands, judged by the judge alone: claims, room modes, asks, holds and put-backs are enforced where the edit is made
   -- (mirror.watch's W.refuse, lib/claimask.lua, the web pages), and the studio's floor holds every change from a StudioSync too old to ask
   -- (sync.held_by_floor). Refused here, a change waited a minute and then landed anyway, which made computers differ for that minute and
@@ -2432,7 +2434,7 @@ function sync.driver_history(proj, cfg, song, room)
     -- chains of a few MB among them, held REAPER up at every start: review, 2026-10-31)
     local text = band.read(dir .. "/" .. f)
     if text and text:find('"driver"', 1, true) then
-      local ok, ev = pcall(require("json").decode, text)
+      local ok, ev = pcall(band.json.decode, text)
       if ok and type(ev) == "table" and ev.type == "driver" and type(ev.time) == "string" then
         list[(ev.id or f):upper()] = { time = ev.time, user = ev.driver or ev.user }
         if proj then setext(proj, sync.DRIVERS, room .. "/" .. (ev.id or f:sub(1, -6)), ev.time .. "|" .. tostring(ev.driver or ev.user)) end
