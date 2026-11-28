@@ -4312,7 +4312,7 @@ function W.order(w)
   -- (an empty room's first tracks, all made here and none sent yet, nothing of the band's waiting: ranked now by place (rank.spread, as
   -- rank_room's switch-over ranks a room), so they go out with their rank and folder the first time. Left to rank_room, each new batch got a
   -- second version up to a minute later, then a third for its folder, each logged as the one-time switch-over. rt-live bug 6, sync2c c5, d1)
-  if not first_here and not ranked and w.pending() == 0 then
+  if not first_here and not ranked and w.pending and w.pending() == 0 then
     local fresh = {}
     for _, o in ipairs(objs) do
       if o.kind == "track" and o.ptr and type(o.state) == "table" then
