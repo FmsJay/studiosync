@@ -1,0 +1,40 @@
+{
+ "name": "undo-gone-with-track",
+ "what": "Long-soak seed 9040 (rt-sync2f), by hand. Bee is offline from 18 s to 40 s. James moves Gtr's item onto Keys; Bee, not having that yet, deletes Keys, so her deletion doesn't name the item, and it goes with Keys when the two meet. The undo probe then undoes each computer's last act and redoes it: James's Undo of the move brought the item back onto Gtr, and his Redo couldn't put it on the deleted Keys (\"couldn't change here yet\"), so the song had an item it didn't have before. An Undo or Redo of your change to something a bandmate deleted since leaves their deletion (rt-converge, seed 113); one that went with its track, deleted by a bandmate since, now counts the same (mirror.revert). Before the fix the probe fails: James's Undo then Redo didn't bring the song back.",
+ "phase": 5,
+ "today": "passes",
+ "seed": 1,
+ "faults": {
+  "clean": true,
+  "link_min": 0.01,
+  "link_max": 0.01
+ },
+ "mode": "everyone",
+ "undo_probe": true,
+ "edits": [
+  {
+   "t": 20,
+   "node": "James",
+   "lua": "reaper.MoveMediaItemToTrack(item('Gtr'), track('Keys')); return 'moved the Gtr item onto Keys'"
+  },
+  {
+   "t": 22,
+   "node": "Bee",
+   "lua": "reaper.DeleteTrack(track('Keys')); return 'deleted Keys'"
+  }
+ ],
+ "checks": [
+  {
+   "on": "all",
+   "what": "the Gtr item went with Keys",
+   "lua": "assert(item('Gtr') == nil, 'the Gtr item is still here'); assert(track('Keys') == nil, 'Keys is still here')"
+  }
+ ],
+ "net": [
+  {
+   "t": 18,
+   "offline": "Bee",
+   "until": 40
+  }
+ ]
+}

@@ -6174,6 +6174,16 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     -- still brings back what it's asked to. The soak's undo probe, seed 113. rt-converge)
     elseif p.t and (opts.undoes or opts.redoes) and last and last.gone and last.user ~= cfg.user then
       gone_since = gone_since + 1
+    -- (and one that went with its track, which a bandmate deleted since: recorded gone here under your own last change of it (mirror.receive's
+    -- "gone with its track"). Your Undo of moving it onto that track brought it back onto the one it came from, and your Redo couldn't put it
+    -- on the deleted track: an item the song didn't have, on your computer and everyone's. Their deletion stays. The long soak's 9040, rt-sync2f)
+    elseif p.t and p.t.obj ~= "track" and (opts.undoes or opts.redoes) and (h or "") == "" and last and not last.gone and last.track
+        and not mirror.find(proj, "track", last.track) and (function()
+          local _, th, tev = mirror.known(proj, last.track)
+          local te = th == "" and (tev or "") ~= "" and event_file(room_dir, tev)
+          return te and te.gone and te.user ~= cfg.user
+        end)() then
+      gone_since = gone_since + 1
     elseif mine_gone then
       local made = p.t.obj == "track" and not mirror.find(proj, "track", p.oid)
       local ok, nh = mirror.apply(proj, p.t, media, opts.local_mix, true)
