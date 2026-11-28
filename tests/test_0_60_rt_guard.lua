@@ -351,7 +351,8 @@ do
 end
 
 -- ---- 10. an older file opened in the same tab: REAPER keeps the master track; Live sync's load guard settles again (rt-live bugs 2, 3) --------
--- Fails on 52ce885: the reopen wasn't seen (mirror.on_open went by the master track; sync2c c3).
+-- Fails on 52ce885: the reopen wasn't seen (mirror.on_open went by the master track), the events cache said the older file had every change,
+-- and the track it lacked came back only with the next catch-up (sync2c c1.2, c2, c3).
 do
   local S, A, B = song("Guard10")
   local guard = require("loadguard")
@@ -387,7 +388,9 @@ do
   assert(mirror.opened[pk] ~= opening, "a new opening (was: the same master track, so not one)")
   S.recv(A)
   assert(S.gone_by("James") == gone_before, "nothing sent for what the older file lacks")
-  print("rt-guard 10: an older file opened in the same tab is a new opening; a save isn't one")
+  assert(S.track(A, "Bass"), "Bass is back at once, from the band's changes (was: only with the next catch-up): " .. S.names(A))
+  assert(not S.track(A, "Gtr"), "and Gtr, deleted since the file was saved, goes: " .. S.names(A))
+  print("rt-guard 10: an older file opened in the same tab is a new opening; the changes it lacks land at once; a save isn't one")
 end
 
 print("ok rt-guard")

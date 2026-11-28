@@ -2363,12 +2363,18 @@ end
 -- (review, 0.58.53). Only ever grows while the project is open: applied stays applied (sync.forget_trimmed drops only files that are gone).
 -- (a song opened again in the same tab keeps the tab's address, and the cache then said the reopened song had everything: its master track
 -- is a new one, so that's what is checked, as mirror.watch does with its first track. Linux stress test, 0.58.77)
-sync.settled, sync.settled_master, sync.settled_retry = {}, {}, {}
+-- (and the opening mirror.on_open tells: REAPER keeps the master track through File > Open in the same tab, so an older file opened there was
+-- "settled" and the changes it lacked came back only with the next catch-up, up to 5 minutes later. rt-live bugs 2 and 3, rt-fixlive1)
+sync.settled, sync.settled_master, sync.settled_retry, sync.settled_open = {}, {}, {}, {}
 function sync.settled_for(proj, dir)
   local key = tostring(proj) .. "\0" .. dir
   local had, master = sync.settled_master[key], reaper.GetMasterTrack(proj)
   if had and not (had == master and reaper.ValidatePtr2(proj, had, "MediaTrack*")) then sync.settled[key] = nil end
   sync.settled_master[key] = master
+  local m = package.loaded.mirror
+  local opening = m and m.opened and m.opened[tostring(proj)]
+  if opening and sync.settled_open[key] and sync.settled_open[key] ~= opening then sync.settled[key] = nil end
+  sync.settled_open[key] = opening or sync.settled_open[key]
   local retry = ext(proj, band.SECTION, "retry") -- (Try again, from another script: sync.retry_skipped)
   if sync.settled_retry[key] ~= retry then sync.settled[key], sync.settled_retry[key] = nil, retry end
   sync.settled[key] = sync.settled[key] or {}
