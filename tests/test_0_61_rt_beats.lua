@@ -499,4 +499,31 @@ do
   print("rt-sync2g 10: stretch markers: REAPER's own on auto-stretch left out and made again; a take's own in beats, its rate kept")
 end
 
+-- ---- 11. (rt-fixlive2) automation a script wrote into an envelope REAPER hadn't taken in, then a tempo change: only the timeline goes out ----
+-- (the live tool's env_add inserted points into what GetTrackEnvelopeByChunkName handed back for Drums' volume envelope, never shown: REAPER
+-- 7.86 leaves it out of CountTrackEnvelopes and keeps its points in seconds at a tempo change, while the copies made from its chunk move.
+-- The desktop then sent its automation after every tempo change, live checks sync2f f1 and f6. Fails without mirror.lua's realise_envs:
+-- "nothing but the timeline goes out (1: E-...)")
+do
+  local S, A, B, C = song("Beats11")
+  T = T + 5
+  S.edit(A, function(F)
+    local g = S.track(A, "Gtr")
+    g.body = g.body .. "<VOLENV2\nEGUID {E11}\nACT 0 -1\nVIS 0 1 1\nLANEHEIGHT 0 0\nARM 0\nDEFSHAPE 0 -1 -1\nVOLTYPE 1\nPT 0 0.5 0\nPT 4 0.7 0\nPT 8 0.9 0\nPT 12 0.6 0\n>\n"
+    g.phantom = { VOLENV2 = true }
+    F.changed()
+  end)
+  S.recv(B); S.recv(C)
+  S.same(A, B, "the script's automation")
+  T = T + 5
+  local since = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  S.edit(A, function(F) reaper.SetTempoTimeSigMarker(F.proj, -1, 2, -1, -1, 110, 4, 4, false) end)
+  local sent = obj_events(S, "James", since)
+  assert(#sent == 0, "nothing but the timeline goes out (" .. #sent .. ": " .. tostring(sent[1] and sent[1].oid) .. ")")
+  S.recv(B); S.recv(C)
+  S.same(A, B, "after the tempo change"); S.same(A, C, "after the tempo change")
+  print("rt-fixlive2 11: a script's automation in an envelope REAPER hadn't taken in follows a tempo change; only the timeline goes out")
+end
+
+
 print("ok rt-sync2f")

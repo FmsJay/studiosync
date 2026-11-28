@@ -230,12 +230,15 @@ function E.new(path)
     end
   end
   -- envelopes: the track's own blocks in its body (<VOLENV2 ..., <PANENV2 ...)
-  local function envs_of(t)
+  -- (t.phantom[tag]: an envelope REAPER hasn't taken in as the track's, as a script makes by inserting points into what
+  -- GetTrackEnvelopeByChunkName hands back for one never shown: in the chunk, left out of CountTrackEnvelopes, and its points stay where they
+  -- are at a tempo change; its chunk set makes it a real one. REAPER 7.86, Windows and Linux. rt-fixlive2)
+  local function envs_of(t, all)
     local out, cur, d = {}, nil, 0
     for _, l in ipairs(lines(t.body)) do
       if d == 0 and l:sub(1, 1) == "<" then
         local tag = l:match("^<(%S+)")
-        if tag:match("^%u+ENV%d*$") and tag:sub(1, 3) ~= "AUX" then cur = { tr = t, tag = tag, text = {}, pts = 0 }; out[#out + 1] = cur else cur = nil end
+        if tag:match("^%u+ENV%d*$") and tag:sub(1, 3) ~= "AUX" and (all or not (t.phantom and t.phantom[tag])) then cur = { tr = t, tag = tag, text = {}, pts = 0 }; out[#out + 1] = cur else cur = nil end
       end
       if cur then
         cur.text[#cur.text + 1] = l
@@ -418,13 +421,23 @@ function E.new(path)
     end
     if F.project_timebase() ~= 0 then
       for _, t in ipairs(tracks) do
-        if t.body ~= "" then
-          t.body = t.body:gsub("(\n?)PT (%S+)", function(nl, v)
+        local function moved(text)
+          return (text:gsub("(\n?)PT (%S+)", function(nl, v)
             local x = tonumber(v)
             if not x then return nl .. "PT " .. v end
             local nx = move(x)
             return nl .. "PT " .. (math.abs(nx - x) > 1e-12 and g14(nx) or v)
-          end)
+          end))
+        end
+        if t.body ~= "" and not (t.phantom and next(t.phantom)) then t.body = moved(t.body)
+        elseif t.body ~= "" then -- (an envelope REAPER hasn't taken in keeps its points where they are)
+          local out, skip, d = {}, false, 0
+          for l in (t.body .. "\n"):gmatch("([^\n]*)\n") do
+            if d == 0 and l:sub(1, 1) == "<" then skip = t.phantom[l:match("^<(%S+)") or ""] == true end
+            out[#out + 1] = skip and l or moved(l)
+            if l:sub(1, 1) == "<" then d = d + 1 elseif l == ">" then d = d - 1 end
+          end
+          t.body = table.concat(out, "\n")
         end
       end
       for _, m in ipairs(markers) do
@@ -540,7 +553,8 @@ function E.new(path)
     TakeFX_GetCount = function() return 0 end,
     CountTrackEnvelopes = function(t) return #envs_of(t) end,
     GetTrackEnvelope = function(t, i) return envs_of(t)[i + 1] end,
-    GetTrackEnvelopeByChunkName = function(t, n) for _, e in ipairs(envs_of(t)) do if e.tag == n then return e end end end,
+    GetTrackEnvelopeByChunkName = function(t, n) n = tostring(n):gsub("^<", ""); for _, e in ipairs(envs_of(t, true)) do if e.tag == n then return e end end end,
+    SetEnvelopeStateChunk = function(e) if e.tr.phantom then e.tr.phantom[e.tag] = nil end; return true end, -- (taken in; its text as it is)
     CountEnvelopePoints = function(e) return e.pts end, CountEnvelopePointsEx = function(e) return e.pts end,
     GetEnvelopeStateChunk = function(e) return true, table.concat(e.text, "\n") .. "\n" end,
     Envelope_GetParentTrack = function(e) return e.tr end,

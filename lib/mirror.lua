@@ -2107,7 +2107,27 @@ local function env_canon(proj, mkey, text)
   if text == "" then return text end
   return mirror.memo("benv\0" .. mkey, text, function() return beats.read_env(proj, text) end)
 end
+-- A track envelope with points that REAPER hasn't taken in as one of the track's (CountTrackEnvelopes leaves it out): what a script makes by
+-- inserting points into the object GetTrackEnvelopeByChunkName hands back for an envelope never shown. Its chunk lists it, so it travels,
+-- but REAPER leaves its points where they are at a tempo change while every receiver's copy (made from the chunk, a real one) moves: the
+-- sender then sent it after every tempo change (live sync2f f1, f6: the live tool's env_add did this). Its chunk set back once makes it a
+-- real one (REAPER 7.86, Windows and Linux: then it moves). Once per track and envelope text. rt-fixlive2
+local realised = setmetatable({}, { __mode = "k" })
+local function realise_envs(tr, text)
+  if realised[tr] == text or not text:find("\nPT ", 1, true) then return end
+  realised[tr] = text
+  local known = {}
+  for e = 0, reaper.CountTrackEnvelopes(tr) - 1 do known[reaper.GetTrackEnvelope(tr, e)] = true end
+  for tag in text:gmatch("<(%u[%u%d]*ENV%d*)") do
+    local env = reaper.GetTrackEnvelopeByChunkName(tr, "<" .. tag)
+    if env and not known[env] then
+      local ok, ch = reaper.GetEnvelopeStateChunk(env, "", false)
+      if ok and ch:find("\nPT ", 1, true) then reaper.SetEnvelopeStateChunk(env, ch, false) end
+    end
+  end
+end
 local function add_parts(objs, by_oid, tr, oid, parts, proj, mkey)
+  realise_envs(tr, parts.env)
   mirror.mod_params[tr] = parts.mods -- (every plug-in, in REAPER's order: what mirror.fx_params counts by)
   local fo = { kind = "fx", oid = "F" .. oid:sub(2), ptr = tr, track = oid, state = parts.fx, hash = parts.fxh }
   objs[#objs + 1], by_oid[fo.oid] = fo, fo
