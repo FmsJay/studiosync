@@ -809,22 +809,6 @@ function mirror.clashes(room_dir, kind, state, from, user)
   end
   return false
 end
--- Undo (or redo) of `e` keeps what others changed since: the version to go back to (`to`), with what the version held now (`now`) changed after
--- `e`, and `e` didn't, kept (`e` as the base of a three-way merge). Where both changed one thing, going back stands, as before. -> a version
--- like `to` (same id) or `to` itself. Pure.
-function mirror.undo_keeping(e, to, now)
-  if not (mirror.mergeable(to) and mirror.mergeable(now) and mirror.mergeable(e) and now.id ~= e.id and to.obj == now.obj) then return to end
-  local m, both = mirror.merge_state(to.obj, e.state, to.state, now.state, now.user)
-  if m == nil then return to end
-  for _, k in ipairs(both or {}) do -- (not a take of theirs added by going back: plain going back, as before)
-    if tostring(k):find("<SOURCE", 1, true) and not tostring(k):find("\0notes", 1, true) then return to end
-  end
-  local v = {}
-  for k, x in pairs(to) do v[k] = x end
-  v.state = m
-  return v
-end
-
 -- Going back (History). `entries` are History's (recall.entries: mirror events have kind "obj"). A plan maps
 -- oid -> the revision to bring back, or false (the object didn't exist then: it goes). Pure.
 -- Restore project / selection state: every object in scope as it was right after entries[upto].
@@ -907,20 +891,6 @@ function mirror.known_map(proj)
   end
   return t
 end
--- Undo one change: that object back to the revision before entries[i] (none before: it was new, so it goes).
-function mirror.plan_undo(entries, i)
-  local e = entries[i]
-  if not (e and e.kind == "obj" and e.oid) then return nil end
-  local best -- (the revision it had before: the winner among the older ones, not just the one before it by time)
-  for j = 1, #entries do
-    local p = entries[j]
-    if j ~= i and p.kind == "obj" and p.oid == e.oid and (p.time or "") <= (e.time or "") and won(e, p) and won(p, best) then best = p end -- (made before it)
-  end
-  if best then return { [e.oid] = (not best.gone) and best or false } end
-  if not mirror.began(e) then return {} end -- (its version before was trimmed away: not "it was new", nothing to plan. 0.59.14, review)
-  return { [e.oid] = false }
-end
-
 -- Which tracks moved between two looks at the list (arrays of oids), as a set: those that don't fit the order the rest kept,
 -- longest run first. Tracks added or gone aren't moves, nor is what they shift. `selected` (a set) is what a person drags, so a
 -- swap of two neighbours blames the selected one; it counts if the track above it changed. Pure.
@@ -1121,122 +1091,6 @@ function mirror.lane_words(entries, i)
   end
   return e.lane_words_seen
 end
--- -> the plan, and the ids of every entry it undoes (the act's: lib/undo.lua carries them all on the restore events, mirror.last_mine).
-function mirror.plan_undo_moment(entries, i)
-  local plan, ids, used = nil, {}, {}
-  local function add(j)
-    if used[j] then return end
-    used[j] = true
-    ids[#ids + 1] = entries[j].id
-    for oid, v in pairs(mirror.plan_undo(entries, j) or {}) do plan = plan or {}; plan[oid] = v end
-  end
-  for _, j in ipairs(mirror.same_moment(entries, i)) do add(j) end
-  local e = entries[i]
-  if plan and e and e.kind == "obj" then
-    -- (the rest of the act, by the same person in the same second, though another kind of object: a track deleted with its items (undoing the
-    -- items alone failed, as their track wasn't there, and every press picked the same change), and the other restores of one undo, so a redo
-    -- takes back all of it. Cost: one pass over History per press. Round 1 review, 0.59.45)
-    local tracks = {}
-    if e.gone and e.obj == "track" then tracks[e.oid] = true end
-    for _, v in pairs(plan) do if v and v.obj ~= "track" and v.track then tracks[v.track] = true end end
-    -- (an Undo's or Redo's own changes by its step id, whatever second each was written in (lib/undo.lua gives every change of one press the
-    -- same `act`): an Undo whose writes crossed a clock second, 3 in one and 18 in the next, was redone as "18 changes", and items and automation
-    -- points stayed missing on every computer, alike. Without a step id (an older build's), the same second, as before. REAPER check,
-    -- 0.59.49.75, rt-edits)
-    for j, x in ipairs(entries) do
-      if x.kind == "obj" and x.user == e.user and x.oid ~= e.oid then
-        local now = x.time == e.time
-        local deleted = now and e.gone and x.gone and not x.restored and ((x.obj == "track" and tracks[x.oid]) or (x.obj == "item" and x.track and tracks[x.track]))
-        local same_undo = (e.undoes and x.undoes == e.undoes) or (e.redoes and x.redoes == e.redoes)
-        if deleted or (same_undo and (now or (e.act ~= nil and x.act == e.act))) then add(j) end
-      end
-    end
-    -- (and in another second: a track with a few hundred items is deleted a quarter second a pass, so its deletion and its items' straddle
-    -- seconds. The same person's deletion of a planned item's track, when it's that track's newest change, and that track's other items they
-    -- deleted from then on, each still deleted. Undoing the items alone failed for good. Cost: the same single pass. Round 2 review, 0.59.46)
-    if e.gone and not e.restored then
-      local newest = {}
-      for j, x in ipairs(entries) do if x.kind == "obj" and x.oid and won(x, newest[x.oid] and entries[newest[x.oid]]) then newest[x.oid] = j end end
-      local since = {}
-      for t in pairs(tracks) do
-        local j = newest[t]
-        local x = j and entries[j]
-        if x and x.gone and not x.restored and x.user == e.user then add(j); since[t] = x.time or "" end
-      end
-      for j, x in ipairs(entries) do
-        if x.kind == "obj" and x.obj == "item" and x.gone and not x.restored and x.user == e.user and x.track and since[x.track]
-            and (x.time or "") >= since[x.track] and newest[x.oid] == j then add(j) end
-      end
-    end
-  end
-  return plan or {}, ids -- (nothing to plan, a trimmed chain say: an empty plan, never nil for revert to fail on. 0.59.14)
-end
-
--- The top bar's Undo / Redo (your own changes only, for everyone). Pure, over History's entries:
--- last_mine: your newest change not undone yet (undo events carry `undoes`, redo events `redoes`).
--- (a tempo map or marker change of yours is a change too, when it's the whole act: a marker added and nothing else was stepped over, and Undo
--- took back the edit before it. One sent with an act's items goes back with them (lib/undo.lua), so it's passed over here: its act is undone
--- when its items are (undone_act), and an undo's own timeline change counts as redone when its items' undo was (cancelled). One sent in a later
--- pass than some of its act's items (a burst over several passes) is taken from those items, so the act still goes back as one. A Restore's
--- (`restored`) is passed over, as a restored object is. `passed`: ids lib/undo.lua found nothing left to take back of (a bandmate removed
--- the marker since): the next Undo is the change before. rt-edits)
-function mirror.last_mine(entries, user, passed)
-  local undone, undone_act, cancelled = {}, {}, {}
-  for i = #entries, 1, -1 do
-    local e = entries[i]
-    if e.kind == "obj" and e.user == user then
-      -- (every change of the act counts as undone, not only the one named: the next presses restored the same three items again, N² events
-      -- for N items. `undoes_all` / `redoes_all`: lib/undo.lua. Round 1 review, 0.59.45)
-      if e.undoes and not undone[e.id] then undone[e.undoes] = true; for _, x in ipairs(type(e.undoes_all) == "table" and e.undoes_all or {}) do undone[x] = true end
-      elseif e.undoes then cancelled[e.undoes] = true
-      elseif e.redoes then undone[e.redoes] = true; for _, x in ipairs(type(e.redoes_all) == "table" and e.redoes_all or {}) do undone[x] = true end -- (a redo undoes an undo: the change it undid counts again)
-      elseif not e.restored and not e.auto then -- (auto: a print StudioSync refreshed)
-        if not undone[e.id] then return i end
-        if e.act then undone_act[e.act] = true end
-      end
-    elseif e.kind == "timeline" and e.user == user and type(e.tempo) == "table" and not e.restored then
-      if e.undoes then if not undone[e.id] and not cancelled[e.undoes] then undone[e.undoes] = true end
-      elseif e.redoes then undone[e.redoes] = true
-      elseif not undone[e.id] and not (e.act and undone_act[e.act]) and not (passed and passed[e.id]) then
-        for j = i - 1, 1, -1 do
-          local x = e.act and entries[j]
-          if not x then break end
-          if x.act == e.act and x.kind == "obj" and x.user == user and not (x.undoes or x.redoes or x.restored or x.auto or undone[x.id]) then return j end
-        end
-        return i
-      end
-    end
-  end
-end
--- Who else changed entries[i]'s object after it (undoing it takes their later change back too). Pure.
-function mirror.later_by_others(entries, i)
-  local e, who, seen = entries[i], {}, {}
-  for j = i + 1, #entries do
-    local x = entries[j]
-    if x.kind == "obj" and x.oid == e.oid and x.user ~= e.user and not seen[x.user] then seen[x.user] = true; who[#who + 1] = x.user end
-  end
-  return who
-end
--- last_undo: your newest undo that hasn't been redone.
-function mirror.last_undo(entries, user)
-  local redone, cancelled = {}, {}
-  for i = #entries, 1, -1 do
-    local e = entries[i]
-    if e.kind == "obj" and e.user == user then
-      if e.redoes then redone[e.redoes] = true; for _, x in ipairs(type(e.redoes_all) == "table" and e.redoes_all or {}) do redone[x] = true end
-      elseif e.undoes then
-        if not redone[e.id] then return i end -- (one redone is passed over, not taken for a new change: redo stopped after
-        -- redoing an undo that removed something, as that carries no `restored`. Round 2 review, 0.59.46)
-        cancelled[e.undoes] = true -- (its timeline change, sent just before it, was redone with it)
-      elseif not e.restored and not e.auto then return nil end -- a new change since: nothing to redo (a print StudioSync refreshed isn't one)
-    elseif e.kind == "timeline" and e.user == user and type(e.tempo) == "table" and not e.restored then -- (an undo that was only a tempo or marker change: rt-edits)
-      if e.redoes then redone[e.redoes] = true
-      elseif e.undoes then if not redone[e.id] and not cancelled[e.undoes] then return i end
-      else return nil end
-    end
-  end
-end
-
 -- Media paths in chunks: anything in one of the song's rooms' media folders travels as {media:<room>}/<file>, so
 -- every machine resolves it to its own shared folder (J:/... here, /Volumes/... on a Mac), and a side room's copy of
 -- main's items still points at main's media (it isn't a change). `media_dir`: this room's, <song>/rooms/<room>/media.
@@ -6053,7 +5907,7 @@ function mirror.selection_scope(proj)
   return function(oid, last, at) return set[oid] or (last and set[last.track or ""]) or (at and set[at.track or ""]) or false end
 end
 
--- Carry out a History plan (plan_restore / plan_undo) here and send it to the band as new revisions, so a restore
+-- Carry out a History plan (plan_restore, undo.plan) here and send it to the band as new revisions, so a restore
 -- is itself a change that can be undone. Objects this person may not change are left (counted). Returns a summary.
 -- Whether two states of an item differ only in what a print adds to a take's name. REAPER gives a comp piece its source pass's take name
 -- as a project opens, so one whose piece is printed and whose pass isn't went from "dry - x" to "x" and out as a change, from just opening
@@ -6248,6 +6102,12 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       and not (real and real.user == cfg.user and real.revived)
     local mine_gone = p.t and last and last.gone and last.user == cfg.user
     if not p.t and (h or "") == "" then -- gone then, gone now
+    -- (an Undo or Redo of your change to something deleted since: the deletion stays, as what a bandmate changed since stays. It brought the
+    -- deleted item back for everyone, as it was before your edit; Undo then Redo left an item the song didn't have. The soak's undo probe,
+    -- seed 113, rt-converge. lib/undo.lua plans it so, `beaten`: what's held is a deletion, whoever made it (an edit a deletion beat stays
+    -- beaten). A Restore still brings back what it's asked to. rt-sync2i)
+    elseif p.t and p.t.beaten then
+      gone_since = gone_since + 1
     elseif p.t and evid == p.t.id and ((h or "") ~= "" or p.t.obj ~= "track" and not (p.t.track and mirror.find(proj, "track", p.t.track))) then -- already that revision
       -- (not a part recorded as gone with its track, which still names its last real change: Restore brought a deleted track back bare. Full
       -- review, 0.59.44. But only when its track is here (tracks are placed first): a still-deleted track's parts read as "couldn't change here
@@ -6263,11 +6123,6 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     elseif theirs_new then
       kept = kept + 1
       kept_names[name ~= "" and name or "an unnamed track"] = true
-    -- (an Undo or Redo of your change to something a bandmate deleted since: their deletion stays, as what they changed since stays. It
-    -- brought the deleted item back for everyone, as it was before your edit; Undo then Redo left an item the song didn't have. A Restore
-    -- still brings back what it's asked to. The soak's undo probe, seed 113. rt-converge)
-    elseif p.t and (opts.undoes or opts.redoes) and last and last.gone and last.user ~= cfg.user then
-      gone_since = gone_since + 1
     -- (and one that went with its track, which a bandmate deleted since: recorded gone here under your own last change of it (mirror.receive's
     -- "gone with its track"). Your Undo of moving it onto that track brought it back onto the one it came from, and your Redo couldn't put it
     -- on the deleted track: an item the song didn't have, on your computer and everyone's. Their deletion stays. The long soak's 9040, rt-sync2f)

@@ -1123,7 +1123,8 @@ function sync.post(cfg, song, room, ev, proj)
   ev_seq = ev_seq + 1
   sync.posted = ev_seq -- (Live sync's cloud pass comes sooner after changes went out: James, rt)
   ev.format, ev.user, ev.time = band.FORMAT, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
-  if ev.type == "obj" and not ev.hlc then ev.hlc = require("mirror").hlc_next() end -- (what equal revisions are settled by: mirror.order_of)
+  -- (what equal revisions are settled by, mirror.order_of; and a timeline change's place among its maker's own acts, lib/undo.lua. rt-sync2i)
+  if (ev.type == "obj" or ev.type == "timeline") and not ev.hlc then ev.hlc = require("mirror").hlc_next() end
   if ev.type == "obj" then ev.mg = require("mirror").MG end -- (what this version merges: a chain merges only with another that says so. rt-p1)
   -- made with nobody else here (full control): everyone takes it when it reaches them, whoever drove then
   if sync.alone then ev.alone = true; if proj then setext(proj, band.SECTION, "alone_last", ev.time) end end
@@ -1589,7 +1590,7 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
   reaper.Undo_EndBlock2(proj, "StudioSync: the tempo map and markers of what you undid", -1)
   if not ok then error(e, 0) end
   local tev = { type = "timeline", tempo = band.capture_tempo(proj), markers = band.capture_markers(proj), project = band.capture_project(proj),
-    undoes = tags and tags.undoes, redoes = tags and tags.redoes, restored = tags and tags.restored }
+    undoes = tags and tags.undoes, redoes = tags and tags.redoes, restored = tags and tags.restored, act = tags and tags.act } -- (act: the press it belongs to, lib/undo.lua)
   sync.post(cfg, song, room, tev, proj)
   sync.timeline_live[proj] = true
   sync.session_timeline(cfg, song, tev.tempo, tev.markers, order(tev), tev.project, room)

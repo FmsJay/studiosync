@@ -83,10 +83,11 @@ function webrestore.upto(entries, p)
   for k, e in ipairs(entries) do if (e.time or "") <= (p.time or "") then upto = k end end
   return upto
 end
--- Words for undoing entries[i]: what, how many with it, and whose later changes go back too. Pure.
-function webrestore.undo_words(entries, i, me, describe)
+-- Words for undoing entries[i]: what, how many with it, and whose later changes go back too (`others`: page_restore's undo_plan). Pure.
+function webrestore.undo_words(entries, i, me, describe, others)
   local mirror = require("mirror")
-  local others, mine = mirror.later_by_others(entries, i), false
+  local mine = false
+  others = { table.unpack(others or {}) }
   for k = #others, 1, -1 do if others[k] == me then table.remove(others, k); mine = true end end
   if mine then table.insert(others, 1, "You") end
   local together = #mirror.same_moment(entries, i)
@@ -169,7 +170,8 @@ local function ask(proj, cfg, b, a)
     local i = webrestore.find(entries, a.undo)
     if not i then S.said = "That change isn't in History any more."; return end
     if entries[i].kind ~= "obj" then S.said = "This kind of change (tempo, a handover, a note) isn't undone on its own: restore the whole project to here instead."; return end
-    x.what, x.change, x.words, x.n = "undo", a.undo, webrestore.undo_words(entries, i, cfg.user, describe), 1
+    local others = select(2, panel(proj, cfg, b, entries, session, driver).test.undo_plan(i))
+    x.what, x.change, x.words, x.n = "undo", a.undo, webrestore.undo_words(entries, i, cfg.user, describe, others), 1
   elseif a.letgo ~= nil then
     local k = kept_file(a.letgo)
     if not k then S.said = "That kept automation has gone already."; return end

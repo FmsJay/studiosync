@@ -52,7 +52,6 @@ package.loaded.sync = { authority = function() return function() return true end
   room_dir = function() return "C:/S/Song/rooms/main" end, timeline_sig = function() return "[]" end }
 local moments = {} -- index -> its act's indices
 package.loaded.mirror = {
-  later_by_others = function(_, i) return i == 1 and { "Bo", "James" } or {} end,
   same_moment = function(_, i) return moments[i] or { i } end,
   lane_words = function() return "" end, known = function() return 0, "h", { id = "x" } end, find = function() return true end,
   apply = function() log("apply"); return true end, fnv = function(s) return "f" .. #s end,
@@ -61,6 +60,7 @@ local R = { test = {} }
 for _, k in ipairs({ "undo_change", "restore_whole", "restore_tracks" }) do R.test[k] = function(i) log(k .. " " .. i); return k .. " said" end end
 R.test.plan_for = function(i, point, scope) log("plan " .. i .. (point and " v" or "") .. (scope and " scoped" or "")); return {} end
 R.test.entries = function() end
+R.test.undo_plan = function(i) return {}, i == 1 and { "Bo", "James" } or {} end -- (who changed it after: lib/undo.lua undo.plan, its own tests)
 R.init = function() end
 R.show_change = function(_, e) log("show " .. e.id) end
 package.loaded.page_restore = R
@@ -117,7 +117,7 @@ do
   assert(#r2 == wr.ROWS_MAX and m2 == 5, "at most ROWS_MAX rows, and how many more")
   assert(wr.find(es, "a2") == 2 and wr.find(es, "zz") == nil and wr.find(es, 5) == nil, "a change by its id")
   assert(wr.upto(es, { time = "2026-11-27T09:01:30Z" }) == 2 and wr.upto(es, { time = "2026-11-26T00:00:00Z" }) == 0, "where a saved version stands")
-  local w = wr.undo_words(es, 1, "James", o.describe)
+  local w = wr.undo_words(es, 1, "James", o.describe, { "Bo", "James" })
   assert(w:find("^Undo Bo's take on Guitar") and w:find("You, Bo changed it after this: undoing it takes their change back too", 1, true), "undo's words name who changed it after")
 end
 

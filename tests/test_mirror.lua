@@ -165,27 +165,10 @@ plan = mirror.plan_restore(E, 4, function(oid, last) return oid == "I-A-1-2" end
 assert(plan["I-A-1-2"].id == "e3" and plan["T-A-1-1"] == nil, "scope")
 plan = mirror.plan_restore(E, 6)
 assert(plan["I-A-1-2"] == false, "deleted by then")
-assert(mirror.plan_undo(E, 4)["I-A-1-2"].id == "e2", "undo a move: the revision before")
-assert(mirror.plan_undo(E, 5)["I-B-1-3"] == false, "undo an add: it goes")
-assert(mirror.plan_undo(E, 6)["I-A-1-2"].id == "e3", "undo a delete: it comes back")
-assert(mirror.plan_undo(E, 3) == nil, "not a mirror change")
+-- (Undo's plans and which act it takes: tests/test_0_60_rt_undo2.lua, lib/undo.lua. rt-sync2i)
 assert(mirror.creator("I-BIG_AL-20261030-4") == "BIG_AL" and mirror.creator("T-A-1-1") == "A", "creator")
 assert(mirror.user_tag("Big Al") == "BIG_AL", "user tag")
 
--- top bar Undo / Redo: your own changes only
-local U = {
-  { kind = "obj", user = "J", id = "c1" }, { kind = "obj", user = "B", id = "b1" }, { kind = "obj", user = "J", id = "c2" },
-}
-assert(mirror.last_mine(U, "J") == 3, "undo: my newest")
-assert(mirror.last_undo(U, "J") == nil, "nothing to redo yet")
-U[4] = { kind = "obj", user = "J", id = "u1", undoes = "c2", restored = "c1" }
-assert(mirror.last_mine(U, "J") == 1, "undo again: the one before")
-assert(mirror.last_undo(U, "J") == 4, "redo: my newest undo")
-U[5] = { kind = "obj", user = "J", id = "r1", redoes = "u1", restored = "x" }
-assert(mirror.last_mine(U, "J") == 3, "after redo, c2 counts again")
-assert(mirror.last_undo(U, "J") == nil, "redone: nothing left to redo")
-U[6] = { kind = "obj", user = "J", id = "c3" }
-assert(mirror.last_undo(U, "J") == nil and mirror.last_mine(U, "J") == 6, "a new change ends redo")
 
 -- a plug-in's program block (its state's last line) gets the program name once loaded: not a difference
 local eq1 = '<FXCHAIN\nBYPASS 0 0 0\n<VST "VST: ReaEQ (Cockos)" reaeq.dll 0 ""\nZXFlcu5e7f4CAAAA\nAAAQAAAA\n>\nWAK 0 0\n>\n'
@@ -200,9 +183,6 @@ assert(mirror.item_hash("T-1", item1) ~= mirror.item_hash("T-1", (item1:gsub("ZX
 assert(mirror.item_hash("T-1", item1) ~= mirror.item_hash("T-2", item1), "the track still counts")
 local plain = "POSITION 1\nLENGTH 2\n<SOURCE WAVE\nFILE \"a.flac\"\n>"
 assert(mirror.item_hash("T-1", plain) == mirror.hash("T-1\n" .. plain), "no VST: the hash it always had (no resend after updating)")
--- a print StudioSync refreshed by itself isn't the person's change: Undo reaches past it to the copy they made
-local P = { { kind = "obj", user = "J", id = "copy" }, { kind = "obj", user = "J", id = "reprint", auto = true } }
-assert(mirror.last_mine(P, "J") == 1, "Undo skips an automatic print refresh")
 -- side room into its parent: only-side changes come in (tracks first), both-changed are clashes
 local side = { ["I-1"] = { obj = "item", oid = "I-1" }, ["T-9"] = { obj = "track", oid = "T-9" }, ["I-2"] = { obj = "item", oid = "I-2" } }
 local main = { ["I-2"] = { obj = "item", oid = "I-2" } }
@@ -307,7 +287,6 @@ local C = {
 }
 assert(mirror.plan_restore(C, 4)["I-X-1"].id == "c3", "restore to now: the band's version, not the later loser")
 assert(mirror.plan_restore(C, 2)["I-X-1"].id == "c2", "restore to a point before the clash")
-assert(mirror.plan_undo(C, 3)["I-X-1"].id == "c2", "undo James's rev 3: back to rev 2 (his), not Bee's losing rev 2")
 
 local a, b = mirror.new_oid("I", "Big Al", "20261030"), mirror.new_oid("I", "Big Al", "20261030")
 assert(a ~= b and a:find("^I%-BIG_AL%-20261030%-"), "oids unique, upper case: " .. a)
@@ -326,8 +305,8 @@ do
   local M = {
     { kind = "obj", obj = "item", oid = "I-1", id = "a1", user = "L", time = "T1", rev = 1, name = "Bass" },
     { kind = "obj", obj = "item", oid = "I-2", id = "a2", user = "L", time = "T1", rev = 1, name = "Bass" },
-    { kind = "obj", obj = "item", oid = "I-1", id = "g1", user = "L", time = "T2", rev = 2, name = "Bass", gone = true },
-    { kind = "obj", obj = "item", oid = "I-2", id = "g2", user = "L", time = "T2", rev = 2, name = "Bass", gone = true },
+    { kind = "obj", obj = "item", oid = "I-1", id = "g1", user = "L", time = "T2", rev = 2, name = "Bass", gone = true, base_ev = "a1" },
+    { kind = "obj", obj = "item", oid = "I-2", id = "g2", user = "L", time = "T2", rev = 2, name = "Bass", gone = true, base_ev = "a2" },
     { kind = "obj", obj = "item", oid = "I-3", id = "g3", user = "M", time = "T2", rev = 2, name = "Bass", gone = true },
     { kind = "obj", obj = "item", oid = "I-4", id = "g4", user = "L", time = "T3", rev = 2, name = "Bass", gone = true },
     { kind = "note", id = "n", user = "L", time = "T3" },
@@ -341,21 +320,29 @@ do
   local G = {
     { kind = "obj", obj = "item", oid = "I-1", id = "a1", user = "L", time = "T1", rev = 1, name = "Bass" },
     { kind = "obj", obj = "item", oid = "I-2", id = "a2", user = "L", time = "T1", rev = 1, name = "Bass" },
-    { kind = "obj", obj = "item", oid = "I-1", id = "g1", user = "L", time = "T2", rev = 2, name = "Bass", gone = true },
-    { kind = "obj", obj = "item", oid = "I-2", id = "g2", user = "L", time = "T2", rev = 2, name = "Bass", gone = true },
+    { kind = "obj", obj = "item", oid = "I-1", id = "g1", user = "L", time = "T2", rev = 2, name = "Bass", gone = true, base_ev = "a1" },
+    { kind = "obj", obj = "item", oid = "I-2", id = "g2", user = "L", time = "T2", rev = 2, name = "Bass", gone = true, base_ev = "a2" },
     { kind = "obj", obj = "item", oid = "I-9", id = "n9", user = "L", time = "T2", rev = 1, name = "Bass" },
   }
-  local glue = mirror.plan_undo_moment(G, 3)
+  -- (History's "Undo this change": lib/undo.lua's moment and plan, over versions that name what they were built on. rt-sync2i)
+  local undo = require("undo")
+  local function history_undo(list, i)
+    local by = {}
+    for _, e in ipairs(list) do by[e.id] = e end
+    return (undo.plan(list, undo.moment(list, i), function(id) return by[id] end, function() end))
+  end
+  local glue = history_undo(G, 3)
   assert(glue["I-1"].id == "a1" and glue["I-2"].id == "a2" and glue["I-9"] == false, "undoing a glue from any of its rows")
   -- a print finishing after an undo leaves it redoable; a real change doesn't
   local R = {
-    { kind = "obj", oid = "I-1", id = "c", user = "L", rev = 1 },
-    { kind = "obj", oid = "I-1", id = "u", user = "L", rev = 2, undoes = "c", restored = "x" },
-    { kind = "obj", oid = "I-2", id = "p", user = "L", rev = 2, auto = true },
+    { kind = "obj", oid = "I-1", id = "c", user = "L", rev = 1, hlc = 1 },
+    { kind = "obj", oid = "I-1", id = "u", user = "L", rev = 2, undoes = "c", restored = "x", hlc = 2 },
+    { kind = "obj", oid = "I-2", id = "p", user = "L", rev = 2, auto = true, hlc = 3 },
   }
-  assert(mirror.last_undo(R, "L") == 2, "a print after the undo: still redoable")
-  R[4] = { kind = "obj", oid = "I-2", id = "n", user = "L", rev = 3 }
-  assert(mirror.last_undo(R, "L") == nil, "a new change after it: nothing to redo")
+  local r = undo.last_undo(R, "L")
+  assert(r and R[r.top].id == "u", "a print after the undo: still redoable")
+  R[4] = { kind = "obj", oid = "I-2", id = "n", user = "L", rev = 3, hlc = 4 }
+  assert(undo.last_undo(R, "L") == nil, "a new change after it: nothing to redo")
   -- which tracks moved
   local function moved(old, new, sel)
     local s = {}
@@ -379,17 +366,17 @@ do
     { kind = "obj", obj = "item", oid = "I-P", id = "a", user = "M", time = "T1", rev = 1, name = "Lead", state = on(3) },
     { kind = "obj", obj = "item", oid = "I-C", id = "b", user = "M", time = "T1", rev = 1, name = "Lead", state = on(0) },
     { kind = "obj", obj = "item", oid = "I-D", id = "c", user = "M", time = "T1", rev = 1, name = "Lead", state = on(0) },
-    { kind = "obj", obj = "item", oid = "I-P", id = "gp", user = "M", time = "T2", rev = 2, name = "Lead", gone = true },
-    { kind = "obj", obj = "item", oid = "I-C", id = "gc", user = "M", time = "T2", rev = 2, name = "Lead", gone = true },
-    { kind = "obj", obj = "item", oid = "I-D", id = "gd", user = "M", time = "T2", rev = 2, name = "Lead", gone = true },
+    { kind = "obj", obj = "item", oid = "I-P", id = "gp", user = "M", time = "T2", rev = 2, name = "Lead", gone = true, base_ev = "a" },
+    { kind = "obj", obj = "item", oid = "I-C", id = "gc", user = "M", time = "T2", rev = 2, name = "Lead", gone = true, base_ev = "b" },
+    { kind = "obj", obj = "item", oid = "I-D", id = "gd", user = "M", time = "T2", rev = 2, name = "Lead", gone = true, base_ev = "c" },
     { kind = "obj", obj = "item", oid = "I-N", id = "n", user = "M", time = "T2", rev = 1, name = "Lead", state = on(0) },
   }
   assert(mirror.entry_lane(L, 1) == 3 and mirror.entry_lane(L, 4) == 3, "a delete sits on the lane its item had last")
   assert(#mirror.same_moment(L, 4) == 1, "the pass is its own row")
   assert(#mirror.same_moment(L, 5) == 3, "its two copies and what was made on that lane are one act")
-  local copies = mirror.plan_undo_moment(L, 5)
+  local copies = history_undo(L, 5)
   assert(copies["I-P"] == nil and copies["I-C"].id == "b" and copies["I-D"].id == "c" and copies["I-N"] == false, "and undoing them leaves the pass alone")
-  assert(mirror.plan_undo_moment(L, 4)["I-P"].id == "a" and mirror.plan_undo_moment(L, 4)["I-C"] == nil, "undoing the pass leaves the comp alone")
+  assert(history_undo(L, 4)["I-P"].id == "a" and history_undo(L, 4)["I-C"] == nil, "undoing the pass leaves the comp alone")
   -- a row names the lane as it was then, whatever has been added since
   local function lanes(t, rev, n, names) return { kind = "obj", obj = "track", oid = "T-1", id = "t" .. rev, user = "M", time = t, rev = rev, state = { lanes = n, lanenames = names } } end
   local N = {
@@ -415,7 +402,7 @@ do
   assert(playing == 8 and holds == 60, "the first comp holds 8 s of 60: " .. playing .. " of " .. holds)
   local all, whole = mirror.lane_cover({ { pos = 0, len = 10, plays = true }, { pos = 5, len = 10, plays = true }, { pos = 20, len = 5, plays = true } })
   assert(all == 20 and whole == 20, "overlaps count once")
-  local plan = mirror.plan_undo_moment(M, 4)
+  local plan = history_undo(M, 4)
   assert(plan["I-1"].id == "a1" and plan["I-2"].id == "a2", "Undo on either row brings both back")
 end
 do -- a state read here has floats, one from a bandmate's event can have whole numbers: the same settings (0.45: a track that had only moved was put back and suggested at every restart)

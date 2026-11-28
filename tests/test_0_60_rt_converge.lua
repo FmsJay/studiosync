@@ -1244,6 +1244,20 @@ do
   step(false)
   assert(marks(B) == "C1@8,R@13", "Bee's Undo of her rename: the marker is Cee's by now and stays (was: the old name came back beside it, two markers on one place): " .. marks(B))
   print("rt-converge 23: Undo of a timeline change goes back to the version it was made on")
+  -- (rt-sync2i) Undo takes your newest act by your own clock: Bee moves Keys' item and then, in the same second, the cue marker. The marker
+  -- goes back first. A timeline change carries the clock (`hlc`) as object changes do; by its second alone it sat before the item's move.
+  T = T + 2
+  S.as(B); reaper.SetExtState("BandSync", "hlc", string.format("%d", T * 1000 + 500), false) -- (half a second into it, as a real clock is)
+  S.edit(B, function(F) reaper.SetMediaItemInfo_Value(S.track(B, "Keys").items[1], "D_POSITION", 3) end)
+  S.edit(B, function(F) local m = F.markers[1]; reaper.SetProjectMarker4(F.proj, m.num, m.region, 9, m.rend, m.name, 0) end)
+  local tev = S.events(function(v) return v.type == "timeline" and v.user == "Bee" end)
+  table.sort(tev, function(a, b) return a.id < b.id end)
+  assert(tonumber(tev[#tev].hlc), "a timeline change carries its maker's clock")
+  assert(marks(B) == "C1@9,R@13", "(the marker moved: " .. marks(B) .. ")")
+  local u2 = step(false)
+  assert(marks(B) == "C1@8,R@13" and math.abs(reaper.GetMediaItemInfo_Value(S.track(B, "Keys").items[1], "D_POSITION") - 3) < 1e-9,
+    "Bee's Undo takes the marker back first, her later act in that second (was: the item's move, by the timeline's second): " .. u2 .. "; " .. marks(B))
+  print("rt-converge 23 (rt-sync2i): Undo goes by your own clock, a timeline change's too")
 end
 
 -- ---- 24. a note the claimer moved, transposed by you, then moved by you again: the second move asks (rt-r3's P1-8, second part) ----------------

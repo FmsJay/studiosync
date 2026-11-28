@@ -2044,7 +2044,7 @@ do
   local all = recall.entries(A.cfg, song, room)
   local j, n = nil, 0
   for i, e in ipairs(all) do if e.act == act then j = j or i; n = n + 1 end end
-  local _, ids = mirror.plan_undo_moment(all, j)
+  local _, _, ids = require("undo").plan(all, mirror.same_moment(all, j), function(id) return mirror.event_file(sync.room_dir(A.cfg, song, room), id) end, function() end)
   assert(n > 0 and #ids == n, "Undo this change on a row of the Restore covers all " .. n .. " of its changes (" .. #ids .. ")")
   -- (rt-history2's limit) an item last changed before a tempo change, restored to a point after it, goes onto its beat on the map in place.
   -- A version from before rt-sync2f, in seconds, is read into beats by the map it was made under (beats.upgrade), then put in seconds on today's.

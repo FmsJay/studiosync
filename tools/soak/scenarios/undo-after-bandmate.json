@@ -1,0 +1,27 @@
+{
+ "name": "undo-after-bandmate",
+ "what": "rt-sync2i (Undo from ancestry, rt-sync2 5a): James's StudioSync Undo a second after Bee's edit of the same thing, three times, each on something else of it than James changed: an item (James moves Drums 1, Bee mutes it, James undoes his move), its automation (James moves point 2 of Drums' volume envelope, Bee point 3, James undoes), and its plug-ins (Bee adds ReaEQ and a volume JS to Bass, James turns ReaEQ, Bee turns the JS, James undoes his turn). Whether James had Bee's edit when he pressed Undo or not, every computer must end with his change taken back and hers kept: Drums 1 back at 4 s and muted, point 2 back at 0.5 and point 3 at 0.85, ReaEQ back at 0.5 and the JS at 0.8. Then the undo probe. A plug-in chain that changed here under 5 s ago isn't touched (mirror.FX_SET_GAP, REAPER's crash guard), so an Undo pressed then says to do it again: James presses it again at 97 s if his turn is still his newest act not undone.",
+ "phase": 7,
+ "today": "passes",
+ "seed": 1,
+ "mode": "everyone",
+ "edits": [
+  {"t": 22, "node": "James", "lua": "local it = item('Drums 1'); if it then reaper.SetMediaItemInfo_Value(it, 'D_POSITION', 21.5); return 'moved Drums 1 to 21.5' end"},
+  {"t": 35.0, "node": "Bee", "lua": "local it = item('Drums 1'); if it then reaper.SetMediaItemInfo_Value(it, 'B_MUTE', 1); return 'muted Drums 1' end"},
+  {"t": 36.0, "node": "James", "kind": "undo", "r": []},
+  {"t": 50, "node": "James", "kind": "envelope", "r": [0.0, 0.3, 0.25, 0, 0, 0]},
+  {"t": 60.0, "node": "Bee", "kind": "envelope", "r": [0.0, 0.6, 0.85, 0, 0, 0]},
+  {"t": 61.0, "node": "James", "kind": "undo", "r": []},
+  {"t": 70, "node": "Bee", "kind": "fx", "r": [0.3, 0.1, 0.1, 0.0, 0.5, 0]},
+  {"t": 72, "node": "Bee", "kind": "fx", "r": [0.3, 0.1, 0.6, 0.6, 0.5, 0]},
+  {"t": 80, "node": "James", "kind": "fx", "r": [0.3, 0.9, 0.1, 0.0, 0.25, 0]},
+  {"t": 90.0, "node": "Bee", "kind": "fx", "r": [0.3, 0.9, 0.6, 0.0, 0.8, 0]},
+  {"t": 91.0, "node": "James", "kind": "undo", "r": []},
+  {"t": 97.0, "node": "James", "lua": "local all = require('recall').entries(cfg, SONG, ROOM); local g = undo.last_mine(all, cfg.user); if g and all[g.top].obj == 'fx' then return EDITS.undo() end"}
+ ],
+ "checks": [
+  {"on": "all", "what": "James's move of Drums 1 is undone and Bee's mute stays", "lua": "local it = item('Drums 1'); assert(it, 'Drums 1 is gone'); local p, m = reaper.GetMediaItemInfo_Value(it, 'D_POSITION'), reaper.GetMediaItemInfo_Value(it, 'B_MUTE'); assert(math.abs(p - 4) < 1e-6 and m == 1, 'Drums 1 at ' .. p .. ', mute ' .. m)"},
+  {"on": "all", "what": "James's automation point is undone and Bee's stays", "lua": "local pts = {}; for t, v in track('Drums').body:gmatch('\\nPT (%S+) (%S+)') do pts[tonumber(t)] = tonumber(v) end; assert(pts[4] == 0.5 and pts[8] == 0.85, 'point 2 ' .. tostring(pts[4]) .. ', point 3 ' .. tostring(pts[8]))"},
+  {"on": "all", "what": "James's turn of ReaEQ is undone and Bee's turn of the JS stays", "lua": "local t = track('Bass'); assert(reaper.TrackFX_GetCount(t) == 2, reaper.TrackFX_GetCount(t) .. ' plug-ins'); local a, b = reaper.TrackFX_GetParamNormalized(t, 0, 0), reaper.TrackFX_GetParamNormalized(t, 1, 0); assert(math.abs(a - 0.5) < 1e-9 and math.abs(b - 0.8) < 1e-9, 'ReaEQ ' .. a .. ', JS ' .. b)"}
+ ]
+}

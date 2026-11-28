@@ -129,6 +129,19 @@ end
 -- as StudioSync's Undo takes back an act's (sync.undo_timeline): the items then land under today's map, and what REAPER moves for it reads the
 -- same in beats, no edit of yours (lib/beats.lua). Only where the map is still the Restore's and yours to change. James, 2026-11-21 (rt-edits
 -- round 6 question 1 (b)).
+-- The plan for undoing entries[i] and the rest of its moment (undo.moment), and who else changed them since: StudioSync's Undo rule
+-- (lib/undo.lua undo.plan), built on what this computer holds. rt-sync2i
+local function undo_plan(i)
+  local b, cfg, proj = E.b(), E.cfg(), E.proj()
+  local room_dir = sync.room_dir(cfg, b.song, b.room)
+  local function read(id) return mirror.event_file(room_dir, id) end
+  local undo = require("undo")
+  return undo.plan(entries, undo.moment(entries, i), read, function(oid)
+    local _, h, kev = mirror.known(proj, oid)
+    if (kev or "") == "" then return nil end
+    return read(kev) or { id = kev, oid = oid, gone = h == "" or nil, stub = true }
+  end)
+end
 local function undo_change(i, opts)
   local b, cfg, proj, view = E.b(), E.cfg(), E.proj(), E.view()
   local e, tl = entries[i], nil
@@ -142,9 +155,9 @@ local function undo_change(i, opts)
     local ok, changed = pcall(sync.undo_timeline, proj, cfg, b.song, b.room, entries, tl, { restored = true }, view.session)
     if not ok then band.log("undo: the tempo map and markers stay as they are (" .. tostring(changed) .. ")") end
   end
-  return mirror.revert(proj, cfg, b.song, b.room, mirror.plan_undo_moment(entries, i), opts)
+  return mirror.revert(proj, cfg, b.song, b.room, (undo_plan(i)), opts)
 end
-R.test = { plan_for = plan_for, entries = function(list) entries = list end, restore_whole = restore_whole, restore_tracks = restore_tracks, undo_change = undo_change } -- (tests/test_0_60_rt_histhear_panel.lua, test_0_60_rt_answers.lua)
+R.test = { plan_for = plan_for, entries = function(list) entries = list end, restore_whole = restore_whole, restore_tracks = restore_tracks, undo_change = undo_change, undo_plan = undo_plan } -- (tests/test_0_60_rt_histhear_panel.lua, test_0_60_rt_answers.lua)
 local function back_button(i, what, single, point)
   local b, cfg, proj, view, wide, points, can, who = E.b(), E.cfg(), E.proj(), E.view(), E.wide(), E.points(), E.can(), E.who()
   local e, mirror = entries[i], require("mirror")
@@ -160,7 +173,7 @@ local function back_button(i, what, single, point)
   if single then
     ImGui.BeginDisabled(ctx, not e or e.kind ~= "obj")
     if ImGui.SmallButton(ctx, "Undo this change") then
-      local others, me = mirror.later_by_others(entries, i), false
+      local others, me = select(2, undo_plan(i)), false
       for k = #others, 1, -1 do if others[k] == cfg.user then table.remove(others, k); me = true end end
       if me then table.insert(others, 1, "You") end -- (it named you in the third person: laptop 0.34.4)
       local whose = #others == 1 and me and "your" or "their"

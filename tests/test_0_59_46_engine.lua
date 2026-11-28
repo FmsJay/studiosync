@@ -57,10 +57,11 @@ local E = {
   { kind = "obj", obj = "item", id = "Me-2", oid = "I-N", rev = 2, user = "Me", time = "2026-11-19T10:01:00Z", gone = true, undoes = "Me-1" },
   { kind = "obj", obj = "item", id = "Me-3", oid = "I-N", rev = 3, user = "Me", time = "2026-11-19T10:02:00Z", state = "a", restored = "Me-1", redoes = "Me-2" },
 }
-assert(mirror.last_undo(E, "Me") == nil, "nothing more to redo")
+local undo = require("undo") -- (lib/undo.lua since rt-sync2i)
+assert(undo.last_undo(E, "Me") == nil, "nothing more to redo")
 E[#E + 1] = { kind = "obj", obj = "item", id = "Me-0", oid = "I-Z", rev = 1, base = 0, user = "Me", time = "2026-11-19T09:00:00Z", state = "z" }
 table.sort(E, function(a, b) return a.time < b.time end)
-local i = mirror.last_mine(E, "Me")
+local i = undo.last_mine(E, "Me").top
 assert(E[i].id == "Me-1", "Undo takes the redone add back, not the undo (" .. tostring(E[i].id) .. ")")
 -- and a redo after two undos goes on to the second (it stopped at "nothing to redo")
 local F = {
@@ -70,8 +71,8 @@ local F = {
   { kind = "obj", obj = "item", id = "Me-4", oid = "I-A", rev = 2, user = "Me", time = "2026-11-19T10:02:00Z", gone = true, undoes = "Me-1" },
   { kind = "obj", obj = "item", id = "Me-5", oid = "I-A", rev = 3, user = "Me", time = "2026-11-19T10:03:00Z", state = "a", restored = "Me-1", redoes = "Me-4" },
 }
-local r = mirror.last_undo(F, "Me")
-assert(r and F[r].id == "Me-3", "the second redo reaches the earlier undo (" .. tostring(r and F[r].id) .. ")")
+local r = undo.last_undo(F, "Me")
+assert(r and F[r.top].id == "Me-3", "the second redo reaches the earlier undo (" .. tostring(r and F[r.top].id) .. ")")
 
 -- D: a track deleted with its items, the items' deletions a second later (a quarter second a pass): undoing an item brings the track too
 local G = {}
@@ -79,11 +80,13 @@ local function g(e) e.kind = "obj"; e.user = "Me"; e.name = "Keys"; G[#G + 1] = 
 g{ id = "Me-t", obj = "track", oid = "T-K", rev = 1, base = 0, time = "2026-11-19T09:00:00Z", state = { name = "Keys" } }
 g{ id = "Me-a", obj = "item", oid = "I-A", rev = 1, base = 0, time = "2026-11-19T09:00:01Z", state = "<ITEM\n>\n", track = "T-K" }
 g{ id = "Me-b", obj = "item", oid = "I-B", rev = 1, base = 0, time = "2026-11-19T09:00:01Z", state = "<ITEM\n>\n", track = "T-K" }
-g{ id = "Me-tg", obj = "track", oid = "T-K", rev = 2, base = 1, base_ev = "Me-t", time = "2026-11-19T10:00:00Z", gone = true }
-g{ id = "Me-ag", obj = "item", oid = "I-A", rev = 2, base = 1, base_ev = "Me-a", time = "2026-11-19T10:00:01Z", gone = true, track = "T-K" }
-g{ id = "Me-bg", obj = "item", oid = "I-B", rev = 2, base = 1, base_ev = "Me-b", time = "2026-11-19T10:00:01Z", gone = true, track = "T-K" }
+g{ id = "Me-tg", obj = "track", oid = "T-K", rev = 2, base = 1, base_ev = "Me-t", time = "2026-11-19T10:00:00Z", gone = true, act = "D" }
+g{ id = "Me-ag", obj = "item", oid = "I-A", rev = 2, base = 1, base_ev = "Me-a", time = "2026-11-19T10:00:01Z", gone = true, track = "T-K", act = "D" }
+g{ id = "Me-bg", obj = "item", oid = "I-B", rev = 2, base = 1, base_ev = "Me-b", time = "2026-11-19T10:00:01Z", gone = true, track = "T-K", act = "D" }
 G[5].state = "<ITEM\n>\nBANDLANE 0\n"; G[6].state = "<ITEM\n>\nBANDLANE 1\n" -- (other lanes: same_moment doesn't take them together)
-local plan = mirror.plan_undo_moment(G, mirror.last_mine(G, "Me"))
+local byG = {}
+for _, x in ipairs(G) do byG[x.id] = x end
+local plan = undo.plan(G, undo.last_mine(G, "Me").rows, function(id) return byG[id] end, function() end) -- (one act, by its act: across seconds and lanes)
 assert(plan["T-K"] and plan["T-K"].id == "Me-t", "the track deleted a second before comes back with its items")
 assert(plan["I-A"] and plan["I-B"], "and both its items")
 

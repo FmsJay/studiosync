@@ -125,16 +125,19 @@ add{ id = "Me-2", oid = "I-B", rev = 1, base = 0, time = "2026-11-18T10:00:00Z",
 add{ id = "Me-3", oid = "I-C", rev = 1, base = 0, time = "2026-11-18T10:00:00Z", state = ist, track = "T-K" }
 add{ id = "Me-4", oid = "I-D", rev = 1, base = 0, time = "2026-11-18T10:00:01Z", state = ist, track = "T-K" }
 add{ id = "Me-5", oid = "I-D", rev = 2, base = 1, base_ev = "Me-4", time = "2026-11-18T10:01:00Z", state = ist, track = "T-K" }
-add{ id = "Me-6", oid = "I-A", rev = 2, base = 1, base_ev = "Me-1", time = "2026-11-18T10:02:00Z", gone = true, track = "T-K" }
-add{ id = "Me-7", oid = "I-B", rev = 2, base = 1, base_ev = "Me-2", time = "2026-11-18T10:02:00Z", gone = true, track = "T-K" }
-add{ id = "Me-8", oid = "I-C", rev = 2, base = 1, base_ev = "Me-3", time = "2026-11-18T10:02:00Z", gone = true, track = "T-K" }
-local i = mirror.last_mine(E, "Me")
-local p1, ids = mirror.plan_undo_moment(E, i)
+add{ id = "Me-6", oid = "I-A", rev = 2, base = 1, base_ev = "Me-1", time = "2026-11-18T10:02:00Z", gone = true, track = "T-K", act = "D" }
+add{ id = "Me-7", oid = "I-B", rev = 2, base = 1, base_ev = "Me-2", time = "2026-11-18T10:02:00Z", gone = true, track = "T-K", act = "D" }
+add{ id = "Me-8", oid = "I-C", rev = 2, base = 1, base_ev = "Me-3", time = "2026-11-18T10:02:00Z", gone = true, track = "T-K", act = "D" }
+-- (lib/undo.lua since rt-sync2i: the act by its `act`, the plan from what each version was built on)
+local undo = require("undo")
+local function rd(list) local by = {}; for _, e in ipairs(list) do by[e.id] = e end; return function(id) return by[id] end end
+local g = undo.last_mine(E, "Me")
+local p1, _, ids = undo.plan(E, g.rows, rd(E), function() end)
 assert(p1["I-A"] and p1["I-B"] and p1["I-C"] and #ids == 3, "the act's three ids come with its plan")
 for _, oid in ipairs({ "I-A", "I-B", "I-C" }) do
-  add{ id = "Me-r" .. oid, oid = oid, rev = 3, time = "2026-11-18T10:03:00Z", state = ist, restored = p1[oid].id, undoes = E[i].id, undoes_all = ids, track = "T-K" }
+  add{ id = "Me-r" .. oid, oid = oid, rev = 3, time = "2026-11-18T10:03:00Z", state = ist, restored = p1[oid].id, undoes = E[g.top].id, undoes_all = ids, track = "T-K", act = "U" }
 end
-assert(E[mirror.last_mine(E, "Me")].id == "Me-5", "the next undo is the change before the act, not the same restore again")
+assert(E[undo.last_mine(E, "Me").top].id == "Me-5", "the next undo is the change before the act, not the same restore again")
 
 -- S5: a track deleted with its items in one act (items on two lanes): undoing it brings the track and all its items
 local F = {}
@@ -142,10 +145,10 @@ local function addf(e) e.kind = "obj"; e.user = "Me"; e.name = "Keys"; F[#F + 1]
 addf{ id = "Me-t1", obj = "track", oid = "T-K", rev = 1, base = 0, time = "2026-11-18T09:00:00Z", state = { name = "Keys" } }
 addf{ id = "Me-i1", obj = "item", oid = "I-A", rev = 1, base = 0, time = "2026-11-18T09:00:01Z", state = "<ITEM\n>\nBANDLANE 0\n", track = "T-K" }
 addf{ id = "Me-i2", obj = "item", oid = "I-B", rev = 1, base = 0, time = "2026-11-18T09:00:01Z", state = "<ITEM\n>\nBANDLANE 1\n", track = "T-K" }
-addf{ id = "Me-g1", obj = "item", oid = "I-A", rev = 2, base = 1, base_ev = "Me-i1", time = "2026-11-18T10:00:00Z", gone = true, track = "T-K" }
-addf{ id = "Me-g2", obj = "item", oid = "I-B", rev = 2, base = 1, base_ev = "Me-i2", time = "2026-11-18T10:00:00Z", gone = true, track = "T-K" }
-addf{ id = "Me-gt", obj = "track", oid = "T-K", rev = 2, base = 1, base_ev = "Me-t1", time = "2026-11-18T10:00:00Z", gone = true }
-local p5 = mirror.plan_undo_moment(F, 4)
+addf{ id = "Me-g1", obj = "item", oid = "I-A", rev = 2, base = 1, base_ev = "Me-i1", time = "2026-11-18T10:00:00Z", gone = true, track = "T-K", act = "D" }
+addf{ id = "Me-g2", obj = "item", oid = "I-B", rev = 2, base = 1, base_ev = "Me-i2", time = "2026-11-18T10:00:00Z", gone = true, track = "T-K", act = "D" }
+addf{ id = "Me-gt", obj = "track", oid = "T-K", rev = 2, base = 1, base_ev = "Me-t1", time = "2026-11-18T10:00:00Z", gone = true, act = "D" }
+local p5 = undo.plan(F, undo.moment(F, 4), rd(F), function() end) -- (History's "Undo this change" on the first item's row)
 assert(p5["T-K"] and p5["T-K"].id == "Me-t1", "undoing the items brings their track deleted with them")
 assert(p5["I-B"] and p5["I-B"].id == "Me-i2", "and its items on its other lanes")
 

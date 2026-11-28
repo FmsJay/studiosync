@@ -15,11 +15,15 @@ assert(plan["I-A-1-2"] == nil, "made before the trim: left out of the plan, not 
 assert(plan["I-B-1-3"] == false, "an owner's new item made after: it goes, rev 1001 or not")
 assert(plan["T-A-1-1"] ~= nil, "what was there then stays planned")
 assert(mirror.plan_restore(T, 2)["I-A-1-2"].id == "i2", "a kept version at the row: back to it")
-assert(next(mirror.plan_undo(T, 2)) == nil, "undoing the oldest kept change, whose base was trimmed: nothing planned")
-assert(mirror.plan_undo(T, 3)["I-A-1-2"].id == "i2", "undo with the version before still here: back to it")
-assert(mirror.plan_undo(T, 4)["I-B-1-3"] == false, "undo a creation: it goes")
+local undo = require("undo")
+local byT = {}
+for _, e in ipairs(T) do byT[e.id] = e end
+local function undo_row(i) return (undo.plan(T, { i }, function(id) return byT[id] end, function() end)) end
+assert(next(undo_row(2)) == nil, "undoing the oldest kept change, whose base was trimmed: nothing planned")
+assert(undo_row(3)["I-A-1-2"].id == "i2", "undo with the version before still here: back to it")
+assert(undo_row(4)["I-B-1-3"] == false, "undo a creation: it goes")
 assert(mirror.began({ rev = 1 }) and not mirror.began({ rev = 4 }) and mirror.began({ rev = 1001, base = 0 }), "began: old events by rev, newer by base")
-assert(type(mirror.plan_undo_moment({ { kind = "edit", id = "x", time = "t" } }, 1)) == "table", "an empty plan, never nil")
+assert(type((undo.plan({ { kind = "edit", id = "x", time = "t" } }, { 1 }, function() end, function() end))) == "table", "an empty plan, never nil")
 
 -- a left trim on one side, a move on the other: the winner's whole timing, not a mix of both
 do

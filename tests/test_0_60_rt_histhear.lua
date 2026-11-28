@@ -562,13 +562,16 @@ local acts = {}
 for _, e in ipairs(entries) do acts[#acts + 1] = e end
 local base = #acts
 local function rev_of(oid) local r = 0; for _, e in ipairs(acts) do if e.oid == oid then r = math.max(r, e.rev or 0) end end; return r end
+local function last_of(oid) local best; for _, e in ipairs(acts) do if e.oid == oid and (not best or (e.rev or 0) > (best.rev or 0)) then best = e end end; return best and best.id end
 for _, x in ipairs({ { "T-A-4", "track" }, { "I-A-4", "item" }, { "I-A-3", "item" }, { "F-A-2", "fx" } }) do
   acts[#acts + 1] = { kind = "obj", type = "obj", obj = x[2], oid = x[1], rev = rev_of(x[1]) + 1, time = "2026-11-10T12:00:0" .. (#acts - base) .. "Z", id = "r" .. (#acts - base),
-    user = "James", restored = "e?", act = "James-20261110120000-r1", track = x[2] == "item" and "T-A-2" or nil }
+    user = "James", restored = "e?", act = "James-20261110120000-r1", track = x[2] == "item" and "T-A-2" or nil, base_ev = last_of(x[1]) }
 end
 local moment = mirror.same_moment(acts, base + 2)
 assert(#moment == 4, "one act in History, across seconds and kinds: " .. #moment)
-local undo = mirror.plan_undo_moment(acts, base + 1)
+local by_act = {}
+for _, e in ipairs(acts) do by_act[e.id] = e end
+local undo = require("undo").plan(acts, require("undo").moment(acts, base + 1), function(id) return by_act[id] end, function() end) -- (lib/undo.lua, rt-sync2i)
 assert(undo["T-A-4"] == false and undo["I-A-4"] == false and undo["I-A-3"] == false and undo["F-A-2"].id == "e13", "Undo takes the whole restore back to how it was before it")
 local msrc = (function() local f = assert(io.open("lib/mirror.lua", "rb")); local s = f:read("a"); f:close(); return s end)()
 local _, nact = msrc:gsub("act = opts%.act", "")

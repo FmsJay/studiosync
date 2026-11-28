@@ -200,8 +200,8 @@ do
   local undo_tl
   for _, ev in ipairs(new_events()) do if ev.type == "timeline" then undo_tl = ev end end
   assert(undo_tl and undo_tl.restored, "its map goes out as a Restore's, so StudioSync's Undo and Redo pass over it")
-  local mine = mirror.last_mine(page_entries(), "James")
-  assert(not (mine and page_entries()[mine].restored), "(StudioSync's Undo doesn't take a Restore's change for yours)")
+  local mine = require("undo").last_mine(page_entries(), "James")
+  assert(not (mine and page_entries()[mine.top].restored), "(StudioSync's Undo doesn't take a Restore's change for yours)")
   assert(#look(A) == 0, "nothing more goes out as your edit after it")
   tick()
   recv(B)
