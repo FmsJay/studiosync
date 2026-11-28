@@ -16,6 +16,7 @@
 --     merged with a new edit keeps its place.
 -- 11. The order comes from the versions held, not from a rank left on a track (a version recorded without being put in place: sync.set_back).
 -- 12. A receive pass that lands a track sorts the whole order by rank (sync.receive), not only the track that landed.
+-- 13. A bandmate's move waits while this computer plays or records, and lands at the stop (rt-live bug 4).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -379,6 +380,26 @@ do
   S.recv(B)
   assert(S.names(B) == "Drums, Bass, Gtr 2, Keys", "the pass that landed James's rename put Bee's order right (was: only Gtr placed, Keys left on top): " .. S.names(B))
   print("rt-rank 12: a pass that lands a track sorts the whole order by rank")
+end
+
+-- ---- 13. a bandmate's move waits while this computer plays, and lands at the stop (rt-sync2c check 11; rt-live bug 4, sync2c c11) ----------
+-- Fails on 52ce885: mirror.apply reordered Bee's tracks mid-playback.
+do
+  local S, A, B = song("Rank13")
+  S.recv(B)
+  T = T + 5
+  B.F.playing = 1
+  S.move(A, "Keys", 0) -- (Keys to the top)
+  assert(S.names(A) == "Keys, Drums, Bass, Gtr", "moved on James's: " .. S.names(A))
+  S.recv(B)
+  assert(S.names(B) == "Drums, Bass, Gtr, Keys", "Bee's tracks stay put while she plays: " .. S.names(B))
+  assert(#S.events(function(v) return v.user == "Bee" and v.obj == "track" end) == 0, "and the place it waits in isn't sent as hers")
+  B.F.playing = 0
+  B.F.clock = B.F.clock + 1
+  S.settle(B)
+  assert(S.names(B) == "Keys, Drums, Bass, Gtr", "at the stop, in place: " .. S.names(B))
+  assert(#S.events(function(v) return v.user == "Bee" and v.obj == "track" end) == 0, "nothing of Bee's sent for it")
+  print("rt-rank 13: a bandmate's move waits while this computer plays and lands at the stop")
 end
 
 print("ok rt-rank")

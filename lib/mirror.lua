@@ -3103,7 +3103,9 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
     -- (mirror.STAY: mirror.heal's mark on a version whose place is the one already held here. A key no event file can carry)
     if not ev[mirror.STAY] and mirror.track_state(proj, tr, local_mix).after ~= place and reaper.EnumProjects(-1) == proj then
       local above = place ~= "" and mirror.find(proj, "track", place)
-      if above or place == "" then
+      -- (never under someone playing or recording: at the next stop, by mirror.watch's keep_order. rt-sync2c check 11; rt-live bug 4, c11)
+      if (above or place == "") and reaper.GetPlayStateEx(proj) & 5 ~= 0 then mirror.order_owed[tostring(proj)] = true
+      elseif above or place == "" then
         local sel = {}
         for i = 0, reaper.CountSelectedTracks(proj) - 1 do sel[#sel + 1] = reaper.GetSelectedTrack(proj, i) end
         reaper.SetOnlyTrackSelected(tr)

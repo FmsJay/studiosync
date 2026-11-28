@@ -2341,7 +2341,9 @@ function sync.receive(proj, cfg, song, room, can)
   -- section 3 "Applying", rt-sync2c)
   if track_landed and not sync.loading[pk] and not (reaper.JS_Mouse_GetState and (tonumber((reaper.JS_Mouse_GetState(1))) or 0) & 1 == 1)
       and require("mirror").ranked(proj) then
-    pcall(require("mirror").keep_order, proj, cfg, song, room)
+    -- (playing or recording: at the next stop, by mirror.watch's keep_order, not never. rt-live bug 4)
+    if reaper.GetPlayStateEx(proj) & 5 ~= 0 then require("mirror").order_owed[pk] = true
+    else pcall(require("mirror").keep_order, proj, cfg, song, room) end
   end
   if sync.loading[pk] and not budget_out then
     sync.loading[pk], loading_said[pk] = nil, nil
