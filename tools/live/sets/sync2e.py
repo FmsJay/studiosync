@@ -3,7 +3,7 @@ LinuxBox (x): its Syncthing paused through its REST API (approved for tests; nev
 direct link while the audio waits."""
 import time
 from live import scenario, Skip, Fail, NoAnswer, lua_str, NAMES
-from sets._lv import B, USER, SONG, setup, T, names, add, order, quiet_order, ss_undo, log_has, sleep, x_syncthing
+from sets._lv import _x as _lv_x, B, USER, SONG, setup, T, names, add, order, quiet_order, ss_undo, log_has, sleep, x_syncthing
 
 SETTLE = 17
 TAKE_POS, TAKE_SECS = 2.0, 16.0  # an 8-bar take at 120 bpm
@@ -17,28 +17,47 @@ def items(ctx, w, short):
     return None
 
 
+MEDIA_X = "/home/studio/StudioSync Smiley Studios/" + SONG + "/rooms/main/media"
+
+
+def x_media_blocked(on):
+    """LinuxBox's copy of the song's media folder made read-only (or writable again): nothing can put a file there, not Syncthing, not the
+    direct link's media stream. Inside the VM only."""
+    mode = "a-w" if on else "u+w"
+    r = _lv_x(f"mkdir -p '{MEDIA_X}' && chmod {mode} '{MEDIA_X}' && stat -c %A '{MEDIA_X}'")
+    return r.stdout.strip()
+
+
 def grey_on_x(ctx, short):
-    """LinuxBox's Syncthing paused, the desktop records an 8-bar take on `short`: wait for LinuxBox's grey stand-in. If the change itself
-    only travels by Syncthing, resume it in short bursts until the stand-in shows, then pause again. -> the stand-in's item dict."""
+    """The desktop records an 8-bar take on `short` while its audio can't reach LinuxBox yet -> LinuxBox's grey stand-in (item dict).
+    On this branch a take's audio travels over the direct link too (lib/streams.lua offer_media: any media file written in the last 10
+    minutes), so pausing Syncthing alone, the check's own recipe, doesn't make it late: tried first, the audio came with the change. So:
+    LinuxBox's Syncthing paused and its copy of the song's media folder read-only, until resume_x()."""
     ctx.check(x_syncthing(True), "couldn't pause LinuxBox's Syncthing")
-    ctx.cleanups.append(lambda: x_syncthing(False))
+    perm = x_media_blocked(True)
+    def undo():
+        x_media_blocked(False)
+        x_syncthing(False)
+    ctx.cleanups.append(undo)
+    ctx.x_resume = undo
+    ctx.note(f"LinuxBox: Syncthing paused, media folder {perm}")
     ctx.do("d", f"LV.record_take(P, {lua_str(T(ctx, short))}, {TAKE_POS}, {TAKE_SECS}, 'late') return LV.out(true)")
-    end, burst = time.time() + 120, 0
+    end = time.time() + 120
     while time.time() < end:
         its = items(ctx, "x", short) or []
         grey = [i for i in its if i["arriving"]]
         if grey:
-            x_syncthing(True)
-            ctx.note(f"LinuxBox shows the grey stand-in ({'over the direct link' if burst == 0 else f'after {burst} Syncthing burst(s)'})")
+            ctx.note("LinuxBox shows the grey stand-in")
             return grey[0]
         if any(not i["arriving"] for i in its):
-            x_syncthing(True)
             raise Fail("harness: the take's audio reached LinuxBox with its change (no stand-in to test)")
-        if time.time() > end - 100 and burst < 20:
-            # (nothing yet after 20 s: the change waits for Syncthing too. A burst of half a second, then look again)
-            x_syncthing(False); time.sleep(0.5); x_syncthing(True); burst += 1
         time.sleep(1)
     raise Fail("no grey stand-in appeared on LinuxBox within 2 minutes")
+
+
+def resume_x(ctx):
+    ctx.x_resume()
+    return True
 
 
 def no_grey(ctx):
@@ -58,7 +77,7 @@ def copy_grey(ctx):
     ctx.do("x", f"""local t = LV.track(P, {lua_str(T(ctx, 'Gtr'))}); local it = reaper.GetTrackMediaItem(t, 0)
 LV.copy_item(P, it, 38) return LV.out(true)""")
     sleep(3)
-    ctx.check(x_syncthing(False), "couldn't resume LinuxBox's Syncthing")
+    ctx.check(resume_x(ctx), "couldn't resume LinuxBox")
     def landed():
         o = {w: ctx.shape(w) for w in ctx.on}
         ok = all("~" not in s and "2.00+16.00" in s and "38.00+16.00" in s for s in o.values())
@@ -76,7 +95,7 @@ def deleted_before(ctx):
     grey_on_x(ctx, "Gtr")
     ctx.do("d", f"LV.delete_items_on(P, {lua_str(T(ctx, 'Gtr'))}) return LV.out(true)")
     sleep(5)
-    ctx.check(x_syncthing(False), "couldn't resume LinuxBox's Syncthing")
+    ctx.check(resume_x(ctx), "couldn't resume LinuxBox")
     sh = ctx.quiet(timeout=150)
     ctx.check(sh == T(ctx, "Gtr"), f"after resuming: {sh} (want the track with no items anywhere)")
 
@@ -88,7 +107,7 @@ def track_deleted_before(ctx):
     grey_on_x(ctx, "Gtr")
     ctx.do("d", f"LV.delete_tracks(P, {names(ctx, 'Gtr')}) return LV.out(true)")
     sleep(5)
-    ctx.check(x_syncthing(False), "couldn't resume LinuxBox's Syncthing")
+    ctx.check(resume_x(ctx), "couldn't resume LinuxBox")
     sh = ctx.quiet(timeout=150)
     ctx.check(sh == T(ctx, "Keep"), f"after resuming: {sh}")
     allx = ctx.do("x", "local o = {} for k = 0, reaper.CountTracks(P) - 1 do o[#o+1] = select(2, reaper.GetTrackName(reaper.GetTrack(P, k))) end return LV.out(o)")
@@ -98,24 +117,46 @@ def track_deleted_before(ctx):
 
 @scenario("e4 StudioSync's Undo with the audio missing", "sync2e 4", needs=("d", "x"), wants=("l",))
 def undo_missing_audio(ctx):
-    add(ctx, "d", "Gtr")
+    """LinuxBox deletes Gtr at the moment the desktop records a take on it (the desktop hasn't seen the deletion), with the take's audio
+    unable to reach LinuxBox; LinuxBox's StudioSync Undo of its deletion brings Gtr back with what was made on it meanwhile (41980c2): that
+    take, whose audio isn't here. Deleting a grey box itself is no deletion (it never was the take here), so this is the path that brings a
+    take back by StudioSync's Undo with its audio missing."""
+    add(ctx, "d", "Gtr", "Keep")
     ctx.quiet()
     sleep(SETTLE)
-    grey_on_x(ctx, "Gtr")
+    ctx.check(x_syncthing(True), "couldn't pause LinuxBox's Syncthing")
+    perm = x_media_blocked(True)
+    def undo():
+        x_media_blocked(False)
+        x_syncthing(False)
+    ctx.cleanups.append(undo)
+    ctx.x_resume = undo
+    ctx.note(f"LinuxBox: Syncthing paused, media folder {perm}")
+    ctx.at_once({
+        "x": f"LV.delete_tracks(P, {names(ctx, 'Gtr')}) return true",
+        "d": f"LV.record_take(P, {lua_str(T(ctx, 'Gtr'))}, {TAKE_POS}, {TAKE_SECS}, 'undo') return true",
+    }, after=10)
     marks = ctx.log_marks(["x"])
-    # LinuxBox deletes the grey box (its own change, sent), then its StudioSync Undo brings that take back while its audio is still missing here
-    ctx.do("x", f"LV.delete_items_on(P, {lua_str(T(ctx, 'Gtr'))}) return LV.out(true)")
-    ctx.wait("the take gone on the desktop", lambda: items(ctx, "d", "Gtr") == [], timeout=60)
-    sleep(5)
     ss_undo(ctx, "x")
-    sleep(8)
+    sleep(10)
     said = log_has(ctx, "x", marks, "couldn't change here yet")
-    ctx.note(f"LinuxBox's log: {said[:2] or 'no \"couldn’t change here yet\" line'}")
-    ctx.check(x_syncthing(False), "couldn't resume LinuxBox's Syncthing")
-    sh = ctx.quiet(timeout=180)
-    ctx.note(f"after resuming, all three: {sh}")
-    ctx.check("~" not in sh, f"a grey box is left: {sh}")
-    ctx.check(said, "the Undo didn't say \"couldn't change here yet\"")
+    ctx.note("LinuxBox after its Undo: " + ctx.shape("x").replace(ctx.prefix, "") + " | log: " + (said[0][9:200] if said else "no \"couldn't change here yet\""))
+    ctx.check(resume_x(ctx), "couldn't resume LinuxBox")
+    def landed():
+        x = ctx.shape("x")
+        return ("Gtr|" in x and "2.00+16.00" in x) and x
+    try:
+        ctx.wait("the take landed on LinuxBox's Gtr", landed, timeout=240, every=3)
+    except Fail:
+        pass
+    sleep(10)
+    shapes = {w: ctx.shape(w) for w in ctx.on}
+    ctx.note("after resuming: " + " | ".join(f"{NAMES[w]}: {v.replace(ctx.prefix, '')}" for w, v in shapes.items()))
+    dup = [NAMES[w] for w, v in shapes.items() if "(yours, not sent)" in v]
+    if dup:
+        ctx.note(f"a '(yours, not sent)' copy of the take stayed on {', '.join(dup)} beside the brought-back track (bug 5)")
+    ctx.check(all("~" not in v for v in shapes.values()), f"a grey box is left: {shapes}")
+    ctx.check("Gtr|" in shapes["x"], f"the take never landed on LinuxBox: {shapes['x']}")
 
 
 @scenario("e5 which order Lua uses", "sync2e 5", needs=("d", "x"), wants=("l",))

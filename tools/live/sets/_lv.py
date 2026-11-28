@@ -102,7 +102,10 @@ _LAB = pathlib.Path(__file__).resolve().parents[2] / "lab" / "lab.sh"
 
 def _x(cmd, inp=None):
     from live import _x_ip, SSH
-    return subprocess.run(SSH + [f"studio@{_x_ip()}", cmd], input=inp, capture_output=True, text=True, timeout=60)
+    # (bytes in: text mode on Windows would send "\r\n" to bash)
+    r = subprocess.run(SSH + [f"studio@{_x_ip()}", cmd], input=inp.encode() if inp else None, capture_output=True, timeout=60)
+    r.stdout, r.stderr = r.stdout.decode(errors="replace"), r.stderr.decode(errors="replace")
+    return r
 
 
 def x_syncthing(paused):

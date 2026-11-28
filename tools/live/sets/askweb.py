@@ -154,7 +154,7 @@ def undo_on_page(ctx):
         pg.click("#asks li.localask[data-kind=undo] button:has-text('No')")
         wait_page(ctx, pg, "the line to leave", lambda: li(pg, "undo") is None, 10)
         sleep(8)
-        ctx.check(order(ctx, "d") == ["A2"] and order(ctx, B(ctx)) == ["A2"], f"No changed something: {order(ctx, 'd')} / {order(ctx, 'l')}")
+        ctx.check(order(ctx, "d") == ["A2"] and order(ctx, B(ctx)) == ["A2"], f"No changed something: {order(ctx, 'd')} / {order(ctx, B(ctx))}")
 
 
 @scenario("w4 a page on another device", "askweb 4 and 5", needs=("d",), wants=("l", "x"))
