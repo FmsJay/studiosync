@@ -1,7 +1,7 @@
 -- StudioSync shared library: settings, song folders, session.json, stems and take placement.
 -- Pure REAPER API, no extensions required (js_ReaScriptAPI only improves the folder picker).
 local json = require("json")
-local band = { VERSION = "0.61.4", FORMAT = 2, SECTION = "BandSync" } -- (FORMAT 2: items' and automation's times in beats, lib/beats.lua; a StudioSync on 1 holds them as too new. rt-sync2f) (realtime branch builds: 0.59.49.N, above main's 0.59.49 and below its next release, as compare_versions reads every number. James, rt)
+local band = { VERSION = "0.64.0", FORMAT = 2, SECTION = "BandSync" } -- (FORMAT 2: items' and automation's times in beats, lib/beats.lua; a StudioSync on 1 holds them as too new. rt-sync2f) (realtime branch builds: 0.59.49.N, above main's 0.59.49 and below its next release, as compare_versions reads every number. James, rt)
 
 -- 1 if version a is newer than b, -1 if older, 0 if equal ("0.10.0" > "0.9.1").
 function band.compare_versions(a, b)
