@@ -1764,7 +1764,7 @@ mirror.auto = {} -- proj .. oid -> its next send is a print StudioSync refreshed
 mirror.print_quiet = {} -- proj .. oid -> { key, at }: nothing to print for it as of then (W.prints)
 mirror.tracks_back = mirror.tracks_back or {} -- tostring(proj) -> { oid = event }: tracks put back by a look, settings again after their items (mirror.watch)
 mirror.unsent = {} -- proj .. oid -> changed here, not sent yet (settling, playing, a burst's rest): mirror.receive waits
-mirror.asked_of = {} -- proj .. oid -> { who, at }: an edit held here for that bandmate's answer, as of the last look that held it (W.refuse)
+mirror.asked_of = {} -- proj .. oid -> { who }: an edit held here for that bandmate's answer by the last look of it (W.refuse; W.one clears it)
 -- Items that can't go out (their audio couldn't be copied into the studio's folder or isn't on this computer, or their send threw), per
 -- project: Sync and exit counts them (mirror.waiting). Not mirror.unsent, which receive waits on: the band's version of such an item would
 -- wait for ever if the file never comes back. Round 1 review, 0.59.45
@@ -2818,14 +2818,6 @@ function mirror.items_on(tr)
   table.sort(out)
   return out
 end
--- An item whose newest version is this computer's, from the last two minutes: a track deleted elsewhere may have gone before it arrived there
--- (a take just recorded and sent), so it's kept here, not lost with the track. Review, 0.58.95
-function mirror.just_made_here(proj, io, now_ms)
-  local order = select(4, mirror.known(proj, io))
-  local h, who = tostring(order or ""):match("^(%d+)|(.*)$")
-  local me = reaper.GetExtState(require("band").SECTION, "user")
-  return h ~= nil and me ~= "" and who == me and (now_ms or require("together").now() * 1000) - tonumber(h) < 120000
-end
 -- The cheap cases where mirror.receive says "later" for an incoming change (an edit of yours unsent, a chain while playing or its tab behind,
 -- a track part while recording or behind, an item open in the MIDI editor): sync.receive opens no undo block for it. Opened, it closed as an
 -- empty point on the pass a change first waited, and on top of REAPER's list it sent Ctrl+Z StudioSync's way. A miss costs only that point,
@@ -2932,16 +2924,17 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
         -- (nor an edit of the band's item held here for the answer of the bandmate who has now deleted the track: nothing is left to answer,
         -- and it goes with the track as it would have had it gone out, where it was kept on "(yours, not sent)" for holding their claim on a
         -- track they'd deleted. An item of your own making is still kept. rt-r3, rt-converge)
+        -- (by facts: the last look of it held it for their answer (mirror.asked_of, cleared by every look that doesn't), and the deletion names
+        -- it, so they had it. It went by the hold being under 60 s old. rt-sync2 5b, rt-sync2j)
         local asked = io ~= "" and mirror.asked_of[tostring(proj) .. io]
-        local moot = asked and ev.user ~= nil and asked.who == ev.user and reaper.time_precise() - asked.at < 60 and mirror.known(proj, io) ~= nil
+        local moot = asked and ev.user ~= nil and asked.who == ev.user and (not named or named[io]) and mirror.known(proj, io) ~= nil
           and not mirror.new_here(proj, io, room_dir)
         if moot then mirror.unsent[tostring(proj) .. io], mirror.asked_of[tostring(proj) .. io] = nil, nil end
         -- (new work of yours the deleter never saw: a fact since the deletion names what went with it (`items`, mirror.named_items): not named
-        -- there, and every version of it yours. From a StudioSync before that (or past ITEMS_MAX), the old guess: yours, from the last two
-        -- minutes. rt-sync2 section 1, rt-sync2b)
-        local mine_new = io ~= "" and mirror.known(proj, io) ~= nil
-        if mine_new and named then mine_new = not named[io] and mirror.new_here(proj, io, room_dir)
-        elseif mine_new then mine_new = mirror.just_made_here(proj, io) and mirror.new_here(proj, io, room_dir) end
+        -- there, and every version of it yours. A deletion that names none (past ITEMS_MAX, or history from before rt-sync2b): every version of
+        -- it yours. It went by "from the last two minutes" (just_made_here), which lost a take kept longer; a deleter's own deletion of that very
+        -- version still takes it after all (kept_new). rt-sync2 section 1, rt-sync2b; rt-sync2j)
+        local mine_new = io ~= "" and mirror.known(proj, io) ~= nil and (not named or not named[io]) and mirror.new_here(proj, io, room_dir)
         -- (a grey stand-in holds no work: it goes with the track. Kept, it lost its id there and stayed grey for good: rt-sync2c's 15011, rt-sync2e)
         if mirror.is_standin(it) then
         elseif io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or mine_new then
@@ -4618,7 +4611,7 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   if opts.ask then asked, quiet = opts.ask(ok_before and name or (last and last.name or ""), pos) end
   if asked == true then
     mirror.unsent[rk] = true
-    mirror.asked_of[rk] = { who = who, at = reaper.time_precise() } -- (held for their answer, as of this look: mirror.apply, a track deleted)
+    mirror.asked_of[rk] = { who = who } -- (held for their answer, as of this look: mirror.apply, a track deleted)
     return
   end
   -- (their auto-claim, and the link can't reach them to ask: it goes out, rt-fix6a, and says so (`unasked`), so the computers the link does
@@ -4656,6 +4649,7 @@ function W.one(w, o)
   local suggest, kept_back, credit, moved_set, seen, t_send, scheme, rescheme = w.suggest, w.kept_back, w.credit, w.moved_set, w.seen, w.t_send, w.scheme, w.rescheme
   local rev, h, evid, kord = mirror.known(proj, o.oid)
   local rk = tostring(proj) .. o.oid
+  mirror.asked_of[rk] = nil -- (held for an answer only while this look holds it so again: W.refuse. mirror.apply's track deletion reads it)
   -- (a track whose folder this person didn't change (W.order's refoldered): its parent and depth are the band's version's, whatever REAPER
   -- reads here meanwhile (a folder change landing in pieces, the depths StudioSync works out from the studio's tree, an older StudioSync's
   -- stale parent). Read as this person's, they went out and moved tracks for everyone. rt-sync2d)

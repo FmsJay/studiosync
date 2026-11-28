@@ -134,7 +134,7 @@ do
     c.F.reaper.MB = function() return 6 end
     c.F.reaper.GetMousePosition = function() return 0, 0 end
     c.F.reaper.file_exists = function(p) return not p:find("%.json$") or files[p] ~= nil end
-    c.F.reaper.SetExtState(band.SECTION, "user", user, false) -- (who this computer's person is, as Live sync has it: mirror.just_made_here)
+    c.F.reaper.SetExtState(band.SECTION, "user", user, false) -- (who this computer's person is, as Live sync has it: mirror.new_here)
     c.edited = -1 -- (Live sync's first tick: its count taken as a change. c.edited = c.F.clock below: the person edits)
     return c
   end

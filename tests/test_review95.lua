@@ -1,5 +1,5 @@
 -- 0.58.95's fixes from the pre-test review (lupa or Lua 5.4, from the repo root): a tempo map posted here is ordered after the newest seen
--- here (through sync.post itself), the together clock's half-minute window, and a just-made item kept when its track is deleted elsewhere.
+-- here (through sync.post itself), the together clock's half-minute window (the just-made item kept when its track is deleted elsewhere: test_0_60_rt_delete_race).
 package.path = "lib/?.lua;" .. package.path
 local clock, pext, ext, written = 1000, {}, { ["StudioSync/user"] = "James" }, {}
 reaper = setmetatable({
@@ -39,15 +39,6 @@ for i = 1, 100 do second(1001.3 + i * 1.0002) end -- (the wall clock now runs a 
 assert(math.abs((together.now() - clock) - (wall - clock)) < 0.02, "a minute on it follows the clock as it is: " .. (together.now() - clock) - (wall - clock))
 os.time = real_time
 
--- a track deleted elsewhere: an item whose newest version is mine and from the last two minutes stays here
-local mirror = require("mirror")
-local known = {}
-mirror.known = function(_, oid) local k = known[oid]; if k then return 1, "", "", k end end
-known["I-NEW"] = "1700000000000|James"
-known["I-OLD"] = "1699999000000|James"
-known["I-THEIRS"] = "1700000000000|Laptop"
-assert(mirror.just_made_here(P, "I-NEW", 1700000060000), "my take from a minute ago: kept")
-assert(not mirror.just_made_here(P, "I-OLD", 1700000060000), "mine, but long settled: goes with the track")
-assert(not mirror.just_made_here(P, "I-THEIRS", 1700000060000), "someone else's: goes with the track")
-assert(not mirror.just_made_here(P, "I-NONE", 1700000060000), "never known: (kept by the older rule)")
+-- (a just-made item kept when its track is deleted elsewhere: decided by facts since rt-sync2j, the deletion naming its items, not "from the
+-- last two minutes": tests/test_0_60_rt_delete_race.lua)
 print("ok")

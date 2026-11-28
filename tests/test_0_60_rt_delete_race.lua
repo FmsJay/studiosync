@@ -162,7 +162,7 @@ do
   local p = start("Bo", true, EB)
   mirror.receive(p, EC, MEDIA, false, "Bo")
   local _, _, kev = mirror.known(p, I)
-  assert(kev == mirror.merge_id(EB.id, EC.id) and mirror.just_made_here(p, I), "Bo holds the merge, its own")
+  assert(kev == mirror.merge_id(EB.id, EC.id) and tostring(select(4, mirror.known(p, I))):match("|Bo$"), "Bo holds the merge, its own")
   for _, e in ipairs({ GT, GI }) do mirror.receive(p, e, MEDIA, false, "Bo") end
   assert(shape(p) == WANT, "Bo: the merge (with Mac's, so not all his own), then the deletions: " .. shape(p))
 end
@@ -197,13 +197,42 @@ do
   assert(got == "mine, ten minutes old on Drums (yours, not sent)", "named: the deleter saw I-XA-2 and it goes; I-XA-1 it never saw stays yours: " .. got)
   got = on_track({})
   assert(got == "mine, just made on Drums (yours, not sent); mine, ten minutes old on Drums (yours, not sent)", "it held nothing the deleter knew: both stay yours: " .. got)
+  -- (no list (past ITEMS_MAX, or from before rt-sync2b): what's every version yours is kept, however old. It was a guess, "from the last two
+  -- minutes" (just_made_here), which lost the older take. rt-sync2j)
   got = on_track(nil)
-  assert(got == "mine, just made on Drums (yours, not sent)", "no list (an older StudioSync): the two-minute guess, as before: " .. got)
+  assert(got == "mine, just made on Drums (yours, not sent); mine, ten minutes old on Drums (yours, not sent)", "no list: both of mine stay mine, however old: " .. got)
   -- bandmate data: a malformed list is no list
   assert(mirror.named_items({ items = { "I-1", "../x" } }) == nil and mirror.named_items({ items = { 5 } }) == nil, "a list with a path or a number: ignored")
   local big = {}
   for i = 1, mirror.ITEMS_MAX + 1 do big[i] = "I-" .. i end
   assert(mirror.named_items({ items = big }) == nil and mirror.named_items({ items = { "i-a" } })["I-A"], "past ITEMS_MAX: ignored; ids upper-cased")
+end
+
+-- rt-sync2j (rt-sync2 5b): an edit of the band's item held here for the answer of the bandmate who then deletes its track goes with the
+-- track by facts: the last look held it for their answer (mirror.asked_of, which every look clears unless it holds it again) and the deletion
+-- names the item. However long it has been held: it went by the hold being under 60 s old, and one held longer was kept on "(yours, not
+-- sent)" for their claim on a track they'd deleted. Held for someone else, or not named (the deleter never had it): kept, as before.
+do
+  local function held(asked_who, items_field, tag)
+    local IB = "I-AL-7-" .. tag
+    local VB = ev({ id = "Al-20261119-171400Z-00001-000" .. tag, obj = "item", oid = IB, track = T, rev = 1, base = 0, state = OLD:gsub('NAME "d"', 'NAME "theirs"'), user = "Al", hlc = H0 - 7000 })
+    local GN = { id = "Al-20261119-172610Z-00001-000" .. tag, type = "obj", obj = "track", oid = T, rev = 2, base = 1, base_ev = V0.id,
+      gone = true, user = "Al", hlc = H0 + 500, name = "Drums", items = items_field and { IB } or {} }
+    files[R .. "/events/" .. GN.id .. ".json"] = GN
+    local p = start("Xa", true, nil)
+    local tr = P(p).tracks[1]
+    table.insert(tr.items, { track = tr, state = RETIMED, ext = { ["P_EXT:band_oid"] = IB } })
+    remember(p, VB, "h:" .. VB.id)
+    mirror.unsent[tostring(p) .. IB] = true
+    mirror.asked_of[tostring(p) .. IB] = { who = asked_who, at = clock - 600 } -- (held ten minutes, the last look holding it still)
+    assert(mirror.receive(p, GN, MEDIA, false, "Xa") ~= false, "the deletion lands")
+    local kept = {}
+    for _, t in ipairs(P(p).tracks) do for _ in ipairs(t.items) do kept[#kept + 1] = t.name end end
+    return table.concat(kept, "; ")
+  end
+  assert(held("Al", true, "1") == "", "held for Al's answer, Al deleted the track naming it: it goes, held ten minutes or not")
+  assert(held("Bo", true, "2") == "Drums (yours, not sent)", "held for Bo's answer: kept")
+  assert(held("Al", false, "3") == "Drums (yours, not sent)", "Al's deletion doesn't name it (Al never had it): kept")
 end
 
 -- rt-sync2b: heal lands a track's deletion as receive does, with what it names: a deletion whose file a receive never applied here (a skipped
