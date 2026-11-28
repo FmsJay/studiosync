@@ -1,4 +1,4 @@
-version 0.61.2
+version 0.61.3
 StudioSync - Autostart.lua	25766	a2bb70f854518b05
 StudioSync - Claim selected tracks.lua	851	7b9f063bd6e689a2
 StudioSync - Draw.lua	28530	69861b104a44a33e
@@ -31,7 +31,7 @@ lib/ai.lua	41233	07f9d72ca8940838
 lib/alerts.lua	4108	92d3618fe772d5a2
 lib/api.lua	7230	54afeaa36188ce81
 lib/audience.lua	20816	11f23accecec96e4
-lib/band.lua	135906	7f7ddf89ff5d462b
+lib/band.lua	135906	32f16791d85c66ce
 lib/bgrender.lua	40501	09bd0b354f29763b
 lib/bounces.lua	40012	fe8c91cbdbdc10fc
 lib/calibrate.lua	24690	d44bad072a9dde63
@@ -39,7 +39,7 @@ lib/callapps.lua	7200	64315a6c871327b8
 lib/callwin.lua	8369	1509131c7b1c2426
 lib/chatfiles.lua	15286	987bac2d1a573c1f
 lib/chooser.lua	22179	f67bc08aa2278a64
-lib/claimask.lua	36831	5afb44fce81d84dd
+lib/claimask.lua	38947	40b5e8569fc110df
 lib/cloudmodes.lua	48560	d278784a38977604
 lib/colours.lua	62930	7f6a0cd8fb75ebd4
 lib/compat.lua	43514	b0b2bdeb16d747b6
@@ -91,8 +91,8 @@ lib/livex.lua	33288	3667e321bdf7cb04
 lib/loadguard.lua	3577	96361d5a4af8d3a7
 lib/localcopy.lua	27511	0812c67afde3b53c
 lib/midiview.lua	4574	5d606c07d1928700
-lib/mirror.lua	487328	b655fa36b1b93be8
-lib/mirror_merge.lua	41634	84f688c70dcfc55a
+lib/mirror.lua	504310	0ecd9f5e149d01f7
+lib/mirror_merge.lua	41918	12d2435347dcd536
 lib/mixlayer.lua	1668	7a53f6a1e0e1cfb4
 lib/nat.lua	40009	62c9c7ce52db2ba9
 lib/needlist.lua	24454	a4f2a90b9b0649b3
@@ -116,7 +116,7 @@ lib/presence.lua	26734	dae517aacb8edeb4
 lib/prints.lua	86527	f6919fbba6e7b55a
 lib/producer.lua	32898	c3aa58a671f4700f
 lib/profile.lua	13058	b7707a58750ba3e8
-lib/rank.lua	4631	442cceef2cf1c6de
+lib/rank.lua	8255	4bde9fbc8dff18c7
 lib/recall.lua	20574	df9ad2dd1411a2b3
 lib/recap.lua	25490	eef24bc070eb37fd
 lib/recformat.lua	4698	71755f1a646d8e9d
@@ -164,7 +164,7 @@ lib/webrooms.lua	10334	803e4a627536d3b2
 lib/webroute.lua	3048	3ef2b3af7dae4b92
 lib/websession.lua	22046	eb2a4a49c89562f2
 lib/websettings.lua	25656	3027b0e6159e9706
-lib/webui.lua	26235	e5fc3218870176b1
+lib/webui.lua	26555	fb4dfb5cf0c53112
 sha256 25930f9bdd43fa9fe93f56930f6a602e79f4a364b0c0f7426620007f75d48112 StudioSync - Autostart.lua
 sha256 9095e8f1f7d3e5299d8173a4a0b576c5156cce9a368b592be1d30f7e4353764e StudioSync - Claim selected tracks.lua
 sha256 574f3b304a48548c31b06ac4a03664e1dc14a22ec9996f13f7736ea06c7a5db6 StudioSync - Draw.lua
@@ -197,7 +197,7 @@ sha256 e027eeddfeda5a1e8847b05b9df78fd49e67c138a1b76d6fcae02dfe59c8ee34 lib/ai.l
 sha256 9178f966b2a5be07cc7a72c3595717685029776292d2c0a0a4228fe6caef4277 lib/alerts.lua
 sha256 153dea2968aa950af8ed3f85740b680e3206426eb6ecc38c0f3634607c880819 lib/api.lua
 sha256 c900d9f44a758adbc415d53c6758e10d3dfdfea466869535ef3323b6c285d732 lib/audience.lua
-sha256 9df6f50dc964090ab1901de8323645be1ff1af46588caef18c51ef33758c1ab0 lib/band.lua
+sha256 f3a63b82d617bf51baac0294eb7b943fb95af70e37071aae75fc69c5f8fee1a8 lib/band.lua
 sha256 c024cf380f415eb6655a1145c692477a638712225cba9c4dddb6f5047f61f304 lib/bgrender.lua
 sha256 b77dfdbf187f43260a4eb7f3c263237054cc0260c77549143864c1e04dfc9275 lib/bounces.lua
 sha256 49ba4d4c0976c69d25e19dffe2478beb91b1aa17a60d66ca53584819e84288e3 lib/calibrate.lua
@@ -205,7 +205,7 @@ sha256 51ea2abf0c7ce7716d800dc79170309fdebbb67e797e61630fabb10c08773842 lib/call
 sha256 19beecd26ff2756b6d3e8d5d964af21a536f2645f9d21aa67daeaf1eb89859fc lib/callwin.lua
 sha256 c2dcf809ff84706c16dc1e51f0a021a367926b9a0bdcc79c55e35df55bca5113 lib/chatfiles.lua
 sha256 d280e3435a8005a9ba0e89f1bc6a8029950cc32b306e801a54f3759bea36383e lib/chooser.lua
-sha256 c1ab5980f35fac05de98171ce46f9247304a345979e7e4eec335bddadf009d96 lib/claimask.lua
+sha256 95c9c09dd037d8379b0fc2e3dfaebee901acee5916862263b346c4d4a2b59a76 lib/claimask.lua
 sha256 8e24bd25c39ecf5b0404fc46aa041cb92feb6282a635c9aae8fe375744dd1f7f lib/cloudmodes.lua
 sha256 330fd7edf7b7d8a7b4f9798c3875631044f1d20f97afb8769b383ea83ea01509 lib/colours.lua
 sha256 df6c219cedda117ca4b8249dbbedb3f0a5132aa022d6c17cd4a07172006c299b lib/compat.lua
@@ -257,8 +257,8 @@ sha256 b38af5ab68bb57abc4fc30946ce744bda85a834b31dea38016911a05d08f9b22 lib/live
 sha256 668fcf204612cfc82a589e83122bdb90a4cfc9cd7d38392a78467c15e39ebd78 lib/loadguard.lua
 sha256 c69b12038f1f6ff720b355afae6b0f28629ed9ec1ea33ebcc500973e6166f866 lib/localcopy.lua
 sha256 2da7657ed2859f7fc2b80b04c61d307bf32a60d46f3912e5f14d7dce7d0c6363 lib/midiview.lua
-sha256 f68448bd65553c8df57626954c628320095353a28b9a315353fae46260502a8f lib/mirror.lua
-sha256 dbe56100edb02e4fdc0eebcaa06ef13bcbc4cf4233a8aea97ce4a161d440f736 lib/mirror_merge.lua
+sha256 e02a0a175ceb670c64a994cda975a886f16e762cdba1d48b5b8caf932d14abee lib/mirror.lua
+sha256 ac725bd1b29e030dbfa22a595f6a1dc73a3d3ed0e53b91a0c8ff39e5ef13af49 lib/mirror_merge.lua
 sha256 5cfe7a75ef98b5e770f0cc9679fa0e4b7fea604bc5396e79fb9c2ad09441499f lib/mixlayer.lua
 sha256 9938797d7683c537d21ca261497ce0514e0175db05106e69ac3a24131d7f606f lib/nat.lua
 sha256 4e267ddf0a2a6dc1686a7a1eb46bfef8efd7e4075a73719d5f44a8157afbe9b6 lib/needlist.lua
@@ -282,7 +282,7 @@ sha256 5bbf529405683285463158469d0b06807c711c21c23f8018248c9bad211d9fb6 lib/pres
 sha256 9100fd878f35d61a40b3e1dd5e0a5a743a388c544722bd02a2d030e8f688f40a lib/prints.lua
 sha256 d5b87caf16508b33b03a5f8a3c41b783efb315db76ee614c5bdc7bf89d342308 lib/producer.lua
 sha256 a5a669b325303555041e411e56a3dd79af6f585ba0b4f3274efde11e731b4a7a lib/profile.lua
-sha256 84d11bb39996390eb967b8cc6317684cd404bb29b14a0d921d3d2afa708c6c02 lib/rank.lua
+sha256 8d3d4b1b5365120d2e42c2defba0ebe0130fea5351c2218e0b9b0ff93b6cc1aa lib/rank.lua
 sha256 dfc6f627c9d5afa724cf96af2f3f03e172d5ecb617c5c20d6b88347aa6b5a023 lib/recall.lua
 sha256 1963a9f156de0142166ac95088e801023bfd2a0ce38fb915b8f3aaec10954925 lib/recap.lua
 sha256 866e99756257d470897bc3269963d7de4944743b4896ec98bc9a2d9df44345ff lib/recformat.lua
@@ -330,7 +330,7 @@ sha256 739c0ff8f67920b114d5b2f307f0ac53c7fed7f07b1c830afe8af9e0b0e2095d lib/webr
 sha256 53932c4b7d9216dffe957293a7cd23dc4f776d76a9393e434f8f7b586dace196 lib/webroute.lua
 sha256 b1e86b9fc5245748883dbdfefde724e0648393f2985c594ae6d7df956266b273 lib/websession.lua
 sha256 569d08694e4e08e650dd8bd9b8a1bafd1d8c16b6e7f079cd402bb118c0cb6255 lib/websettings.lua
-sha256 5e033eed8e4f813870a4b537f3a9ab737e0cdbcdabef800d58d1d8fd20f439e1 lib/webui.lua
+sha256 7f176ae4b77668213833479e13b0b0cda9e92e121c498d0cb72c00ebec0713e6 lib/webui.lua
 sha256 5cb96d2ccb088c80a83362dd714581a1dff9e90f2a645b5751faab4c24d5e2d9 lib/mac/bandsync-hide.dylib
 sha256 534764663e11e9a578199647ef945a8ec87bce484595dd56e8776cade560bdb8 lib/mac/bandsync-launch
 sha256 58f2644ba55b77e9e5998b5f75e52f46cedaa88c3ccea2f118a4e4724b722a33 lib/ninjam/bandsync.cfg
@@ -402,7 +402,7 @@ sha256 01ff33f1fa19731059fa903908385788522a0fd23826e58025377ffb1ce4093c lib/webu
 sha256 9911237436bfba1afe9c73e159e6bac1a5b2a4a17c0ceb6029c6bb1144019083 lib/webui/phonedaw.js
 sha256 8ae66b6d5c8ad8d66e459b07cd628f117617da7ffc1698b28ad02b60ffe7da3b lib/webui/phonefile.js
 sha256 f93a94f09389395c9485be67c1d499341ef3069734daf80d7a58bdcb0c2d2203 lib/webui/pianoroll.js
-sha256 2c051508ff2aaf2dbe7f84e7787195d43ee5ea6ac16c8a136cd13bd25d880313 lib/webui/play.js
+sha256 98afeff1343e31929f2e2ed8d91c0c14ee59a2d4e9fff4dba7810cc9c0e3ce21 lib/webui/play.js
 sha256 ec8f81932748151e211649c927ce396a28dcd3cc511e5a0eddc12260636875b8 lib/webui/profile.js
 sha256 e0d1749d830ee5c71ffad0ef41aeeef439a18ab5623a33d134976ca1fbc87f81 lib/webui/record.css
 sha256 8e9339eb21615590f45ee7d1a8fc33f5adcf8b97f3bf4edfb05eb241f1760eb3 lib/webui/record.html
