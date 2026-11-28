@@ -6216,6 +6216,10 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
         p.landed = true
+        -- (a track put back in a room with ranks: the whole order sorted by them at the end of the next look, as a receiver sorts it when a
+        -- track lands (sync.receive). mirror.apply placed this one alone: a folder's own track moved without the tracks in it, and its child
+        -- sat out of the folder on the undoing computer only. The long soak's 9018, rt-sync2f)
+        if p.t.obj == "track" and mirror.ranked(proj) then mirror.order_owed[tostring(proj)] = true end
       else waiting = waiting + 1 end
     else
       local kind = mirror.KIND[p.oid:sub(1, 1)] or "item"
