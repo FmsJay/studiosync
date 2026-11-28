@@ -275,25 +275,43 @@ return LV.out(true)""")
 
 # ---- check 3: the master track on reopen (read only) ----
 
-@scenario("c3 master track differs after reopen", "sync2c 3", needs=("d", "x"), wants=("l",))
-def master_pointer(ctx):
-    same = []
+REOPEN_SECS = 45  # under the heal's 60 s: a reopen StudioSync didn't see came back only with the heal (61-120 s, rt-fixlive1 bug 3)
+
+
+@scenario("c3 StudioSync sees a reopen in the same tab", "sync2c 3 (rt-fixlive1 Recommendation 1)", needs=("d", "x"), wants=("l",))
+def reopen_seen(ctx):
+    """File > Open of the song's own file into its tab. REAPER keeps the tab's master track through it (the REAPER fact this check used to
+    assert the opposite of: noted only), so StudioSync goes by its load guard plus "none of the last look's tracks left" (rt-fixlive1 bug 2).
+    The file was never saved since this scenario's track was made, so it lacks it: seen as an opening, the track comes back at the next
+    receive (bug 3) and nothing goes out as a deletion; missed, the look takes the missing track for a deletion or waits for the heal."""
+    add(ctx, "d", "Keep")
+    ctx.quiet()
+    sleep(SETTLE)
+    slow = []
     for w in ctx.on:
-        r = _master_once(ctx, w)
-        ctx.note(f"{NAMES[w]}: master before {r['before']}, after {r['after']} (project pointer kept: {r['same_proj']})")
-        if r["before"] == r["after"]:
-            same.append(NAMES[w])
-        ctx.wait(f"{NAMES[w]}'s Live sync after the reopen", lambda: ctx.do(w, "return LV.out(LV.live_running(P))"), timeout=60)
-    ctx.check(not same, f"REAPER handed back the same master track pointer after File > Open in the same tab on: {', '.join(same)}")
-
-
-def _master_once(ctx, w):
-    return ctx.do(w, """
+        t0 = int(time.time())
+        r = ctx.do(w, """
 local own; for i = 0, 99 do local q, fn = reaper.EnumProjects(i); if q == P then own = fn end end
+if not own or own == "" then error("the song's tab has no file", 0) end
 local before = tostring(reaper.GetMasterTrack(P))
 local np = LV.load_into(P, own)
-local after = tostring(reaper.GetMasterTrack(np))
-return LV.out({ before = before, after = after, same_proj = tostring(np) == tostring(P) })""", timeout=60)
+return LV.out({ before = before, after = tostring(reaper.GetMasterTrack(np)), same_proj = tostring(np) == tostring(P) })""", timeout=60)
+        t1 = time.time()
+        ctx.note(f"{NAMES[w]}: master track {'kept' if r['before'] == r['after'] else 'new'} through File > Open (project pointer kept: {r['same_proj']})")
+        ctx.wait(f"{NAMES[w]}'s Live sync after the reopen", lambda: ctx.do(w, "return LV.out(LV.live_running(P))"), timeout=60)
+        try:
+            ctx.wait(f"Keep back on {NAMES[w]} after the reopen", lambda: "Keep" in order(ctx, w), timeout=REOPEN_SECS + 30, every=2)
+            took = time.time() - t1
+        except Fail:
+            took = None
+        ctx.note(f"{NAMES[w]}: Keep back {f'{took:.0f} s' if took is not None else 'not within ' + str(REOPEN_SECS + 30) + ' s'} after the file loaded")
+        if took is None or took > REOPEN_SECS:
+            slow.append(f"{NAMES[w]} ({'never' if took is None else f'{took:.0f} s'})")
+        ctx.quiet(timeout=90)
+        gone = [e for e in ctx.do(w, f"return LV.out(LV.events_since(SONG, {lua_str(USER[w])}, {t0}))") if e.get("gone")]
+        ctx.check(not gone, f"{NAMES[w]} sent deletion(s) from the reopen (not seen as an opening): {gone}")
+    ctx.check(not slow, f"the track the file lacks wasn't back within {REOPEN_SECS} s (the reopen wasn't seen; the heal brought it): {', '.join(slow)}")
+    ctx.check(order(ctx, "d") == ["Keep"], f"the desktop's tracks after both reopens: {order(ctx, 'd')}")
 
 
 # ---- check 4 (and rt-sync2d 9's floor): the big-deletion ask ----
