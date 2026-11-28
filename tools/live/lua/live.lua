@@ -560,22 +560,27 @@ local function vol_env(p, name, make)
   end
   return env
 end
--- Volume automation points (raw values, as GetEnvelopePoint reads them): pts = { { time, value }, ... }. "Add point".
+-- Volume automation points: pts = { { time, gain }, ... }, gain as an amplitude (1 = 0 dB), what REAPER's chunk holds. "Add point".
+-- (the API's values are raw: a volume envelope in fader scaling (VOLTYPE 1, REAPER's default) takes 0 to 1000 there, so a raw 0.5 was a gain of
+-- 2.5e-10, which the chunk writes as 0: every receiver read 0 (live checks sync2f f1, f3, f6 on 0.63.0; measured on REAPER 7.86, Windows and
+-- Linux). Converted with the envelope's own scaling mode both ways. rt-sync2g)
 function LV.env_add(p, name, pts)
   local env = vol_env(p, name, true)
+  local mode = reaper.GetEnvelopeScalingMode(env)
   block(p, "Add point", function()
-    for _, q in ipairs(pts) do reaper.InsertEnvelopePoint(env, q[1], q[2], 0, 0, false, true) end
+    for _, q in ipairs(pts) do reaper.InsertEnvelopePoint(env, q[1], reaper.ScaleToEnvelopeMode(mode, q[2]), 0, 0, false, true) end
     reaper.Envelope_SortPoints(env)
   end)
 end
--- The volume envelope's points: [{ t, v, qn }] ([] with no envelope).
+-- The volume envelope's points: [{ t, v (the gain, as env_add takes it), qn }] ([] with no envelope).
 function LV.env_points(p, name)
   local env = vol_env(p, name, false)
   local out = {}
   if not env then return out end
+  local mode = reaper.GetEnvelopeScalingMode(env)
   for k = 0, reaper.CountEnvelopePoints(env) - 1 do
     local _, t, v = reaper.GetEnvelopePoint(env, k)
-    out[#out + 1] = { t = t, v = v, qn = reaper.TimeMap2_timeToQN(p, t) }
+    out[#out + 1] = { t = t, v = reaper.ScaleFromEnvelopeMode(mode, v), qn = reaper.TimeMap2_timeToQN(p, t) }
   end
   return out
 end
