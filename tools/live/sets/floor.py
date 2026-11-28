@@ -6,7 +6,8 @@ from live import scenario, Skip, Fail, NoAnswer, lua_str, NAMES
 from sets._lv import B, USER, SONG, T, names, add, order, quiet_order, sleep
 from sets import _lv
 
-TEST_FLOOR = "12-livecheck.json"
+TEST_FLOOR = "99-livecheck.json"  # (a test floor far above any real level: it puts every computer below it)
+CUR = {"level": 11}  # (the computers' own sync.LEVEL, read in setup)
 
 
 def _floor_file_lua(op):
@@ -33,6 +34,7 @@ def setup(ctx):
         lv = ctx.raw(w, "LV.lib(); return LV.out(require('sync').LEVEL or 0)")
         if not lv or lv < 11:
             raise NoAnswer(f"{NAMES[w]}: not on the floor build (sync.LEVEL {lv}): run this set once 0.62.0 is deployed and every REAPER restarted")
+        CUR["level"] = lv
     drop_test_floor(ctx)
     _lv.setup(ctx)
 
@@ -71,8 +73,8 @@ return LV.out(o)""")
     ctx.note("floor files: " + "; ".join(files))
     for w, f in fs.items():
         ctx.note(f"{NAMES[w]}: level {f['level']}, below {f['below']}, since {f['since']}")
-    ctx.check(any(x.startswith("11-") for x in files), "no 11-<user>.json in _band/floor")
-    ctx.check(all(f["level"] == 11 and f["below"] is False for f in fs.values()), "not level 11 / not at the floor everywhere")
+    ctx.check(any(x.startswith(f"{CUR['level']}-") for x in files), f"no {CUR['level']}-<user>.json in _band/floor")
+    ctx.check(all(f["level"] == CUR["level"] and f["below"] is False for f in fs.values()), f"not level {CUR['level']} / not at the floor everywhere")
     ctx.check(len({f["since"] for f in fs.values()}) == 1, "the computers read different 'since' times")
 
 
@@ -93,7 +95,7 @@ def below(ctx):
     sleep(17)
     ctx.cleanups.append(lambda: drop_test_floor(ctx))
     marks = ctx.log_marks()
-    ctx.raw("d", _floor_file_lua(f'reaper.RecursiveCreateDirectory(dir, 0); local h = assert(io.open(f, "w")); h:write(\'{{ "level": 12, "since": "{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}" }}\'); h:close()'))
+    ctx.raw("d", _floor_file_lua(f'reaper.RecursiveCreateDirectory(dir, 0); local h = assert(io.open(f, "w")); h:write(\'{{ "level": 99, "since": "{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}" }}\'); h:close()'))
     for w in ctx.on:
         ctx.wait(f"{NAMES[w]} below the floor", lambda w=w: floor_of(ctx, w)["below"], timeout=60)
     sleep(12)
@@ -118,7 +120,7 @@ def below(ctx):
     ctx.wait("both renames everywhere", lambda: all(set(order(ctx, w)) == {"Gtr floor", "Keys floor"} for w in ctx.on), timeout=90)
     ev = [e for e in events_since(ctx, "d", t1) if (e.get("name") or "").startswith(ctx.prefix)]
     ctx.note("after the floor went: " + "; ".join(f"{e['user']} {e['name']} lv={e['lv']}" for e in ev))
-    ctx.check(all(e.get("lv") == 11 for e in ev) and {e["user"] for e in ev} >= {"James", USER[B(ctx)]}, "not one lv-11 event each from both")
+    ctx.check(all(e.get("lv") == CUR["level"] for e in ev) and {e["user"] for e in ev} >= {"James", USER[B(ctx)]}, f"not one lv-{CUR['level']} event each from both")
 
 
 @scenario("f4 a change made below the floor is held", "rt-floor 4", needs=("d", "x"), wants=("l",))
@@ -176,7 +178,7 @@ def folder_loop(ctx):
 @scenario("f6 web Health shows the floor", "rt-floor 6", needs=("d",), wants=("l", "x"))
 def web_health(ctx):
     ctx.cleanups.append(lambda: drop_test_floor(ctx))
-    ctx.raw("d", _floor_file_lua(f'reaper.RecursiveCreateDirectory(dir, 0); local h = assert(io.open(f, "w")); h:write(\'{{ "level": 12, "since": "{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}" }}\'); h:close()'))
+    ctx.raw("d", _floor_file_lua(f'reaper.RecursiveCreateDirectory(dir, 0); local h = assert(io.open(f, "w")); h:write(\'{{ "level": 99, "since": "{time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}" }}\'); h:close()'))
     def row():
         s = json.load(urllib.request.urlopen("http://127.0.0.1:47281/api/state", timeout=10))
         txt = json.dumps(s)
