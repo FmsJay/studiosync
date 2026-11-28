@@ -32,7 +32,7 @@
 -- 25. A change sent past an auto-claim whose claimer the link can't reach says so, and lands at once elsewhere too (`unasked`): rt-r3. And
 --     since rt-sync2h, so does one past a lasting claim.
 -- 26. A track you deleted lets go of your auto-claim on it (lib/claimask.lua), and an edit held for the deleter's answer goes with the track: rt-r3.
--- 27. A deleted track comes back where it sat when it was deleted (`was_after`, mirror.revert).
+-- 27. A deleted track comes back where it sat when it was deleted (its rank; `was_after` until rt-sync2i).
 -- 28. An item's older versions don't wait for ever where its newest sits on a track deleted since (mirror.receive).
 -- 29. Heal doesn't go over a version held here that it couldn't read and the settled one doesn't build on (mirror.heal).
 -- 30. An item put in place anew (a put-back, a restore) keeps its id when it's copied before the next look (mirror.apply notes its GUID).
@@ -1390,6 +1390,7 @@ do
   local undo = require("undo")
   local S = studio("Conv27", "everyone")
   local A, B = S.computer("James"), S.computer("Bee")
+  S.settle(A); S.settle(B) -- (both have looked at the song before: its first tracks go out ranked, as a room's do (rt-rank 14). rt-sync2i)
   S.edit(A, function(F) F.add_track("Drums"); F.add_track("Bass") end)
   S.recv(B)
   local function step(c, redo)
@@ -1412,7 +1413,7 @@ do
   local u = step(A, false)
   assert(S.names(A) == "Top, Drums, Bass", "James's Undo takes his track away (" .. u .. "; " .. S.names(A) .. ")")
   local gone = S.events(function(v) return v.obj == "track" and v.gone and v.name == "New" end)[1]
-  assert(gone and gone.was_after == S.track(A, "Top").ext.band_oid, "its deletion names the track it sat under")
+  assert(gone and gone.was_after == nil, "its deletion names no track it sat under: its rank says where it goes (rt-sync2i)")
   S.recv(B)
   local r = step(A, true)
   assert(S.names(A) == "Top, New, Drums, Bass", "and his Redo brings it back where it sat (was: at the top, where it was first made): " .. r .. "; " .. S.names(A))
@@ -1437,7 +1438,7 @@ do
   T = T + 2
   S.edit(A, function(F) reaper.DeleteTrack(S.track(A, "New")) end)
   local by_hand = S.events(function(v) return v.obj == "track" and v.gone and v.name == "New" and not v.undoes and not v.redoes end)[1]
-  assert(by_hand and by_hand.was_after == S.track(A, "Top").ext.band_oid, "a deletion made in REAPER names it too")
+  assert(by_hand and by_hand.was_after == nil, "nor does a deletion made in REAPER")
   S.recv(B)
   step(A, false)
   assert(S.names(A) == "Top, New, Drums, Bass", "Undo of the deletion: back where it sat (" .. S.names(A) .. ")")
