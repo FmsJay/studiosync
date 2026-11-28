@@ -104,6 +104,20 @@ end
 -- their source positions (sync2f f5 on 0.64.0: SM 1 1 + 3 2.5 -> 0 0 + 1.2 1 + 3.6 2.5 + 7.2 5.5 at a 100 bpm marker before the item). So
 -- that change leaves the canonical text as it was. Pure.
 local function src9(v) local s = string.format("%.9f", v):gsub("0+$", ""):gsub("%.$", ""); return s == "-0" and "0" or s end
+-- Back in seconds: the two ends left out again where they are only what plays anyway (with_ends' own), so a receiver's chunk is the sender's
+-- (REAPER shows each marker: two more on every bandmate's copy, live check sync2f f5 on 0.65.0). Ends REAPER wrote at a tempo change hold
+-- another source position and stay. `at(q)`: take seconds. Pure.
+local function ends_left(list, at, len)
+  if #list < 3 then return list end
+  local function src(x) return tonumber(x.rest:match("^%s*(%S+)")) end
+  local out = {}
+  for _, x in ipairs(list) do out[#out + 1] = x end
+  local a, b = out[1], out[2]
+  if src(a) and src(b) and math.abs(at(a.pos)) < 1e-6 and math.abs(src(a) - (src(b) - at(b.pos))) < 1e-6 then table.remove(out, 1) end
+  local y, z = out[#out - 1], out[#out]
+  if #out >= 2 and src(y) and src(z) and math.abs(at(z.pos) - len) < 1e-6 and math.abs(src(z) - (src(y) + len - at(y.pos))) < 1e-6 then out[#out] = nil end
+  return out
+end
 local function with_ends(list, len)
   local a, b = list[1], list[#list]
   local sa, sb = a and tonumber(a.rest:match("^%s*(%S+)")), b and tonumber(b.rest:match("^%s*(%S+)"))
@@ -225,7 +239,9 @@ function beats.item_seconds(state, time, qn)
       local own = sm and own_markers(sm)
       local rw = r and not own and tonumber(g14(snapped(r / l, function(x) return f9(tonumber(g14(x)) * l) == f9(r) end))) or r or 1
       if r and not own then L[t.rate] = set_at(L[t.rate], 1, g14(rw)) end
-      if sm then L[t.sm] = sm_line(sm, function(x) return g14((time(q0 + x) - p) * rw) end) end
+      local function at(x) return (time(q0 + x) - p) * rw end
+      if sm and own and not takes.implied then sm = ends_left(sm, at, l * rw) end
+      if sm then L[t.sm] = sm_line(sm, function(x) return g14(at(x)) end) end
     end
   end
   return join(L, state)

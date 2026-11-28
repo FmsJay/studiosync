@@ -496,6 +496,12 @@ do
   local on, oe = beats.item(own_n, 1, qn120), beats.item(own_e, 1, qn100at4)
   assert(on == oe, "the same before REAPER added the ends:\n" .. on .. "\n" .. oe)
   assert(beats.item(beats.item_seconds(on, tm100at4, qn100at4), 1, qn100at4) == on, "(its ends written as they travel, read back the same)")
+  -- (and written back on a map where they're only what plays anyway, left out: a receiver's chunk is the sender's, not two markers more
+  -- (live check sync2f f5 on 0.65.0: LinuxBox had 4 markers to the desktop's 2). Where REAPER wrote them with another source position, kept)
+  local back120 = beats.item_seconds(on, function(q) return q / 2 end, qn120)
+  assert(back120:find("\nSM 1 1 + 3 2.5\n", 1, true), "the ends left out where they play anyway: " .. tostring(back120:match("\nSM [^\n]*")))
+  assert(beats.item(back120, 1, qn120) == on, "(read back the same)")
+  assert(select(2, beats.item_seconds(oe, tm100at4, qn100at4):match("\nSM ([^\n]*)"):gsub("%+", "")) == 3, "REAPER's own ends, stretched, kept")
   -- a landing of an auto-stretch item here: its chunk set, then C_AUTOSTRETCH off and on (REAPER makes its markers from the map)
   local F = E.new("C:/A/Warp10.rpp")
   reaper = F.reaper
