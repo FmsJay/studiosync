@@ -6921,7 +6921,9 @@ function mirror.order_heal(proj, cfg, song, room, now, idle)
   if mirror.order_kept[pk] and not mirror.ranked(proj) and sync.pending_events(proj, cfg, song, room) == 0 then mirror.rank_due(proj, cfg, song, room) end
   -- (in a room with ranks, the order and the folders are the tree's (lib/rank.lua) whatever has landed when: sorted again every APART_SECS
   -- once quiet, which also puts back the folders of a put-back or refused folder change. rt-sync2d)
+  -- (still not within ORDER_WAIT of a bandmate's move landing here, as the list's order heal: tests/test_0_60_rt_edits.lua pins that wait)
   local tree_due = mirror.ranked(proj) and now - (mirror.order_kept[pk] or -math.huge) >= mirror.APART_SECS
+    and now - (mirror.order_landed[pk] or -math.huge) >= mirror.ORDER_WAIT
   if mirror.order_kept[pk] and not tree_due then
     if not mirror.order_apart_for(proj, now) or now - mirror.order_kept[pk] < mirror.APART_SECS or now - (mirror.order_landed[pk] or -math.huge) < mirror.ORDER_WAIT then return 0 end
   elseif sync.pending_events(proj, cfg, song, room) > 0 then return 0 end
