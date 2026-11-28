@@ -204,12 +204,17 @@ def autostretch(ctx):
             ctx.note(f"{step}: REAPER rewrote the item's chunk for the tempo (a known limit); lines before/after that differ: " + " | ".join(changed[:12]))
             fails.append(f"{step}: obj events went: {objs}")
         try:
-            agree(ctx, f"Gtr's item after {step} (p, l, r, stretch markers)",
-                  lambda w: {k: v for k, v in item(ctx, w).items() if k in ("p", "l", "r", "sm")}, 1e-6, 60)
+            # (what plays: place, length, and each marker's item time and source. A computer whose map landed whole made its markers
+            # anew (rate = source / length), the desktop's edit kept its rate: the same audio, rate and take times scaled alike. rt-fixlive2)
+            def plays(w):
+                it = item(ctx, w)
+                return {"p": it["p"], "l": it["l"], "sm": [{"t": m["pos"] / it["r"], "src": m["srcpos"]} for m in it["sm"]]}
+            agree(ctx, f"Gtr's item after {step} (p, l, stretch markers as played)", plays, 1e-6, 60)
         except Fail as e:
             fails.append(str(e))
     ctx.note(f"rate x length from before the first change to after the second: {before['r'] * before['l']:.9f} -> "
-             f"{item(ctx, 'd')['r'] * item(ctx, 'd')['l']:.9f} (equal: REAPER scales the rate with the length; StudioSync's beats form holds)")
+             f"{item(ctx, 'd')['r'] * item(ctx, 'd')['l']:.9f} (REAPER scales the rate with the length at an added marker and keeps it at an "
+             "edited one; StudioSync reads the source its own markers cover, rt-fixlive2)")
     ctx.check(not fails, " / ".join(fails))
 
 
