@@ -111,14 +111,24 @@ def below(ctx):
     sleep(15)
     ev = [e for e in events_since(ctx, "d", t1) if (e.get("name") or "").startswith(ctx.prefix)]
     ctx.check(not ev, f"events written while below the floor: {[(e['user'], e['name']) for e in ev]}")
-    m2 = ctx.log_marks(["d"])
-    ctx.do("d", "LV.run_script('StudioSync - Undo.lua') return LV.out(true)", timeout=40)
-    sleep(3)
-    nd = [l for l in ctx.log_since("d", m2) if "Not done" in l]
-    ctx.check(nd, "StudioSync's Undo below the floor didn't say 'Not done: ...'")
+    # (StudioSync's own Undo path (undo.step -> mirror.revert), not the Ctrl+Z script: with the person's own "Track name" on top of REAPER's
+    # undo list the script hands Ctrl+Z to REAPER's own Undo (undo.native), which takes back the unsent rename and loses nothing, so it never
+    # reached the refusal and the renames below couldn't land (0.63.1, rt-sync2g). The refusal is revert's: "Not done: ..." before it changes
+    # anything)
+    u = ctx.do("d", "local band = LV.lib(); local r, why = require('undo').step(P, band.settings(), band.binding(P), false)\n"
+                    "return LV.out({ r = r or '', why = why or '' })", timeout=40)
+    ctx.check("Not done" in (u.get("r", "") + u.get("why", "")), f"StudioSync's Undo below the floor didn't say 'Not done: ...': {u}")
     drop_test_floor(ctx)
     ctx.wait("both renames everywhere", lambda: all(set(order(ctx, w)) == {"Gtr floor", "Keys floor"} for w in ctx.on), timeout=90)
-    ev = [e for e in events_since(ctx, "d", t1) if (e.get("name") or "").startswith(ctx.prefix)]
+    # (the renames land over the direct link; the bandmate's event file reaches the desktop's folder through Syncthing, seconds later: waited
+    # for. 0.63.1 read the folder at once and found only James's. rt-sync2g)
+    def both():
+        ev = [e for e in events_since(ctx, "d", t1) if (e.get("name") or "").startswith(ctx.prefix)]
+        return ev if {e["user"] for e in ev} >= {"James", USER[B(ctx)]} else None
+    try:
+        ev = ctx.wait("both renames' event files in the desktop's folder", both, timeout=90, every=3)
+    except Fail:
+        ev = [e for e in events_since(ctx, "d", t1) if (e.get("name") or "").startswith(ctx.prefix)]
     ctx.note("after the floor went: " + "; ".join(f"{e['user']} {e['name']} lv={e['lv']}" for e in ev))
     ctx.check(all(e.get("lv") == CUR["level"] for e in ev) and {e["user"] for e in ev} >= {"James", USER[B(ctx)]}, f"not one lv-{CUR['level']} event each from both")
 
