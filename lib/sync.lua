@@ -2,6 +2,7 @@
 -- handovers, play/stop cues, notes and likes), claims and who may change what, and rendering prints. Each person
 -- writes only files named after themselves, so a sync client never sees two people writing the same file.
 local band = require("band")
+local less = require("rank").less -- (names and ids that break a tie, byte by byte: every computer alike whatever its locale. lib/judge.lua, rt-sync2e)
 local sync = {
   SNAP = "BandSync.snap",       -- id -> "<original-case id>|pos|len|offs|lane" as last seen/applied
   APPLIED = "BandSync.applied", -- event id -> "1"
@@ -665,7 +666,7 @@ function sync.authority(cfg, song, room, s)
         local k = name:lower()
         local t = (c.since or {})["prints:" .. k] or c.time
         local o = printers[k]
-        if not (gone and t <= gone) and (not o or o.time < t or (o.time == t and o.user < c.user)) then printers[k] = { user = c.user, time = t, name = name } end
+        if not (gone and t <= gone) and (not o or o.time < t or (o.time == t and less(o.user, c.user))) then printers[k] = { user = c.user, time = t, name = name } end
       end
       for _, list in ipairs({ { c.tracks, tracks }, { c.regions, regions } }) do
         for _, name in ipairs(list[1] or {}) do
@@ -675,7 +676,7 @@ function sync.authority(cfg, song, room, s)
           local o = list[2][k] -- newest wins; the same second goes to the later name, so every machine agrees
           local a = auto[kk]
           if not (gone and t <= gone) and not let_go(kk, t) and not (a ~= nil and not (type(a) == "string" and a >= idle_cut))
-              and (not o or o.time < t or (o.time == t and o.user < c.user)) then list[2][k] = { user = c.user, time = t, name = name, auto = a ~= nil or nil } end
+              and (not o or o.time < t or (o.time == t and less(o.user, c.user))) then list[2][k] = { user = c.user, time = t, name = name, auto = a ~= nil or nil } end
         end
       end
     end
@@ -686,7 +687,7 @@ function sync.authority(cfg, song, room, s)
   end
   table.sort(times, function(x, y) -- the newest claim on a stretch wins (same second: the later name, as for tracks)
     if x.time ~= y.time then return x.time > y.time end
-    return x.user > y.user
+    return less(y.user, x.user)
   end)
   -- (`at`, optional, a change's own time: a claim made after it doesn't count. A change is judged by the claims as they stood when it was
   -- made, as far as today's files say: by today's, a late joiner refused James's whole track because Cee claimed it an hour after he made
@@ -1954,11 +1955,11 @@ function sync.receive(proj, cfg, song, room, can)
   -- (each one's key made once, not twice a comparison: 4,400 events in a catch-up made ~100,000 joined strings a pass. Bigger projects, rt)
   local sort_key = {}
   for _, ev in ipairs(pending) do sort_key[ev] = ev.time .. ev.id end
-  table.sort(pending, function(a, x) return sort_key[a] < sort_key[x] end)
+  table.sort(pending, function(a, x) return less(sort_key[a], sort_key[x]) end)
   local function driver_at(t) -- who drove when this happened
     local best
     for id, d in pairs(drivers) do -- two handovers in the same second: the later id, so every machine agrees
-      if d.time <= t and (not best or d.time > best.time or (d.time == best.time and id > best.id)) then best = d; best.id = id end
+      if d.time <= t and (not best or d.time > best.time or (d.time == best.time and less(best.id, id))) then best = d; best.id = id end
     end
     return best and best.user
   end
@@ -2027,7 +2028,7 @@ function sync.receive(proj, cfg, song, room, can)
     local tc = sync.track_claims[song .. "/" .. room] or {}
     local theirs, held = tc[(base_name(tostring(ev.name or "")) or ""):lower()], tc[(base_name(old) or ""):lower()]
     if not (theirs and held and theirs.user == ev.user and held.user ~= ev.user) then return false end
-    return theirs.time > held.time or (theirs.time == held.time and theirs.user > held.user)
+    return theirs.time > held.time or (theirs.time == held.time and less(held.user, theirs.user))
   end
   local function refused(ev)
     if ev.type == "obj" and ev.obj == "track" and not ev.gone and not ev.alone and ev.user ~= cfg.user then
@@ -2210,7 +2211,7 @@ function sync.receive(proj, cfg, song, room, can)
   table.sort(gorder, function(a, b)
     local ra, rb = rank[a:sub(1, 1)] or 3, rank[b:sub(1, 1)] or 3
     if ra ~= rb then return ra < rb end
-    return a < b
+    return less(a, b)
   end)
   local function place(oid)
     if placed[oid] then return end

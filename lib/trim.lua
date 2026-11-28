@@ -10,6 +10,7 @@
 -- trimmed, so nothing is lost for good.
 local band = require("band")
 local trim = {}
+local less = require("rank").less -- (ids byte by byte: every computer keeps the same versions. lib/judge.lua, rt-sync2e)
 -- how old a change has to be before it may go: twice the age past which a clash isn't merged (mirror.MERGE_DAYS), so a version a
 -- change still merges from is on every computer (review, 0.58.53: one trimmed on day 31 could still be a 25-day-old change's base)
 trim.DAYS = 60
@@ -24,11 +25,11 @@ end
 local TRANSPORT = "\0transport"
 local function later(a, b) -- the same order every machine uses (lib/mirror.lua newer: rev, then the clock, then the name), then id
   -- (a tempo map or a cue: as sync orders them, ev.order first. Review, 0.58.96: by the sender's clock, trim could keep an older map)
-  if a.type ~= "obj" and b.type ~= "obj" then return (a.order or ((a.time or "") .. (a.id or ""))) > (b.order or ((b.time or "") .. (b.id or ""))) end
+  if a.type ~= "obj" and b.type ~= "obj" then return less(b.order or ((b.time or "") .. (b.id or "")), a.order or ((a.time or "") .. (a.id or ""))) end
   local mirror = require("mirror")
   local x, y = { rev = a.rev, time = mirror.order_of(a) }, { rev = b.rev, time = mirror.order_of(b) }
   if mirror.newer(x, y) ~= mirror.newer(y, x) then return mirror.newer(x, y) end
-  return (a.id or "") > (b.id or "")
+  return less(b.id or "", a.id or "")
 end
 -- A point is major unless it's the snapshot taken before a handover, or a song hub's rolling one (lib/hub.lua: every half hour of work, so
 -- as majors they'd keep nearly every change; the kept end-of-session points stay major. James, rt).

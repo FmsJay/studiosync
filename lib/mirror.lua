@@ -4,6 +4,7 @@ local mirror = {}
 local merges = require("mirror_merge") -- (pure: the three-way merges, rt-sync2 phase 1)
 local judge = require("judge") -- (pure: what each object is, from its own versions: rt-sync2 phase 2)
 local rank = require("rank") -- (pure: a track's place as a code that sorts, rt-sync2 phase 4)
+mirror.byte_less = rank.less -- (ids compared byte by byte where an order decides anything: lib/judge.lua says why. rt-sync2e)
 
 -- Lines in an item chunk that are this machine's business only: selection, REAPER's own ids (regenerated on
 -- apply), MIDI pooling (a copy is its own item), MIDI editor view state, which take is active (wet/dry is each
@@ -488,7 +489,7 @@ function mirror.track_parts(chunk, oid_at)
     if u.tag == "MIDINOTENAMES" then -- (named notes only, in a fixed order: set through REAPER's API on the other side)
       local names, keys = mirror.note_names(table.concat(u.lines, "\n")), {}
       for k in pairs(names) do keys[#keys + 1] = k end
-      table.sort(keys)
+      table.sort(keys, rank.less)
       if #keys > 0 then
         local b = { "<MIDINOTENAMES" }
         for _, k in ipairs(keys) do local q = names[k]:find('"') and "`" or '"'; b[#b + 1] = k .. " " .. q .. names[k] .. q end
@@ -976,7 +977,7 @@ function mirror.wanted_order(list, here, after)
     local ma, mb = made[a], made[b]
     if ma[1] ~= mb[1] then return ma[1] < mb[1] end
     if ma[2] ~= mb[2] then return ma[2] < mb[2] end
-    return tostring(a) < tostring(b)
+    return rank.less(tostring(a), tostring(b))
   end)
   -- (a track it names that's gone since but is on the list: under what sat above that one, as every computer that was here has it: the track
   -- moved up when the one above it was deleted. At the end, a late joiner had a new track anchored on a deleted one below everything, the
@@ -2203,7 +2204,7 @@ function mirror.restore_unsent(proj, by_oid, media, local_mix)
     if type(oid) == "string" and RANK[oid:sub(1, 1)] and type(e) == "table" and (e.gone or e.state ~= nil) then oids[#oids + 1] = oid else list[oid] = nil end
   end
   local function rank(oid) return list[oid].gone and 7 - RANK[oid:sub(1, 1)] or RANK[oid:sub(1, 1)] end -- (an item's delete before its track's)
-  table.sort(oids, function(a, b) if rank(a) ~= rank(b) then return rank(a) < rank(b) end; return a < b end)
+  table.sort(oids, function(a, b) if rank(a) ~= rank(b) then return rank(a) < rank(b) end; return mirror.byte_less(a, b) end)
   local n = 0
   for _, oid in ipairs(oids) do
     local e, o = list[oid], by_oid[oid]
@@ -5506,7 +5507,7 @@ function W.gone(w)
     if gone_rank(a) ~= gone_rank(b) then return gone_rank(a) < gone_rank(b) end
     local ra, rb = in_order[a.oid] or math.huge, in_order[b.oid] or math.huge
     if ra ~= rb then return ra < rb end
-    return a.oid < b.oid
+    return rank.less(a.oid, b.oid)
   end)
   -- (rt-guard: a deletion goes out only with something to show this person made it here, this session: not a new opening, and an edit of
   -- theirs behind the look (mirror.user_edited, as auto-claims judge). A project with no tracks at all needs a new undo point of someone's on
@@ -6334,7 +6335,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
     local ka, kx = order[a.t and a.t.obj or (a.oid:sub(1, 1) == "T" and "track" or "item")] or 3, order[x.t and x.t.obj or (x.oid:sub(1, 1) == "T" and "track" or "item")] or 3
     if (a.t and 1 or 0) ~= (x.t and 1 or 0) then return a.t ~= false end
     if ka ~= kx then if a.t then return ka < kx else return ka > kx end end
-    return a.oid < x.oid -- (then by id: among equals the order was the plan table's, which Lua walks differently every run. rt-converge)
+    return rank.less(a.oid, x.oid) -- (then by id: among equals the order was the plan table's, which Lua walks differently every run. rt-converge)
   end)
   -- (a deleted track that comes back goes where it sat when it was deleted, which its deletion names (`was_after`): its last version's
   -- "sits under" is the place of the day that version was made, and a track isn't sent again when others land above it or the studio's
@@ -7056,7 +7057,7 @@ function mirror.root(proj)
     local h, ev = v:match("^%d+|([^|]*)|([^|]*)")
     if h and h ~= "" then t[#t + 1] = oid:upper() .. "=" .. tostring(ev) end
   end
-  table.sort(t)
+  table.sort(t, rank.less)
   local code = mirror.hash(table.concat(t, "\n"))
   mirror.root_memo[pk] = { cc = cc, n = mirror.rec_writes, at = now, code = code }
   return code
@@ -7170,7 +7171,7 @@ function mirror.room_newest(room_dir, since)
   evindex.load(room_dir)
   for _, oid in ipairs(evindex.oids(room_dir)) do
     local list = evindex.versions(room_dir, oid)
-    table.sort(list, function(a, b) return a.id < b.id end)
+    table.sort(list, function(a, b) return rank.less(a.id, b.id) end)
     for _, ev in ipairs(list) do
       -- (not a change too new for this version: receive leaves it for the version that knows it, and heal applied it anyway and recorded it held,
       -- so once updated it never landed properly. Round 3 review, 0.59.48. Cost: one comparison an event)
@@ -7297,7 +7298,7 @@ function mirror.heal(proj, room_dir, local_mix)
   table.sort(oids, function(a, b)
     local ra, rb = rank[a:sub(1, 1)] or 3, rank[b:sub(1, 1)] or 3
     if ra ~= rb then return ra < rb end
-    return a < b
+    return mirror.byte_less(a, b)
   end)
   local function answer(oid)
     local s = answers[oid]

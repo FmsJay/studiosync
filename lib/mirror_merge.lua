@@ -3,6 +3,7 @@
 -- the pieces those merges cut it into (what the claim checks compare). Pure: no REAPER, no clock, no events. Moved from lib/mirror.lua as it
 -- was, which keeps mirror.merge_item = M.merge_item and so on, so its callers and tests are unchanged.
 local M = {}
+local less = require("rank").less -- (byte by byte: every computer builds a merge alike whatever its locale. lib/judge.lua, rt-sync2e)
 
 -- What a chunk says differently on each platform, said one way for hashing (Mac, 0.34.3: every chain with a Cockos
 -- plug-in and every coloured item read "project differs" against Windows, for good). Windows' text is left as it
@@ -189,7 +190,7 @@ local function move_pairs(border, b, x, xorder, s, group, pos, loose)
     for g, list in pairs(G) do
       local a = A[g]
       if a and #a == #list then
-        local function by(side) return function(p, q) local pp, pq = pos(side, p), pos(side, q); if pp ~= pq then return pp < pq end; return p < q end end
+        local function by(side) return function(p, q) local pp, pq = pos(side, p), pos(side, q); if pp ~= pq then return pp < pq end; return less(p, q) end end
         table.sort(list, by("b"))
         table.sort(a, by(s))
         for i, k in ipairs(list) do out[k] = a[i] end
@@ -465,7 +466,7 @@ function M.merge_midi(base, winner, loser)
   table.sort(chosen, function(x, y)
     if x.tick ~= y.tick then return x.tick < y.tick end
     if class(x) ~= class(y) then return class(x) < class(y) end
-    return text(x) < text(y)
+    return less(text(x), text(y))
   end)
   local lines, last = { w.first }, 0
   local hb, hw, hl = keyed_lines(b.head), keyed_lines(w.head), keyed_lines(l.head)
@@ -600,7 +601,7 @@ function M.merge_track(base, winner, loser)
       if c then both[#both + 1] = k end
     end
   end
-  table.sort(both)
+  table.sort(both, less)
   return out, both
 end
 
@@ -720,7 +721,7 @@ function M.pieces(kind, state)
       local s = n and string.format("%.10g", n) or tostring(v)
       if TRACK_TOGETHER[k] then lanes[#lanes + 1] = k .. "=" .. s else out[k] = s end
     end
-    table.sort(lanes)
+    table.sort(lanes, less)
     if #lanes > 0 then out["\0lanes"] = table.concat(lanes, ";") end
     return out
   end

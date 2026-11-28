@@ -16,14 +16,35 @@ function rank.valid(r)
   return type(r) == "string" and #r >= 1 and #r <= rank.MAX and not r:find("[^0-9A-Za-z]") and r:sub(-1) ~= "0"
 end
 
--- a before b? (bytes: the digits' own order, whatever the locale)
-function rank.less(a, b)
-  for i = 1, math.min(#a, #b) do
-    local x, y = a:byte(i), b:byte(i)
+-- a before b, byte by byte (the digits' own order, whatever the locale). The common start is skipped 8 bytes at a time: ids share long ones.
+local byte, sub, min = string.byte, string.sub, math.min
+function rank.bytes_less(a, b)
+  if a == b then return false end
+  local i, n = 1, min(#a, #b)
+  while i + 7 <= n and sub(a, i, i + 7) == sub(b, i, i + 7) do i = i + 8 end
+  for j = i, n do
+    local x, y = byte(a, j), byte(b, j)
     if x ~= y then return x < y end
   end
   return #a < #b
 end
+-- Does `lt` (Lua's `<` by default) order strings byte by byte? It follows the C library's collation: bytes in the "C" locale a program starts
+-- in, but a locale REAPER or a script sets can put "a" before "B" or pass over "-". Asked of every pair of printable characters, and of each
+-- one before a letter (one passed over reads "-b" after "a"). -> true or false. Pure.
+function rank.native_ok(lt)
+  lt = lt or function(x, y) return x < y end
+  local ch = {}
+  for c = 32, 126 do ch[c] = string.char(c) end
+  for c = 32, 126 do
+    if lt(ch[c] .. "b", "a") ~= (c < 97) then return false end
+    for d = 32, 126 do if lt(ch[c], ch[d]) ~= (c < d) then return false end end
+  end
+  return true
+end
+-- a before b? Lua's own `<` where it is byte order on this computer (checked once, as this file loads: ~25x faster on a sort of 4,000 ids),
+-- else bytes_less. Everything that orders ids, clocks or names to decide something uses this (lib/judge.lua, rt-sync2e).
+rank.native = rank.native_ok()
+rank.less = rank.native and function(a, b) return a < b end or rank.bytes_less
 
 -- A rank strictly between a and b (nil a: the start, nil b: the end), as short as it can be. -> nil when a isn't before b, or the answer
 -- would pass MAX characters (rank.spread the tracks again).

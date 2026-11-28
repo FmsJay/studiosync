@@ -20,6 +20,10 @@
 --
 -- Pure: no REAPER calls, no clock, no module state. Every iteration that decides anything goes in id order (never `pairs`).
 local judge = { MAX_LEAVES = 64, MAX_STEPS = 400, MERGE_DAYS = 30 }
+-- Ids, clocks and names compared byte by byte, never with Lua's `<`: that follows the C library's collation, which a computer's locale can
+-- change ("B" before "a" in bytes, after it in most languages), and every computer has to order versions alike. rt-sync2e
+local less = require("rank").less
+judge.less = less
 
 -- (UTC by arithmetic: os.time works in local time, and a time zone offset taken once was an hour out across a daylight saving change. Review, 0.58.47)
 local function utc_secs(y, mo, d, h, mi, s)
@@ -55,14 +59,14 @@ function judge.newer(a, b)
   local am, au = judge.order_parts(a.time)
   local bm, bu = judge.order_parts(b.time)
   if am ~= bm then return am > bm end
-  return au .. (a.user or "") > bu .. (b.user or "")
+  return less(bu .. (b.user or ""), au .. (a.user or ""))
 end
 -- The newer of two versions (as newer, then the larger id: a total order, so a pick never depends on the order a list came in).
 local function later(a, b)
   local x, y = { rev = a.rev, time = judge.order_of(a) }, { rev = b.rev, time = judge.order_of(b) }
   local ab, ba = judge.newer(x, y), judge.newer(y, x)
   if ab ~= ba then return ab end
-  return (a.id or "") > (b.id or "")
+  return less(b.id or "", a.id or "")
 end
 judge.later = later
 local function newest(list)
@@ -174,7 +178,7 @@ function judge.merge_order(leaves)
     if a.id == b.id then return false end
     local an, bn = judge.newer({ rev = a.rev, time = a.order }, { rev = b.rev, time = b.order }), judge.newer({ rev = b.rev, time = b.order }, { rev = a.rev, time = a.order })
     if an ~= bn then return bn end -- (a older than b: first)
-    return a.id < b.id
+    return less(a.id, b.id)
   end)
   local acc = t[1] and t[1].id
   for i = 2, #t do acc = judge.merge_id(t[i].id, acc) end
@@ -193,13 +197,13 @@ end
 local function sorted_keys(t)
   local out = {}
   for k in pairs(t) do out[#out + 1] = k end
-  table.sort(out)
+  table.sort(out, less)
   return out
 end
 local function ids_of(list)
   local out = {}
   for i, x in ipairs(list) do out[i] = x.id end
-  table.sort(out)
+  table.sort(out, less)
   return out
 end
 
@@ -211,7 +215,7 @@ function judge.settled(vs, read, opt)
     if type(v) == "table" and type(v.id) == "string" and not by[v.id] then by[v.id] = v; list[#list + 1] = v end
   end
   if #list == 0 then return s end
-  table.sort(list, function(a, b) return a.id < b.id end)
+  table.sort(list, function(a, b) return less(a.id, b.id) end)
   local function rd(id) local x = by[id]; if x then return x end; return (read(id)) end
   local days, hi = opt.days or judge.MERGE_DAYS, 0
   for _, v in ipairs(list) do local _, h = judge.id_span(v.id); if h and h > hi then hi = h end end
@@ -279,7 +283,7 @@ function judge.settled(vs, read, opt)
       else edits[#edits + 1] = x end
     end
   end
-  table.sort(s.beaten)
+  table.sort(s.beaten, less)
   if #edits == 0 then -- (every leaf a deletion, or beaten by one: gone)
     s.v = newest(#dels > 0 and dels or gones)
     s.gone = true
