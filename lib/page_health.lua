@@ -277,6 +277,14 @@ function H.build_rows()
     for _, r in ipairs(okx and xrows or {}) do rows[#rows + 1] = r end
   end
   if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": " .. require("live").PLACES.update .. "." } end
+  do -- below the studio's version floor: nothing of yours goes out until you update (lib/sync.lua sync.floor, docs/rt/rt-floor.md)
+    local sync = require("sync")
+    local okf, f = pcall(sync.floor_read, cfg)
+    if okf and type(f) == "table" and f.below then
+      rows[#rows + 1] = { "update floor", false, "red", "", sync.floor_words(f) .. " " .. require("live").PLACES.update .. ".",
+        action = { "Update StudioSync", function() return H.web_act("@update", true) end } }
+    end
+  end
   pcall(require("drive").root, cfg) -- (what it says next is about the group it last looked at: this tab's, then. Mac, 0.51.12)
   local dmiss = reaper.GetExtState(band.SECTION, "drive_root") ~= "off" and require("drive").missing
   if dmiss then

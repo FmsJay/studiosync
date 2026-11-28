@@ -421,7 +421,7 @@ end
 -- (measured, REAPER 7.83: no @init, even with a changed parameter). Which envelopes show, which is armed and how
 -- tall its lane is stay each person's own. A receive names its source track by oid (REAPER's chunk says its
 -- position); receives from a track that isn't mirrored (Real time, live views) stay as they are on each machine.
-mirror.HV = 10 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c). 10: and its parent again, now the folder it is in for real (rt-sync2d)
+mirror.HV = 11 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv), and raise sync.LEVEL with it (the studio's version floor). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c). 10: and its parent again, now the folder it is in for real (rt-sync2d). 11: and no depth when it has a rank (rt-floor)
 mirror.KIND = { T = "track", F = "fx", E = "env", R = "recv", M = "misc", I = "item" } -- (an oid's first letter)
 mirror.PART = { fx = "the plug-ins", env = "the automation", recv = "the sends", misc = "the groups, lock, input FX or note names" }
 mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x, R-x, M-x)
@@ -1351,7 +1351,9 @@ function mirror.track_line(t, local_mix, colour)
   -- to rt-sync2c it was left out ("" in its place): it followed from the depths above it, and a folder change arriving in pieces made the
   -- tracks under it read as edited. Now a parent or depth that differs from the band's only by StudioSync's doing isn't an edit (W.order's
   -- tree_seen, W.one), and the band's-hash checks in watch and apply read a line from before (no parent) as the same track)
-  local f = { t.name or "", t.parent or "", t.depth or 0, t.mute or 0, "", t.phase or 0, mirror.icon_key(t.icon), -- ("": solo is each person's own)
+  -- (its depth only without a rank: a ranked track's depths are worked out from the studio's tree (parent and rank), so its own depth says
+  -- nothing; kept for a track with none, whose folder its depth still gives. hv 11, docs/rt/rt-floor.md)
+  local f = { t.name or "", t.parent or "", t.rank == nil and (t.depth or 0) or "", t.mute or 0, "", t.phase or 0, mirror.icon_key(t.icon), -- ("": solo is each person's own)
     t.freemode or 0, t.lanes or 0, t.plays or "", t.lanenames or "", 0, local_mix and "" or (t.vol or ""), local_mix and "" or (t.pan or "") }
   for _, kp in ipairs(mirror.TRACK_MORE) do f[#f + 1] = t[kp[1]] or "" end
   for _, kp in ipairs(mirror.TRACK_MIX) do f[#f + 1] = local_mix and "" or (t[kp[1]] or "") end
@@ -4777,6 +4779,12 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   local mine, allowed, say_once, others_claims, put_back, propose, bus_note = w.mine, w.allowed, w.say_once, w.others_claims, w.put_back, w.propose, w.bus_note
   local suggest, kept_back, credit, moved_set, seen, t_send, scheme, rescheme = w.suggest, w.kept_back, w.credit, w.moved_set, w.seen, w.t_send, w.scheme, w.rescheme
   local state = o.state
+  -- (below the studio's version floor: kept as a change of yours not sent yet, so the band's change to it waits, and it goes once StudioSync
+  -- is updated. lib/sync.lua sync.floor, docs/rt/rt-floor.md)
+  if sync.below_floor() then
+    mirror.unsent[rk] = true
+    return say_once("floor", sync.floor_words())
+  end
   -- (known to the band, but its last version can't be read here (removed, still arriving): nothing can say which of its paths a bandmate put
   -- there, so it waits rather than copy any. Security stopgap, Round 1 review, 0.59.45)
   if (o.kind == "item" or o.kind == "fx") and rev and (evid or "") ~= "" and not last then
@@ -5627,6 +5635,9 @@ function W.gone(w)
         local was_back = w.back
         put_back(o, g.rev, g.evid, { name = name })
         if w.back > was_back then mirror.gone_why[gk] = nil end -- (it's back: if it goes again, that's judged afresh)
+      elseif sync.below_floor() then -- (below the studio's version floor: your deletion waits unsent, as W.send keeps an edit. docs/rt/rt-floor.md)
+        mirror.unsent[tostring(proj) .. g.oid] = true
+        say_once("floor", sync.floor_words())
       elseif allowed(o, name, last.pos) or ask_once() == false then
         -- (the clock past what it deletes, and an owner's step, as W.send does: a restart behind the version's clock read as made apart, and
         -- a non-owner's later edit brought an owner's deletion back. Round 1 review, 0.59.45)
@@ -6323,6 +6334,10 @@ local function contents_owed(proj, room_dir, toid)
 end
 function mirror.revert(proj, cfg, song, room, plan, opts)
   local sync = require("sync")
+  -- (below the studio's version floor nothing goes out, and an Undo or Restore that changed REAPER without sending would be lost: refused
+  -- whole. docs/rt/rt-floor.md)
+  local fl = sync.floor_read(cfg)
+  if fl.below then return "Not done: " .. sync.floor_words(fl), 0 end
   mirror.last_act[tostring(proj)] = nil -- (what a look finds after this isn't the rest of the act before it: mirror.watch. rt-edits)
   local function band_log(text) require("band").log(text) end
   local room_dir = sync.room_dir(cfg, song, room)
@@ -6630,6 +6645,7 @@ function mirror.read_order(room_dir)
   return best
 end
 function mirror.publish_order(proj, room_dir, me)
+  if require("sync").below_floor() then return end -- (below the studio's version floor nothing goes out: docs/rt/rt-floor.md)
   local band = require("band")
   reaper.RecursiveCreateDirectory(room_dir .. "/order", 0)
   band.write_json(room_dir .. "/order/" .. me:gsub("[^%w%-_ ]", "_") .. ".json", { list = mirrored_order(proj), time = os.date("!%Y-%m-%dT%H:%M:%SZ"), by = me })
@@ -6669,12 +6685,7 @@ function mirror.keep_order(proj, cfg, song, room)
   local room_dir = sync.room_dir(cfg, song, room)
   local here, want = mirrored_order(proj), nil
   local ranked = mirror.ranked(proj)
-  -- (and the order list says the same, for computers on a StudioSync before ranks: theirs follows the newest list. Left on a list this one's
-  -- ranks had moved past, an old computer in the room kept another order for good: the mixed soak. rt-sync2c)
-  local function list_too()
-    local l = ranked and list_order(proj, room_dir, mirrored_order(proj))
-    if ranked and table.concat(l or {}, ",") ~= table.concat(mirrored_order(proj), ",") then mirror.publish_order(proj, room_dir, cfg.user) end
-  end
+  -- (a room with ranks no longer rewrites the order list to match them: only a StudioSync before ranks read it there. docs/rt/rt-floor.md)
   local par -- (the studio's folders: oid -> parent, rank.tree. rt-sync2d)
   if ranked then want, par = mirror.rank_order(proj, room_dir, nil, true) -- (the studio's order from the tracks' versions' ranks and parents: lib/rank.lua. rt-sync2c, rt-sync2d)
   else
@@ -6691,7 +6702,6 @@ function mirror.keep_order(proj, cfg, song, room)
       if n > 0 then mirror.tree_seen[tostring(proj)] = mirror.tree_here(proj); reaper.TrackList_AdjustWindows(false) end
     end
     mirror.rank_room(proj, cfg, song, room, here, par) -- (on the studio's order: what has no rank yet gets one, and no folder yet one. rt-sync2c, rt-sync2d)
-    list_too()
     return 0
   end
   local moved, n = mirror.moved_tracks(here, want, {}), 0
@@ -6719,7 +6729,6 @@ function mirror.keep_order(proj, cfg, song, room)
   mirror.order_seen[tostring(proj)] = table.concat(mirrored_order(proj), ",") -- (not a move of this person's: the next look mustn't send it)
   mirror.tree_seen[tostring(proj)] = mirror.tree_here(proj)
   reaper.TrackList_AdjustWindows(false)
-  list_too()
   return n
 end
 
@@ -6848,11 +6857,15 @@ end
 -- StudioSync makes ("auto": no Undo step of anyone's), its version built on the one held. Where no track has a rank, by place (rank.spread:
 -- the same ranks whoever does it); else between the ranked tracks around it. A track whose maker never ranks it sits under the track its
 -- version names (rank.order). -> how many were ranked.
--- `par` (a room with ranks: the studio's folders, oid -> parent, rank.tree): a track whose version doesn't say its folder yet (no `pk`) gets
--- it the same way, once, by its maker: the parent the tree gives it (from its version's depth, as REAPER's depths said it), so two
--- computers doing it write the same, and its depth as REAPER now has it from that tree. rt-sync2d
+-- `par` (a room with ranks: the studio's folders, oid -> parent, rank.tree): a track whose version doesn't say its folder yet (no `pk`: one
+-- from before the room switched over) gets it the same way, once, by its maker: the parent the tree gives it (from its version's depth, as
+-- REAPER's depths said it), so two computers doing it write the same. rt-sync2d
+-- (No more: a version whose folder or rank is off the tree said again by any computer holding a caught-up bandmate's versions, ranks put in
+-- the tree's order, the tree's depth written into versions. Each was for a StudioSync older than folders, which shows versions' depths and
+-- sorts by rank alone; every computer at the version floor works the same tree out of the same versions. docs/rt/rt-floor.md)
 function mirror.rank_room(proj, cfg, song, room, here, par)
   local sync = require("sync")
+  if sync.below_floor() then return 0 end -- (nothing goes out below the studio's version floor)
   local room_dir = sync.room_dir(cfg, song, room)
   local ranks, any = {}, false
   for i, oid in ipairs(here) do
@@ -6861,48 +6874,21 @@ function mirror.rank_room(proj, cfg, song, room, here, par)
     any = any or ranks[i] ~= nil
   end
   local spread = not any and rank.spread(#here)
-  -- (the ranks in the tree's order, for an older StudioSync, which sorts by rank alone: where they aren't (a folder taken from one side of a
-  -- merge and the rank from the other, a loop of parents broken), the fewest tracks out of rank order get ranks between the tracks around
-  -- them, the same on every computer holding the same versions. rt-sync2d)
-  local unsorted, depth = {}, par and rank.depths(here, par) or {} -- (depth: the tree's, as rank.depths spells it, the same everywhere)
-  if par then
-    local list, sorted = {}, {}
-    for i, oid in ipairs(here) do if ranks[i] then list[#list + 1] = oid; sorted[#sorted + 1] = { oid = oid, rank = ranks[i] } end end
-    table.sort(sorted, function(x, y) if x.rank ~= y.rank then return rank.less(x.rank, y.rank) end; return rank.less(x.oid, y.oid) end)
-    for k, x in ipairs(sorted) do sorted[k] = x.oid end
-    unsorted = mirror.moved_tracks(sorted, list, {})
-    for i, oid in ipairs(here) do if unsorted[oid] then ranks[i] = nil end end
-  end
   local can, who = sync.authority(cfg, song, room)
-  local n, nf, act, same_as, mine = 0, 0, nil, nil, nil
+  local n, nf, act = 0, 0, nil
   for i, oid in ipairs(here) do
     local rev, h, evid = mirror.known(proj, oid)
     local ev = rev and (h or "") ~= "" and (evid or "") ~= "" and event_file(room_dir, evid) or nil
-    -- (ranked, and its folder said as the tree has it, or not due. Said otherwise (a loop of parents broken, its folder deleted) or with
-    -- another depth than the tree gives it here (a folder change merged with another, landed in pieces): said again, so its version is the
-    -- tree's and an older StudioSync, which puts the versions' depths in place, has the same folders. rt-sync2d)
-    local tr0 = ev and (ranks[i] or unsorted[oid]) and par and par[oid] and mirror.find(proj, "track", oid)
-    local said = ev and mirror.parent_in(ev)
-    local off = tr0 and type(ev.state) == "table" and ((said ~= nil and said ~= par[oid]) or (tonumber(ev.state.depth) or 0) ~= depth[oid])
-    if unsorted[oid] then off = ev and type(ev.state) == "table" end
-    local due = off or tr0 and said == nil
-    if ev and (ranks[i] or unsorted[oid]) and not due then ev = nil end
-    -- (by its maker, when they may change it: one computer ranks each track, not every computer in the room at once. A version whose folder
-    -- or rank is off the tree (`off`) is said again by any computer that finds it so, whoever's claim stands, while it holds the same versions
-    -- as a caught-up bandmate (their status's mirror code is this one's): it is StudioSync's reading of the versions every computer holds, the
-    -- same version wherever it's made, and an older StudioSync shows the versions' depths and sorts by rank alone, so until then it showed
-    -- other folders (the mixed soak: 9 of 30 by makers alone, an older computer's own tracks). Not on a guess: a late joiner still catching up
-    -- found its half of the versions off and said them again, newer than the edits on their way, and they won the merges. rt-sync2d)
-    if off and same_as == nil then
-      same_as, mine = false, mirror.root(proj)
-      for _, st in ipairs(require("presence").peers(cfg, song, room)) do if st.mirror and st.pending == 0 and st.mirror == mine then same_as = true end end
-    end
-    if ev and not ev.gone and type(ev.state) == "table" and (off and same_as or mirror.is_creator(oid, cfg.user)
-        and (can(cfg.user, ev.state.name or "") or sync.maker_may(oid, cfg.user, ev.state.name or "", nil, who.mode, nil, who.is_claimed))) then
+    -- (ranked, and its folder said or not due: nothing to say)
+    local due = ev and par ~= nil and par[oid] ~= nil and mirror.parent_in(ev) == nil
+    if ev and ranks[i] and not due then ev = nil end
+    -- (by its maker, when they may change it: one computer ranks each track, not every computer in the room at once)
+    if ev and not ev.gone and type(ev.state) == "table" and mirror.is_creator(oid, cfg.user)
+        and (can(cfg.user, ev.state.name or "") or sync.maker_may(oid, cfg.user, ev.state.name or "", nil, who.mode, nil, who.is_claimed)) then
       local a, b
       if not spread then
         for k = i - 1, 1, -1 do if ranks[k] then a = ranks[k]; break end end
-        for k = i + 1, #here do if ranks[k] and not unsorted[here[k]] then b = ranks[k]; break end end
+        for k = i + 1, #here do if ranks[k] then b = ranks[k]; break end end
       end
       local was = ranks[i]
       local r = was or spread and spread[i] or rank.between(a, b)
@@ -6912,7 +6898,7 @@ function mirror.rank_room(proj, cfg, song, room, here, par)
         ranks[i] = r
         local st = band_json(ev.state)
         st.rank = r
-        if par and par[oid] then st.parent, st.depth = par[oid], depth[oid] end
+        if par and par[oid] then st.parent = par[oid] end
         reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_rank", r, true)
         act = act or new_act(cfg.user, reaper.time_precise())
         mirror.hlc_seen(ev.hlc)

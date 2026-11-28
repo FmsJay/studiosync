@@ -1118,6 +1118,11 @@ function sync.is_mine(id, user)
   return (id or ""):lower():find(pat) ~= nil
 end
 function sync.post(cfg, song, room, ev, proj)
+  if sync.below_floor() then -- (below the studio's floor: nothing goes out. The look, heal and Undo don't run there; this catches the rest)
+    if not sync.floor_said then sync.floor_said = true; band.log(sync.floor_words()) end
+    return nil
+  end
+  ev.lv = sync.LEVEL -- (the level it was made at: sync.held_by_floor)
   ev_seq = ev_seq + 1
   sync.posted = ev_seq -- (Live sync's cloud pass comes sooner after changes went out: James, rt)
   ev.format, ev.user, ev.time = band.FORMAT, cfg.user, os.date("!%Y-%m-%dT%H:%M:%SZ")
@@ -1858,8 +1863,70 @@ function sync.begin_loading(proj)
 end
 -- A change from a newer StudioSync: a kind this one doesn't know, or a newer file format. Pure.
 sync.KNOWN = { obj = true, timeline = true, start = true, stop = true, note = true, like = true, driver = true, shift = true, solo = true }
+-- (and one made below the studio's version floor: held here as a too-new one is, never applied. sync.held_by_floor, docs/rt/rt-floor.md)
 function sync.too_new(ev)
-  return not sync.KNOWN[ev.type] or (tonumber(ev.format) or 0) > band.FORMAT
+  return not sync.KNOWN[ev.type] or (tonumber(ev.format) or 0) > band.FORMAT or sync.held_by_floor(ev)
+end
+-- ---- the version floor (docs/rt/rt-floor.md) ------------------------------------------------------------------------------------------------
+-- StudioSync's level: raised at a release whose events older code mustn't mix with (what goes into a hash, mirror.HV; the event format,
+-- band.FORMAT). Every event carries it (`lv`, sync.post). The studio's floor is the highest level any computer has run there, recorded in
+-- <root>/_band/floor as "<level>-<user>.json" ({ level, since }), files nobody deletes, so it only goes up and a computer that never ran the
+-- new code still finds it. A computer below the floor sends nothing and says "update StudioSync" (Live sync, Health); one at the floor holds,
+-- never applies, a change made below it: one with a lower `lv`, or one with none (a StudioSync from before floors) made since the floor was
+-- first recorded. Held, not dropped: it stays in the room unapplied and unmarked (docs/rt/rt-floor.md says why that loses nothing).
+sync.LEVEL = 11 -- (11: rt-floor, the first floor; mirror.HV 11)
+sync.FLOOR_EVERY = 10 -- seconds a read of the floor folder is kept
+sync.floor_now = nil -- { level, since, below, root } as last read (sync.floor), or nil: none read in this Lua state yet (nothing held)
+local floor_read = {} -- root -> { at, f }
+function sync.floor_dir(cfg) return cfg.root .. "/_band/floor" end
+-- The studio's floor, read (at most every FLOOR_EVERY s unless `fresh`), raised to this computer's level first if that's higher.
+-- -> { level, since, below, root }. Changes nothing held here: sync.floor does that.
+function sync.floor_read(cfg, fresh)
+  local now, root = reaper.time_precise(), tostring(cfg and cfg.root or "")
+  local r = floor_read[root]
+  if r and not fresh and now - r.at < sync.FLOOR_EVERY then return r.f end
+  -- (since: when the first floor of all was recorded, whatever its level: a change with no `lv` is from before floors, and only that tells
+  -- one made after it from history. "~" sorts after every time: none known, none held)
+  local dir, level, since = sync.floor_dir(cfg), 0, "~"
+  for _, f in ipairs(band.files(dir, ".json")) do
+    local n = tonumber(f:match("^(%d+)%-"))
+    local v = n and band.read_json(dir .. "/" .. f)
+    local s = type(v) == "table" and type(v.since) == "string" and v.since or "~" -- (a file still arriving: its level counts, its time not yet)
+    if n and n > level then level = n end
+    if n and s < since then since = s end
+  end
+  if sync.LEVEL > level then
+    local t = os.date("!%Y-%m-%dT%H:%M:%SZ")
+    level = sync.LEVEL
+    if t < since then since = t end
+    reaper.RecursiveCreateDirectory(dir, 0)
+    pcall(band.write_json, dir .. "/" .. level .. "-" .. sync.id_user(cfg.user) .. ".json", { level = level, since = t }) -- (unwritten: the next read tries again)
+  end
+  local f = { level = level, since = since, below = sync.LEVEL < level, root = root }
+  floor_read[root] = { at = now, f = f }
+  return f
+end
+-- The floor this Lua state goes by (Live sync's pass, sync.preload): what's held and whether anything goes out. -> floor_now
+function sync.floor(cfg, fresh)
+  sync.floor_now = sync.floor_read(cfg, fresh)
+  return sync.floor_now
+end
+-- Is this computer below the studio's floor (as last read)? Then nothing goes out (sync.post refuses; the look, heal and Undo don't run).
+function sync.below_floor() return sync.floor_now ~= nil and sync.floor_now.below end
+-- Was `ev` made below the floor? A lower level, or none at all on a change made since the floor was first recorded (history from before
+-- the floor has none either, and lands as ever). Pure but for floor_now.
+function sync.held_by_floor(ev)
+  local f = sync.floor_now
+  if not f then return false end
+  local lv = tonumber(ev.lv)
+  if lv then return lv < f.level end
+  return type(ev.time) == "string" and ev.time >= f.since
+end
+-- What a computer below the floor says, in Live sync's log and on Health (panel and web).
+function sync.floor_words(f)
+  f = f or sync.floor_now or {}
+  return string.format("This computer's StudioSync (%s, level %d) is older than the studio's (level %s): nothing you change here goes to the "
+    .. "others until you update StudioSync. You still get their changes.", band.VERSION, sync.LEVEL, tostring(f.level))
 end
 sync.version_looked = {} -- proj -> true: its skipped changes were looked at for this version
 -- A bandmate's deletion `ev`, held back here only by this computer's own auto-claim on its track: made before that claim? Then its maker couldn't
@@ -2130,7 +2197,13 @@ function sync.receive(proj, cfg, song, room, can)
       -- (a kind of change or a format this version doesn't know: left unapplied for the version that does, not marked done, so it lands once
       -- this computer updates. Set aside like a change waiting on a claim, so it isn't counted as "still to come". Round 2 review, 0.59.46)
       sync.deferred[ev.id] = true
-      if not sync.too_new_said then sync.too_new_said = true; band.log(tostring(ev.user) .. " sent a change this StudioSync doesn't know yet: update StudioSync and it lands") end
+      if sync.held_by_floor(ev) and not sync.below_floor() then -- (made below the studio's floor: held for good here, docs/rt/rt-floor.md)
+        sync.floor_held = sync.floor_held or {}
+        if not sync.floor_held[tostring(ev.user)] then
+          sync.floor_held[tostring(ev.user)] = true
+          band.log(tostring(ev.user) .. "'s StudioSync is older than the studio's: their changes wait, unapplied, until they update StudioSync and make them again")
+        end
+      elseif not sync.too_new_said then sync.too_new_said = true; band.log(tostring(ev.user) .. " sent a change this StudioSync doesn't know yet: update StudioSync and it lands") end
     elseif obj and not readable(ev) then
       sync.skip(proj, ev, "StudioSync can't read it") -- malformed (a newer or damaged file): skipped, once, without stopping the rest
       band.log("skipped a change from " .. tostring(ev.user) .. " that StudioSync can't read (" .. tostring(ev.id) .. ")")
@@ -2522,6 +2595,7 @@ function sync.preload(proj, cfg, song, room)
   sync.local_mix = select(2, reaper.GetProjExtState(proj, band.SECTION, "local_mix")) == "1"
   local s = band.read_json(band.session_path(cfg, song))
   if not (s and s.sync == "mirror") then return 0 end
+  pcall(sync.floor, cfg) -- (the studio's version floor, in this script's Lua too: what's held, and whether anything may go out. docs/rt/rt-floor.md)
   local mirror = require("mirror")
   local can, who = sync.authority(cfg, song, room, s)
   sync.driver_name, sync.room_mode = who.driver, who.mode

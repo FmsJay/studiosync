@@ -196,6 +196,7 @@ local function who()
 end
 function N.look()
   local can, w = who()
+  pcall(sync.floor, cfg) -- (the studio's version floor, as Live sync's P.look reads it: docs/rt/rt-floor.md. An --old lib has none)
   local ok, e = pcall(sync.watch_timeline, F.proj, cfg, SONG, ROOM, can)
   if not ok then ERRORS[#ERRORS + 1] = string.format("%.1f watch_timeline: %s", now, tostring(e)) end
   local ok2, sent = pcall(mirror.watch, F.proj, cfg, SONG, ROOM, { can = can, owner_can = can, mode = w.mode, is_claimed = w.is_claimed, owner_of = w.owner_of,

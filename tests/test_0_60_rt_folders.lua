@@ -13,8 +13,9 @@
 --  7. StudioSync's Undo of a folder move takes it back out; an Undo of a rename made after a folder move keeps the folder.
 --  8. An item landing on a folder track doesn't put the folder's old depth back (the soak's seed 2 at 40 edits).
 --  9. (merge) a track's folder is its parent and depth together: one side's parent never goes with the other's depth.
--- 10. A version whose folder or rank is off the tree (a stale depth, a rank out of the tree's order) is said again, by any computer holding
---     the same versions as a caught-up bandmate, so an older StudioSync (depths, ranks alone) shows the same folders and order.
+-- 10. A version whose folder or rank is off the tree (a stale depth, a rank out of the tree's order) is shown as the tree has it and never
+--     said again, not even by a computer holding the same versions as a caught-up bandmate (rt-floor: that write-back was for StudioSyncs
+--     older than folders, below the version floor now).
 -- 11. Such a version (StudioSync's own, `auto`) on a bandmate's track your Undo brought back doesn't keep it from your Redo (the soak's 5016).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
@@ -163,7 +164,7 @@ do
   T = T + 5
   S.edit(A, function(F) arrange(F, { { "Drums", 0 }, { "Bass", 1 }, { "Gtr", -1 }, { "Keys", 0 } }) end) -- (Gtr dragged into Bass)
   local g = S.events(function(v) return v.obj == "track" and v.name == "Gtr" and v.state.parent ~= "" end)[1]
-  assert(g and g.pk == 1 and g.hv == 10 and g.state.parent == S.track(A, "Bass").ext.band_oid, "Gtr's version names Bass as its folder, meant (pk), hash version 10")
+  assert(g and g.pk == 1 and g.hv == 11 and g.state.parent == S.track(A, "Bass").ext.band_oid, "Gtr's version names Bass as its folder, meant (pk), hash version 11")
   S.recv(B)
   assert(tree(S, B) == "Drums 0, Bass 1, Gtr -1 <Bass, Keys 0", "in Bass's folder on Bee's: " .. tree(S, B))
   T = T + 5
@@ -341,7 +342,7 @@ do
   print("rt-folders 9: a track's parent and depth merge together")
 end
 
--- ---- 10. a version off the tree is said again: depths and ranks for an older StudioSync ----------------------------------------------------
+-- ---- 10. a version off the tree is shown as the tree has it, and not said again (rt-floor) ------------------------------------------------
 do
   local S, A, B = song("Fold10")
   local function last(name) local best; for _, v in ipairs(S.events(function(v) return v.obj == "track" and v.name == name end)) do if not best or v.rev > best.rev then best = v end end; return best end
@@ -352,25 +353,21 @@ do
   st.parent, st.depth, st.rank = b.oid, -2, "1"
   local id = "James-20270101-000001Z-00001-0009"
   files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "track", oid = v.oid, id = id, user = "James", name = "Gtr", rev = v.rev + 1, base = v.rev,
-    base_ev = v.id, state = st, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (v.hlc or 0) + 1000, rk = 1, pk = 1, hv = 10 }
-  local function bees() return #S.events(function(x) return x.user == "Bee" and x.auto end) end
+    base_ev = v.id, state = st, time = os.date("!%Y-%m-%dT%H:%M:%SZ"), hlc = (v.hlc or 0) + 1000, rk = 1, pk = 1, hv = 11 }
+  local function auto() return #S.events(function(x) return x.auto end) end
   local presence = require("presence")
   local peers = presence.peers
-  presence.peers = function() return {} end
-  S.recv(B); S.keep(B)
-  assert(tree(S, B) == "Drums 0, Bass 1, Gtr -1 <Bass, Keys 0", "Gtr in Bass from the tree on Bee's: " .. tree(S, B))
-  assert(bees() == 0, "Bee (not its maker) says nothing while no caught-up bandmate is known to hold the same versions")
+  local before = auto()
+  S.recv(B); S.recv(A); S.keep(B); S.keep(A)
+  assert(tree(S, B) == "Drums 0, Bass 1, Gtr -1 <Bass, Keys 0" and tree(S, A) == tree(S, B), "Gtr in Bass from the tree on both: " .. tree(S, B) .. " / " .. tree(S, A))
   S.as(B)
   local code = mirror.root(B.F.proj)
   presence.peers = function() return { { user = "James", mirror = code, pending = 0 } } end -- (James, caught up, holds what Bee holds)
-  S.keep(B)
-  local g = last("Gtr")
-  assert(bees() == 2 and last("Bass").user == "Bee" and last("Bass").state.depth == 1 and g.user == "Bee" and g.state.depth == -1 and g.state.parent == b.oid and rank.less(S.rank(B, "Bass"), g.state.rank) and rank.less(g.state.rank, S.rank(B, "Keys")),
-    "then Bee says Gtr again as the tree has it (depth -1, a rank between Bass's and Keys's) and Bass (depth 1): (" .. bees() .. ", " .. tostring(g.state.depth) .. ", " .. tostring(g.state.rank) .. ")")
-  S.keep(B)
-  assert(bees() == 2, "once")
+  S.keep(B); S.keep(A)
   presence.peers = peers
-  print("rt-folders 10: a version off the tree is said again by a computer holding what a caught-up bandmate holds, its depth and rank the tree's")
+  assert(auto() == before and last("Gtr").id == id, "nobody says it again, its maker included (was: Bee said Gtr and Bass again with the tree's depths and ranks): " .. (auto() - before))
+  assert(tree(S, B) == "Drums 0, Bass 1, Gtr -1 <Bass, Keys 0" and tree(S, A) == tree(S, B), "and both still show the tree")
+  print("rt-folders 10: a version off the tree is shown as the tree has it and not said again")
 end
 
 -- ---- 11. StudioSync's own version on a track your Undo brought back doesn't keep it from your Redo --------------------------------------------

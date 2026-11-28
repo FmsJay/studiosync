@@ -475,7 +475,12 @@ function P.look(t)
   if not (s and s.sync == "mirror") then -- made with the older take sync: left alone until it's published again
     if not sync.old_said then sync.old_said = true; band.log("'" .. b.song .. "' was made with an older StudioSync: publish it again (StudioSync - Publish session) to sync it") end
   else
-    local tok, terr = pcall(sync.watch_timeline, proj, cfg, b.song, b.room, my_can) -- (before the items: a tempo change moves them)
+    -- (the studio's version floor: below it nothing goes out. The look still runs and keeps your changes as unsent, so the band's never land
+    -- over them; the tempo map and markers aren't looked at. lib/sync.lua sync.floor, docs/rt/rt-floor.md)
+    local fok, fl = pcall(sync.floor, cfg)
+    if fok and fl.below and not sync.floor_said then sync.floor_said = true; band.log(sync.floor_words()) end
+    local tok, terr = true, nil
+    if not sync.below_floor() then tok, terr = pcall(sync.watch_timeline, proj, cfg, b.song, b.room, my_can) end -- (before the items: a tempo change moves them)
     if not tok then band.log("tempo/markers: " .. tostring(terr)) end
     lap("timeline")
     -- (a colour look tried in the panel was started, changed, kept or put back: a full look now, not in up to 10 s. lib/colours.lua, rt-nohold)

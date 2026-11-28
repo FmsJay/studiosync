@@ -11,7 +11,8 @@
 --  7. An Undo or Restore of a version from before ranks keeps the track's place, on a track made anew as on one already there.
 --  8. StudioSync's Undo of a move made before ranks sends the rank of the place it goes back to.
 --  9. A rank an older StudioSync copied into a version (its Undo puts an old state back whole) isn't taken for the track's place.
--- 10. With old computers in the room: the order list follows the ranks (old computers go to the newest list), and an older StudioSync's move
+-- 10. A room with ranks goes by them, not by a newer order list (rt-floor: the list is no longer rewritten to match the ranks for old
+--     computers), and an older StudioSync's move
 --     merged with a new edit keeps its place.
 -- 11. The order comes from the versions held, not from a rank left on a track (a version recorded without being put in place: sync.set_back).
 -- 12. A receive pass that lands a track sorts the whole order by rank (sync.receive), not only the track that landed.
@@ -325,8 +326,8 @@ do
   local best = mirror.read_order(S.dir)
   local names = {}
   for _, oid in ipairs(best.list) do for _, t in ipairs(A.F.tracks) do if t.ext.band_oid == oid then names[#names + 1] = t.name end end end
-  assert(S.names(A) == "Drums, Bass, Gtr, Keys" and table.concat(names, ", ") == "Drums, Bass, Gtr, Keys" and best.by == "James",
-    "James's computer keeps its ranks' order and says it in the list old computers follow (was: the old list stood): " .. table.concat(names, ", ") .. " by " .. tostring(best.by))
+  assert(S.names(A) == "Drums, Bass, Gtr, Keys" and best.by == "Old",
+    "James's computer keeps its ranks' order, and leaves the list alone (only a StudioSync before ranks read it; rt-floor): " .. table.concat(names, ", ") .. " by " .. tostring(best.by))
   -- an older computer's move of Bass to the top, made apart from Bee's rename of it: merged, the move keeps its place
   T = T + 5
   local held = S.events(function(v) return v.obj == "track" and v.name == "Bass" end)
@@ -341,7 +342,7 @@ do
   S.recv(A); S.recv(B); S.keep(A); S.keep(B)
   assert(S.names(A) == "Bass 2, Drums, Gtr, Keys" and S.names(B) == S.names(A), "both: the rename and the old computer's move (was: the move lost to the rank both had before): " ..
     S.names(A) .. " / " .. S.names(B))
-  print("rt-rank 10: the order list follows the ranks for old computers, and an old computer's move merged with a new edit keeps its place")
+  print("rt-rank 10: a room with ranks goes by them, not the order list, and an old computer's move merged with a new edit keeps its place")
 end
 
 -- ---- 11. the order comes from the versions held, not from the ranks left on the tracks ------------------------------------------------------
