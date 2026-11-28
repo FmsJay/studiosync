@@ -818,13 +818,13 @@ end
 local in_edit, user_at, DELETE_SECS = false, -math.huge, 90
 do
   local post = sync.post
-  sync.post = function(c, song, room, ev)
+  sync.post = function(c, song, room, ev, ...)
     if reopened and type(ev) == "table" and ev.gone then
       ERRORS[#ERRORS + 1] = string.format("%.1f a deletion of %s went out after a reopen, with no edit since (rt-guard)", now, tostring(ev.oid))
     elseif type(ev) == "table" and ev.gone and not in_edit and now - user_at > DELETE_SECS then
       ERRORS[#ERRORS + 1] = string.format("%.1f a deletion of %s went out with no edit of this person's in the last %d s (rt-sync2c)", now, tostring(ev.oid), DELETE_SECS)
     end
-    return post(c, song, room, ev)
+    return post(c, song, room, ev, ...) -- (its project too: a timeline change is ordered after the newest one seen in it, sync.post)
   end
 end
 -- -> what was done, or "" when the edit had nothing to act on here.

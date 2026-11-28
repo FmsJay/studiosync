@@ -1,0 +1,33 @@
+{
+ "name": "timeline-order",
+ "what": "Long-soak seed 15057 (tempo map / markers differ, in every long soak since rt-sync2c), made by hand. James sets a tempo; it lands on Bee, and in the same second by the clock (both looks run in second 30, clocks unskewed) Bee deletes the Chorus region. Bee's change is built on James's, and sync.post orders a timeline change after the newest one seen in its project (time..id, else that one's order and a +). The soak's own wrapper of sync.post (tools/soak/node.lua, the deletion check) passed on four of its five arguments and dropped the project, so in the soak no timeline change was ever ordered: Bee's sorted before James's by its id ('Bee-' < 'James-'), James and Cee passed over it as older, and only Bee had the region gone. A soak artifact, not a StudioSync bug: Live sync passes the project (rt-sync2f).",
+ "phase": 5,
+ "today": "passes",
+ "seed": 1,
+ "faults": {
+  "clean": true,
+  "link_min": 0.01,
+  "link_max": 0.01
+ },
+ "mode": "everyone",
+ "undo_probe": false,
+ "edits": [
+  {
+   "t": 30.05,
+   "node": "James",
+   "lua": "reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 100, 4, 4, false); N.look(); return 'first tempo to 100, and a look'"
+  },
+  {
+   "t": 30.4,
+   "node": "Bee",
+   "lua": "N.drain(); N.receive(); local _, _, _, _, bpm = reaper.GetTempoTimeSigMarker(F.proj, 0); assert(math.abs(bpm - 100) < 1e-9, 'James tempo not here yet: ' .. tostring(bpm)); for i = 0, 9 do local n, rgn, _, _, name, num = reaper.EnumProjectMarkers3(F.proj, i); if n == 0 then break end; if rgn and name == 'Chorus' then reaper.DeleteProjectMarker(F.proj, num, true); N.look(); return 'deleted the Chorus region, and a look' end end; error('no Chorus region on Bee')"
+  }
+ ],
+ "checks": [
+  {
+   "on": "all",
+   "what": "Bee's deletion stands everywhere: no Chorus region, and James's tempo 100",
+   "lua": "for i = 0, 9 do local n, rgn, _, _, name = reaper.EnumProjectMarkers3(F.proj, i); if n == 0 then break end; assert(not (rgn and name == 'Chorus'), 'the Chorus region is still here') end; local _, _, _, _, bpm = reaper.GetTempoTimeSigMarker(F.proj, 0); assert(math.abs(bpm - 100) < 1e-9, 'tempo ' .. tostring(bpm))"
+  }
+ ]
+}
