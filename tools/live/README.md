@@ -49,6 +49,9 @@ Exactly one reaper.exe per computer. The desktop's StudioSync actions run from i
 
 - **Live audio muted and deafened** on every computer before a song opens (`song` sets both, persistently: Live sync turns live audio on as
   it starts, and a VM's input may be the desktop's microphone). Every scenario's setup refuses to run if either is off.
+- **The song's room is Open** (claims off): every scenario's setup refuses to run otherwise. Scenarios edit as bandmates with nobody
+  answering asks, so in Claims mode an edit to what another computer just changed asks for its auto-claim and is put back 30 s later
+  (sync2i ran in "SS Test Project 112326", a Claims room, until rt-fixlive3: a set that doesn't import `SONG` now runs in "LV Checks").
 - **Never saves a project.** A tab is left with `Main_openProject("noprompt:...")` (an empty project of this tool's, then the clean tab
   closed); an "older file" is a copy beside the song's own file with a track taken out, deleted afterwards.
 - **Cleans up after itself.** Every scenario's tracks are named `LV <scenario> <name>`; after each scenario (pass or fail) they're deleted on

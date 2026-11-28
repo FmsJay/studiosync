@@ -133,7 +133,8 @@ def own_edit(ctx):
 def deletion(ctx):
     add(ctx, "d", "D", "D2", "D3")  # (three: deleting one is under half the song's tracks, so no big-deletion ask)
     new_item(ctx, "d", "D", 2, 3)
-    was = both(ctx, ("D", "the item and its notes on every computer"), lambda x: x and x["notes"].count("|") == 3)["d"]
+    # (and its id given: read before Live sync's first look at it, the desktop's item has none yet. rt-fixlive3)
+    was = both(ctx, ("D", "the item and its notes on every computer"), lambda x: x and x["notes"].count("|") == 3 and x["oid"])["d"]
     sleep(SETTLE)
     # the item deleted, then undone
     ctx.do("d", f"LV.delete_items_on(P, {lua_str(T(ctx, 'D'))}); return LV.out(true)")
@@ -188,18 +189,25 @@ def history_undo(ctx):
     beats_timebase(ctx)
     add(ctx, "d", "H")
     new_item(ctx, "d", "H", 2)
-    oid = both(ctx, ("H", "the item on every computer"), lambda x: x and abs(x["p"] - 2) < 1e-6)["d"]["oid"]
+    both(ctx, ("H", "the item on every computer"), lambda x: x and abs(x["p"] - 2) < 1e-6)
     sleep(SETTLE)
     set_item(ctx, "d", "H", "D_POSITION", 5)
     both(ctx, ("H", "the desktop's move everywhere"), lambda x: x and abs(x["p"] - 5) < 1e-6)
     sleep(SETTLE)
     set_item(ctx, bm, "H", "B_MUTE", 1)
-    both(ctx, ("H", f"{NAMES[bm]}'s mute everywhere"), lambda x: x and x["m"] == 1)
+    # (its id read now, not when it was made: `both` reads the desktop first, and in that first look Live sync hadn't yet given the item its id,
+    # though it had reached LinuxBox by the time LinuxBox was read. That '' found no History row: 2 of 3 runs. rt-fixlive3)
+    oid = both(ctx, ("H", f"{NAMES[bm]}'s mute everywhere"), lambda x: x and x["m"] == 1)["d"]["oid"]
     sleep(SETTLE)
-    # "Undo this change" on the desktop's move row: the move goes back, the bandmate's mute stays
+    # "Undo this change" on the desktop's move row: the move goes back, the bandmate's mute stays. (The row is the one built on an earlier
+    # version, base_ev: not rev > 1. The move came 18 s after the item was made, inside mirror.SESSION_SECS (30 s), so it kept rev 1 as one
+    # edit with the making, by design. rt-fixlive3)
     said = history(ctx, "d", f"local i; for k = #entries, 1, -1 do local e = entries[k]; if e.kind == 'obj' and e.oid == {lua_str(oid)} and e.user == cfg.user"
-                             " and not e.restored and not e.undoes and not e.redoes and (e.rev or 0) > 1 then i = k; break end end\n"
-                             "if not i then return LV.out('no row') end\nreturn LV.out(tostring(R.test.undo_change(i, opts)))")
+                             " and not e.restored and not e.undoes and not e.redoes and e.base_ev then i = k; break end end\n"
+                             f"if not i then local seen = {{}}; for _, e in ipairs(entries) do if e.oid == {lua_str(oid)} then\n"
+                             "  seen[#seen + 1] = tostring(e.user) .. ' rev ' .. tostring(e.rev) .. ' base ' .. tostring(e.base_ev) .. ' ' .. tostring(e.id) end end\n"
+                             "  return LV.out('no row; its rows: ' .. table.concat(seen, ' | ') .. ' (of ' .. #entries .. ')') end\n"
+                             "return LV.out(tostring(R.test.undo_change(i, opts)))")
     ctx.note(f"Undo this change: {said}")
     both(ctx, ("H", "History's Undo this change: the move back, the mute kept, everywhere"), lambda x: x and abs(x["p"] - 2) < 1e-6 and x["m"] == 1)
     sleep(SETTLE)

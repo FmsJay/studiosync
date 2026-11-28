@@ -21,7 +21,8 @@ local was = reaper.EnumProjects(-1)
 if was ~= P then reaper.SelectProjectInstance(P) end
 local left = LV.delete_prefix(P, %s)
 if left > 0 then LV.answer(P, "delete", true) end
-return LV.out({ live = LV.live_running(P), left = left,
+local band = LV.lib()
+return LV.out({ live = LV.live_running(P), left = left, mode = require("sync").mode(band.settings(), SONG, "main"),
   quiet_audio = reaper.GetExtState("BandSync", "live audio mute") == "1" and reaper.GetExtState("BandSync", "live audio deaf") == "1" })""" % lua_str(STALE))
         if r["left"]:
             from live import _answer_cleanup_ask
@@ -32,6 +33,10 @@ return LV.out({ live = LV.live_running(P), left = left,
             raise NoAnswer(f"{NAMES[w]}: live audio isn't muted and deafened: refusing to run (live.py song sets both)")
         if not r["live"]:
             raise NoAnswer(f"{NAMES[w]}: Live sync isn't running in {ctx.song}")
+        # (the scenarios edit as bandmates with nobody answering asks: in Claims mode an edit to what someone just changed asks for their
+        # auto-claim and is put back after 30 s. sync2i on 0.65.3 ran in a Claims room and read that as a lost mute: rt-fixlive3)
+        if r["mode"] != "everyone":
+            raise NoAnswer(f"{NAMES[w]}: {ctx.song}'s room is set to '{r['mode']}' (on disk: 'open' is Claims), not Open ('everyone'): refusing to run (live.py song sets Open)")
     if cleared:  # (the leftovers' deletions gone out and landed before the scenario starts counting what goes out: f8's first try counted them)
         ctx.quiet(timeout=120)
         time.sleep(3)

@@ -380,8 +380,20 @@ def cmd_restart(args):
     def go(w):
         try:
             if w == "d":
-                r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "restart" / "restart_desktop.ps1")],
-                                   capture_output=True, text=True, timeout=400)
+                # (once more when it didn't say it restarted: a first try timed out once, REAPER left running "[modified]". rt-fixlive3)
+                for tried in (1, 2):
+                    try:
+                        r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "restart" / "restart_desktop.ps1")],
+                                           capture_output=True, text=True, timeout=400)
+                        if "desktop restarted" in r.stdout:
+                            break
+                        why = (r.stdout.strip().splitlines() or ["(nothing said)"])[-1]
+                    except subprocess.TimeoutExpired:
+                        why, r = "timed out after 400 s", None
+                    print(f"desktop: restart try {tried}: {why}" + ("; trying once more" if tried == 1 else ""), flush=True)
+                if r is None:
+                    out[w] = f"failed twice: {why}"
+                    return
             elif w == "l":
                 r = subprocess.run(["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(HERE / "start_laptop.ps1"), "-Restart"],
                                    capture_output=True, text=True, timeout=400)
@@ -426,7 +438,9 @@ def cmd_sets(args):
 def cmd_run(args):
     mod, scen = load_set(args.set)
     on = args.on.split(",")
-    song = args.song or getattr(mod, "SONG", "SS Test Project 112326")
+    # (a set that didn't import SONG ran in "SS Test Project 112326", a room in Claims mode: sync2i's bandmate edits asked for the desktop's
+    # auto-claim and were put back. rt-fixlive3)
+    song = args.song or getattr(mod, "SONG", "LV Checks")
     if args.k:
         scen = [s for s in scen if any(k in s.lv["name"] for k in args.k)]
     results = []
@@ -555,7 +569,7 @@ sys.modules.setdefault("live", sys.modules[__name__])
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    a = sub.add_parser("up"); a.add_argument("--on", default="d,l,x"); a.add_argument("--song", default="SS Test Project 112326")
+    a = sub.add_parser("up"); a.add_argument("--on", default="d,l,x"); a.add_argument("--song", default="LV Checks")
     a = sub.add_parser("eval"); a.add_argument("w"); a.add_argument("file"); a.add_argument("--timeout", type=int, default=30)
     a = sub.add_parser("sets")
     a = sub.add_parser("restart"); a.add_argument("--on", default="d,l,x")
