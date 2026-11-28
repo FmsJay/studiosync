@@ -379,7 +379,7 @@ class Sim:
                 bad.append((what, "... and %d more objects differ" % (len(diff) - 6)))
             if not diff and a["order"] != b["order"]:
                 bad.append((what, "track order differs (%s vs %s): %s / %s" % (names[0], names[k], a["order"], b["order"])))
-            if a["timeline"] != b["timeline"]:
+            if not same_timeline(a["timeline"], b["timeline"]):
                 bad.append((what, "tempo map / markers differ (%s vs %s): %s / %s" % (names[0], names[k], a["timeline"][:300], b["timeline"][:300])))
         return bad
 
@@ -411,6 +411,29 @@ class Sim:
             return ""
         sa, sb = a.call(self.t, "show", oid), b.call(self.t, "show", oid)
         return "\n      %s: %s\n      %s: %s" % (names[0], sa[:500].replace("\n", " | "), names[k], sb[:500].replace("\n", " | "))
+
+
+def same_timeline(x, y, tol=2e-6):
+    """Two computers' tempo maps and markers (node.lua's `timeline`, places rounded there to 1e-6 s) alike: the same, a number within `tol`.
+    Rounded alone, a marker's place worked out two ways (REAPER's own move for a map, StudioSync's for an Undo: mirror.time_on), 1e-12 s
+    apart across a rounding step, read as 49.742042 against 49.742043 and failed the seed (the long soak's 15055 at rt-sync2f): not a
+    difference anyone could hear, as noise() says of objects."""
+    if x == y:
+        return True
+    def same(a, b):
+        if isinstance(a, (int, float)) and isinstance(b, (int, float)) and not isinstance(a, bool) and not isinstance(b, bool):
+            return abs(a - b) <= tol
+        if isinstance(a, list) and isinstance(b, list):
+            return len(a) == len(b) and all(same(p, q) for p, q in zip(a, b))
+        if isinstance(a, dict) and isinstance(b, dict):
+            return a.keys() == b.keys() and all(same(a[k], b[k]) for k in a)
+        if isinstance(a, str) and isinstance(b, str) and a[:1] in "[{" and b[:1] in "[{":
+            try:
+                return same(json.loads(a), json.loads(b))
+            except ValueError:
+                return False
+        return a == b
+    return same(x, y)
 
 
 def rss():
@@ -603,6 +626,10 @@ local _, _, _, _, b2 = reaper.GetTempoTimeSigMarker(p, at)
 assert(b2 == 90, "changed by its index: " .. tostring(b2))
 return "ok"''')
     assert ok == "true\tok", "soak self-check, the stand-in's tempo markers: " + ok
+    # (the oracle's timeline compare: places a rounding step apart are alike, a real difference isn't. The long soak's 15055, rt-sync2f)
+    tl = lambda pos: json.dumps([[{"bpm": 120, "time": 0}], [{"name": "Chorus", "pos": pos, "end": 52.842043, "region": True}]])
+    assert same_timeline(tl(49.742042), tl(49.742043)) and not same_timeline(tl(49.742042), tl(49.75)), "soak self-check, the timeline compare"
+    assert not same_timeline(tl(49.742042), json.dumps([[{"bpm": 120, "time": 0}], []])), "soak self-check, the timeline compare (a marker missing)"
 
 
 def main():
