@@ -17,6 +17,7 @@
 -- 11. The order comes from the versions held, not from a rank left on a track (a version recorded without being put in place: sync.set_back).
 -- 12. A receive pass that lands a track sorts the whole order by rank (sync.receive), not only the track that landed.
 -- 13. A bandmate's move waits while this computer plays or records, and lands at the stop (rt-live bug 4).
+-- 14. An empty room's first tracks go out with their rank and folder the first time: no switch-over versions or lines (rt-live bug 6).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -400,6 +401,31 @@ do
   assert(S.names(B) == "Keys, Drums, Bass, Gtr", "at the stop, in place: " .. S.names(B))
   assert(#S.events(function(v) return v.user == "Bee" and v.obj == "track" end) == 0, "nothing of Bee's sent for it")
   print("rt-rank 13: a bandmate's move waits while this computer plays and lands at the stop")
+end
+
+-- ---- 14. an empty room's first tracks go out ranked, with their folder, the first time (rt-live bug 6, sync2c c5, sync2d d1) ----------------
+-- Fails on 52ce885: they went out unranked; rank_room then sent a second version of each ("N track(s) given their place as a rank") and a
+-- third ("... given their folder as a parent"), logged as the one-time switch-over, for every new batch.
+do
+  local S = studio("Rank14")
+  local A, B = S.computer("James"), S.computer("Bee")
+  S.settle(A); S.settle(B) -- (both have looked at the song before: not an opening's first look)
+  logged = {}
+  T = T + 5
+  S.edit(A, function(F) F.add_track("N1"); F.add_track("N2") end)
+  S.recv(B)
+  for _ = 1, 3 do
+    T = T + 70; A.F.clock = A.F.clock + 70; B.F.clock = B.F.clock + 70
+    S.keep(A); S.keep(B); S.recv(A); S.recv(B)
+  end
+  local said = {}
+  for _, l in ipairs(logged) do if l:find("given their", 1, true) then said[#said + 1] = l end end
+  assert(#said == 0, "no switch-over lines for new tracks: " .. table.concat(said, " / "))
+  local evs = S.events(function(v) return v.obj == "track" end)
+  assert(#evs == 2, "one version each, no auto second one: " .. #evs)
+  for _, v in ipairs(evs) do assert(mirror.rank_in(v) and mirror.parent_in(v) == "", "sent with its rank and folder: " .. tostring(v.name)) end
+  assert(S.names(B) == "N1, N2" and S.rank(B, "N1") == S.rank(A, "N1"), "the same order and ranks on Bee's: " .. S.names(B))
+  print("rt-rank 14: an empty room's first tracks go out with their rank and folder the first time")
 end
 
 print("ok rt-rank")

@@ -4309,6 +4309,26 @@ function W.order(w)
   -- lib/rank.lua. Only in a room with ranks (the first look of an opening is the file's order, nobody's move). rt-sync2c)
   local ranked = false -- (mirror.ranked, from the states this look already read: not two REAPER calls a track every look. rt-sync2c)
   for _, o in ipairs(objs) do if o.kind == "track" and type(o.state) == "table" and o.state.rank then ranked = true; break end end
+  -- (an empty room's first tracks, all made here and none sent yet, nothing of the band's waiting: ranked now by place (rank.spread, as
+  -- rank_room's switch-over ranks a room), so they go out with their rank and folder the first time. Left to rank_room, each new batch got a
+  -- second version up to a minute later, then a third for its folder, each logged as the one-time switch-over. rt-live bug 6, sync2c c5, d1)
+  if not first_here and not ranked and w.pending() == 0 then
+    local fresh = {}
+    for _, o in ipairs(objs) do
+      if o.kind == "track" and o.ptr and type(o.state) == "table" then
+        if mirror.known(proj, o.oid) ~= nil then fresh = nil; break end
+        fresh[#fresh + 1] = o
+      end
+    end
+    if fresh and #fresh > 0 then
+      local sp = rank.spread(#fresh)
+      for i, o in ipairs(fresh) do
+        reaper.GetSetMediaTrackInfo_String(o.ptr, "P_EXT:band_rank", sp[i], true)
+        o.state.rank, o.hash = sp[i], mirror.track_hash(o.state, opts.local_mix)
+      end
+      ranked = true
+    end
+  end
   w.ranked = ranked
   if not first_here and ranked then
     local list, need = {}, {}
