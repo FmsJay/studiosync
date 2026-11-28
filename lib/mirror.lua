@@ -6602,7 +6602,9 @@ end
 -- Did someone move this track between the version `upto` (an event id) and `x`, a newer version built on it? -> the track it sat under
 -- before the oldest such move ("" for the top), or nil when nobody moved it. A change sent with a move of yours carries `moved` (W.send);
 -- changes from before rt-edits carry none, so those moves aren't taken back. Walks what x builds on (a merged version: its winner), 200
--- versions at most.
+-- versions at most. (Only a walk that reaches `upto` says anything: one that went by a merge's winner where `upto` was on its other side
+-- walked on through the winner's own history, past the version meant, and took a move made long before for one made since: an Undo of a
+-- folder track's rename put it back in a folder it had left, on one computer. The long soak's 9033, rt-sync2f)
 function mirror.moved_since(room_dir, x, upto, field)
   local from, steps = nil, 0
   while type(x) == "table" and x.id ~= upto and steps < 200 do
@@ -6611,6 +6613,7 @@ function mirror.moved_since(room_dir, x, upto, field)
     local next_id = mirror.split_merge(x.id) or x.base_ev
     x = next_id and event_file(room_dir, next_id) or nil
   end
+  if not (type(x) == "table" and x.id == upto) then return nil end
   return from
 end
 -- Does landing version `x` of a track move the track, on a computer that holds version `held` (an event id)? Only when someone moved it on

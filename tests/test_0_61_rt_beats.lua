@@ -17,6 +17,9 @@
 --     band's at its first look (W.one's re-anchor in beats), with or without a map on the version.
 --  6. Format 2, hash version 12, level 12: a StudioSync on format 1 holds these changes as too new; the level is at least the hash version.
 --  7. History's preview (histhear.rebuild) puts a version in beats in seconds on the map then, and places it there.
+--  8. (found by this round's long soak, 9033) mirror.moved_since takes a move back only from the versions between: a walk by a merge's
+--     winner that never reaches the version meant says nothing. (9040, Undo of a move onto a track a bandmate deleted since, is the scenario
+--     tools/soak/scenarios/undo-gone-with-track.json.)
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 
 local T = 1800000000
@@ -370,6 +373,30 @@ do
     "in seconds on the map then: " .. out)
   assert(info.placed["I-H7"] and info.placed["I-H7"].tempo == then_map, "and placed under it")
   print("rt-sync2f 7: History's preview puts a version in beats in seconds on the map then")
+end
+
+-- ---- 8. (the long soak's 9033, found in this round's runs) a move is taken back only from the versions between ----------------------------------
+do
+  local R = "R/Moved8/rooms/main"
+  local function put(ev)
+    ev.type, ev.obj, ev.oid, ev.user, ev.state = "obj", "track", "T-M8", ev.user or "Cee", { name = "T", after = "" }
+    files[R .. "/events/" .. ev.id .. ".json"] = ev
+    return ev
+  end
+  put({ id = "Cee-20261125-100000Z-00001-0001", unfolder = "T-OLD", rev = 1, hlc = 1 }) -- (a move out of a folder long ago)
+  put({ id = "Cee-20261125-100100Z-00002-0002", base_ev = "Cee-20261125-100000Z-00001-0001", rev = 2, hlc = 2 })
+  put({ id = "James-20261125-100100Z-00001-0001", base_ev = "Cee-20261125-100000Z-00001-0001", rev = 2, hlc = 3, user = "James" }) -- (the version meant)
+  put({ id = "James-20261125-100200Z-00002-0002", base_ev = "James-20261125-100100Z-00001-0001", rev = 3, hlc = 4, user = "James" })
+  local m = mirror.merge_id("Cee-20261125-100100Z-00002-0002", "James-20261125-100200Z-00002-0002")
+  local last = put({ id = "James-20261125-100300Z-00003-0003", base_ev = m, rev = 4, hlc = 5, user = "James", moved = nil })
+  local x = mirror.event_file(R, last.id)
+  assert(mirror.event_file(R, m) and mirror.event_file(R, m).id == m, "(the merge builds)")
+  assert(mirror.moved_since(R, x, "James-20261125-100100Z-00001-0001", "unfolder") == nil,
+    "a walk by the merge's winner that never reaches the version meant takes back nothing (was: the folder left long before it)")
+  assert(mirror.moved_since(R, mirror.event_file(R, "Cee-20261125-100100Z-00002-0002"), "Cee-20261125-100000Z-00001-0001", "unfolder") == nil, "nothing moved between")
+  put({ id = "Cee-20261125-100400Z-00003-0003", base_ev = "Cee-20261125-100100Z-00002-0002", rev = 3, hlc = 6, unfolder = "T-F" })
+  assert(mirror.moved_since(R, mirror.event_file(R, "Cee-20261125-100400Z-00003-0003"), "Cee-20261125-100100Z-00002-0002", "unfolder") == "T-F", "a move between is taken back, as before")
+  print("rt-sync2f 8: a move is taken back only from the versions between (the long soak's 9033)")
 end
 
 print("ok rt-sync2f")
