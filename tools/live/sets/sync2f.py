@@ -89,13 +89,30 @@ def no_obj(ctx, evs, who=None):
 
 # ---- each scenario's start and end ----
 
+ONE_120 = [{"time": 0, "bpm": 120, "num": 4, "denom": 4, "linear": False}]
+
+
+def force_120(ctx, timeout=90):
+    """Every computer of the run on one marker of 120 bpm. When the desktop has it already but another computer doesn't (0.63.1 after a
+    restart: the desktop's older file had 120, the room's newest timeline change, the desktop's own 100 bpm marker, had reached LinuxBox
+    and not the desktop again), setting 120 on the desktop changes nothing there and sends nothing: so it goes through 121 first."""
+    maps = {w: tmap(ctx, w) for w in ctx.on}
+    if not any(diff(m, ONE_120, 1e-9) for m in maps.values()):
+        return
+    if not diff(maps["d"], ONE_120, 1e-9):
+        ctx.note("tempo: the desktop on 120 already but " + ", ".join(NAMES[w] for w, m in maps.items() if diff(m, ONE_120, 1e-9))
+                 + " not: through 121 first")
+        ctx.do("d", "LV.tempo_reset(P, 121); return LV.out(true)")
+        agree(ctx, "the tempo at 121 everywhere", lambda w: [(m["time"], m["bpm"], m["linear"]) for m in tmap(ctx, w)], 1e-6, timeout)
+    ctx.do("d", "LV.tempo_reset(P, 120); return LV.out(true)")
+    agree(ctx, "the tempo back to 120 everywhere", lambda w: [(m["time"], m["bpm"], m["linear"]) for m in tmap(ctx, w)], 1e-6, timeout)
+
+
 def tempo_back(ctx):
     """A clean-up: the tempo back to one marker of 120 bpm on the desktop, waited for everywhere (the crossing is undone before this runs)."""
     def go():
-        if diff(tmap(ctx, "d"), [{"time": 0, "bpm": 120, "num": 4, "denom": 4, "linear": False}], 1e-9):
-            ctx.do("d", "LV.tempo_reset(P, 120); return LV.out(true)")
         try:
-            agree(ctx, "the tempo back to 120 everywhere", lambda w: [(m["time"], m["bpm"], m["linear"]) for m in tmap(ctx, w)], 1e-6, 90)
+            force_120(ctx)
         except Fail as e:
             ctx.note(f"cleanup: {e}")
     return go
@@ -113,8 +130,7 @@ def prep(ctx, drums=True):
                 ctx.do(w, f'reaper.GetSetProjectInfo(P, "PROJECT_TIMEBASE", {v}, true); return LV.out(true)')
     ctx.cleanups.append(tb_back)
     ctx.cleanups.append(tempo_back(ctx))
-    if diff(tmap(ctx, "d"), [{"time": 0, "bpm": 120, "num": 4, "denom": 4, "linear": False}], 1e-9):
-        ctx.do("d", "LV.tempo_reset(P, 120); return LV.out(true)")
+    force_120(ctx)
     add(ctx, "d", "Gtr", "Drums")
     g = lua_str(T(ctx, "Gtr"))
     ctx.do("d", f"LV.record_take(P, {g}, {ITEM_POS}, {ITEM_LEN}, 'f') return LV.out(true)")
