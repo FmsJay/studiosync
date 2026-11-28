@@ -322,9 +322,10 @@ def gradual(ctx):
     def read(w):
         pts = [p for p in env(ctx, w) if abs(p["v"] - 0.25) < 1e-4]
         m = tmap(ctx, w)
-        return {"qp": item(ctx, w)["qp"], "pt": pts[0]["qn"] if len(pts) == 1 else len(pts), "lin": bool(m and m[0]["linear"]), "n": len(m)}
+        # (the point count apart from its place: a place exactly on QN 12 reads back as the integer 12, which looked like a count)
+        return {"qp": item(ctx, w)["qp"], "npt": len(pts), "pt": pts[0]["qn"] if len(pts) == 1 else None, "lin": bool(m and m[0]["linear"]), "n": len(m)}
     got = agree(ctx, "Gtr's item, the 0.25 point and the map after the crossing", read, 1e-5, 120)
-    bad = [f"{NAMES[w]}: {v}" for w, v in got.items() if not (abs(v["qp"] - 18) <= 1e-5 and not isinstance(v["pt"], int) and abs(v["pt"] - 12) <= 1e-5 and v["lin"])]
+    bad = [f"{NAMES[w]}: {v}" for w, v in got.items() if not (abs(v["qp"] - 18) <= 1e-5 and v["npt"] == 1 and abs(v["pt"] - 12) <= 1e-5 and v["lin"])]
     pt_t = [p["t"] for p in env(ctx, "d") if abs(p["v"] - 0.25) < 1e-4]
     ctx.note(f"on the desktop: Gtr at {item(ctx, 'd')['p']:.6f} s (closed form for QN 18: 10.052668), the point at "
              f"{pt_t[0] if pt_t else '?'} s (QN 12: 6.430781)")
