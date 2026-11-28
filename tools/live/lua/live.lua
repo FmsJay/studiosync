@@ -11,7 +11,8 @@ function LV.json(v)
   local t = type(v)
   if t == "nil" then return "null" end
   if t == "boolean" then return tostring(v) end
-  if t == "number" then return (v ~= v or v == math.huge or v == -math.huge) and "null" or string.format("%.10g", v) end
+  -- (%.17g: a double read back exactly; rt-sync2f's f7 compares quarter notes to 1e-9, which 10 digits can't carry past QN 10)
+  if t == "number" then return (v ~= v or v == math.huge or v == -math.huge) and "null" or string.format("%.17g", v) end
   if t == "string" then return '"' .. esc(v) .. '"' end
   if t == "table" then
     local n = #v
@@ -282,7 +283,7 @@ function LV.events_since(song, user, since, room)
     if f:sub(1, #pre) == pre and f:sub(#pre + 1, #pre + 16) >= mark and f:match("%.json$") then
       local h = io.open(dir .. "/" .. f)
       local s = h and h:read("a") or ""; if h then h:close() end
-      out[#out + 1] = { id = f, obj = s:match('"obj"%s*:%s*"([^"]*)"'), name = s:match('"name"%s*:%s*"([^"]*)"'), gone = s:find('"gone"%s*:%s*true') ~= nil }
+      out[#out + 1] = { id = f, type = s:match('"type"%s*:%s*"([^"]*)"'), obj = s:match('"obj"%s*:%s*"([^"]*)"'), name = s:match('"name"%s*:%s*"([^"]*)"'), gone = s:find('"gone"%s*:%s*true') ~= nil }
     end
   end
   return out
@@ -475,6 +476,132 @@ function LV.at(at, fn)
   return { scheduled = at, now = LV.now() }
 end
 function LV.timed_result() return reaper.GetExtState(SEC, "tm") end
+
+-- ---- times in beats (docs/rt/rt-sync2f.md): the tempo map, an item's inner times, stretch markers, automation, claims ----
+-- The tempo map: [{ time, bpm, num, denom, linear }].
+function LV.tempo_map(p)
+  local out = {}
+  for i = 0, reaper.CountTempoTimeSigMarkers(p) - 1 do
+    local _, t, _, _, bpm, num, den, lin = reaper.GetTempoTimeSigMarker(p, i)
+    out[#out + 1] = { time = t, bpm = bpm, num = num, denom = den, linear = lin }
+  end
+  return out
+end
+-- Tempo markers set in one "Edit tempo map": edits = { { idx, time, bpm, linear }, ... } (idx -1: a new marker). A new marker carries no
+-- time signature (0, 0: one at 4/4 would be snapped to a bar line); marker 0 keeps 4/4.
+function LV.set_tempo(p, edits)
+  block(p, "Edit tempo map", function()
+    for _, e in ipairs(edits) do
+      local sig = e[1] == 0 and 4 or 0
+      if not reaper.SetTempoTimeSigMarker(p, e[1], e[2], -1, -1, e[3], sig, sig, e[4] and true or false) then error("tempo marker not set at " .. e[2], 0) end
+    end
+  end)
+  reaper.UpdateTimeline()
+end
+-- One marker at 0 s of `bpm`, 4/4 (StudioSync's own band.apply_tempo), as "Edit tempo map".
+function LV.tempo_reset(p, bpm)
+  local band = LV.lib()
+  block(p, "Edit tempo map", function() band.apply_tempo(p, { { time = 0, bpm = bpm or 120, num = 4, denom = 4, linear = false } }) end)
+end
+local function item_of(p, name, i)
+  local t = LV.track(p, name); if not t then error("no track " .. name, 0) end
+  local it = reaper.GetTrackMediaItem(t, i or 0); if not it then error("no item on " .. name, 0) end
+  return it, reaper.GetActiveTake(it)
+end
+-- Item and take properties set as the Item properties box does: "Item properties". props / takeprops: { D_LENGTH = 7.5, ... }.
+function LV.item_set(p, name, props, takeprops, i)
+  local it, tk = item_of(p, name, i)
+  block(p, "Item properties", function()
+    for k, v in pairs(props or {}) do reaper.SetMediaItemInfo_Value(it, k, v) end
+    for k, v in pairs(takeprops or {}) do reaper.SetMediaItemTakeInfo_Value(tk, k, v) end
+  end)
+end
+-- An item's times as REAPER has them: p (position), l (length), f / fo (fade in / out), s (snap offset), r (take rate), beat
+-- (C_BEATATTACHMODE), auto (C_AUTOSTRETCH), qp / qe (quarter notes at its start and end), sm (stretch markers: pos, srcpos); its chunk too.
+function LV.item_times(p, name, i, chunk)
+  local it, tk = item_of(p, name, i)
+  local function g(k) return reaper.GetMediaItemInfo_Value(it, k) end
+  local pos, len = g("D_POSITION"), g("D_LENGTH")
+  local sm = {}
+  if tk then
+    for k = 0, reaper.GetTakeNumStretchMarkers(tk) - 1 do
+      local _, a, b = reaper.GetTakeStretchMarker(tk, k)
+      sm[#sm + 1] = { pos = a, srcpos = b }
+    end
+  end
+  local o = { p = pos, l = len, f = g("D_FADEINLEN"), fo = g("D_FADEOUTLEN"), s = g("D_SNAPOFFSET"),
+    r = tk and reaper.GetMediaItemTakeInfo_Value(tk, "D_PLAYRATE") or 0, beat = g("C_BEATATTACHMODE"), auto = g("C_AUTOSTRETCH"),
+    qp = reaper.TimeMap2_timeToQN(p, pos), qe = reaper.TimeMap2_timeToQN(p, pos + len), sm = sm }
+  if chunk then o.chunk = select(2, reaper.GetItemStateChunk(it, "", false)) end
+  return o
+end
+-- Stretch markers added to an item's take: marks = { { pos [, srcpos] }, ... } (positions in the item, seconds). "Add stretch marker".
+function LV.stretch_add(p, name, marks, i)
+  local _, tk = item_of(p, name, i)
+  block(p, "Add stretch marker", function()
+    for _, m in ipairs(marks) do
+      if reaper.SetTakeStretchMarker(tk, -1, m[1], m[2]) < 0 then error("stretch marker not added at " .. m[1], 0) end
+    end
+  end)
+end
+-- A track's volume envelope; `make`: shown first when it has none (REAPER's "Track: Toggle track volume envelope visible", 40406, on the
+-- track alone selected in the song's tab).
+local function vol_env(p, name, make)
+  local t = LV.track(p, name); if not t then error("no track " .. name, 0) end
+  local env = reaper.GetTrackEnvelopeByChunkName(t, "<VOLENV2")
+  if not env and make then
+    local was = reaper.EnumProjects(-1)
+    if was ~= p then reaper.SelectProjectInstance(p) end
+    reaper.SetOnlyTrackSelected(t)
+    reaper.Main_OnCommand(40406, 0)
+    if was ~= p and reaper.ValidatePtr(was, "ReaProject*") then reaper.SelectProjectInstance(was) end
+    env = reaper.GetTrackEnvelopeByChunkName(t, "<VOLENV2")
+    if not env then error("no volume envelope on " .. name, 0) end
+  end
+  return env
+end
+-- Volume automation points (raw values, as GetEnvelopePoint reads them): pts = { { time, value }, ... }. "Add point".
+function LV.env_add(p, name, pts)
+  local env = vol_env(p, name, true)
+  block(p, "Add point", function()
+    for _, q in ipairs(pts) do reaper.InsertEnvelopePoint(env, q[1], q[2], 0, 0, false, true) end
+    reaper.Envelope_SortPoints(env)
+  end)
+end
+-- The volume envelope's points: [{ t, v, qn }] ([] with no envelope).
+function LV.env_points(p, name)
+  local env = vol_env(p, name, false)
+  local out = {}
+  if not env then return out end
+  for k = 0, reaper.CountEnvelopePoints(env) - 1 do
+    local _, t, v = reaper.GetEnvelopePoint(env, k)
+    out[#out + 1] = { t = t, v = v, qn = reaper.TimeMap2_timeToQN(p, t) }
+  end
+  return out
+end
+-- `user`'s claims file in the song's room, as text ("" when there's none).
+function LV.claims_text(song, user, room)
+  local f = io.open(LV.studio_root() .. "/" .. song .. "/rooms/" .. (room or "main") .. "/claims/" .. user:gsub("[^%w%-_ ]", "") .. ".json", "rb")
+  if not f then return "" end
+  local s = f:read("a"); f:close()
+  return s
+end
+-- This computer's person claims tracks (`on`), or lets them go, through StudioSync's own claims file (sync.claim_tracks / set_claims).
+function LV.claim(song, names, on, room)
+  local band = LV.lib()
+  local sync = require("sync")
+  local cfg = { root = LV.studio_root(), user = band.settings().user }
+  room = room or "main"
+  if on then return sync.claim_tracks(cfg, song, room, names) == true end
+  local c = sync.my_claims(cfg, song, room)
+  if not c then return false end
+  local drop, keep = {}, {}
+  for _, n in ipairs(names) do drop[n:lower()] = true end
+  for _, n in ipairs(c.tracks or {}) do if not drop[n:lower()] then keep[#keep + 1] = n end end
+  c.tracks = keep
+  sync.set_claims(cfg, song, room, c)
+  return true
+end
 
 -- ---- StudioSync's asks: the big deletion and Undo, answered the way the panel's bar answers ----
 function LV.asks(p)
