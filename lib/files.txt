@@ -1,4 +1,4 @@
-version 0.63.0
+version 0.63.1
 StudioSync - Autostart.lua	25766	a2bb70f854518b05
 StudioSync - Claim selected tracks.lua	851	7b9f063bd6e689a2
 StudioSync - Draw.lua	28530	69861b104a44a33e
@@ -31,7 +31,7 @@ lib/ai.lua	41233	07f9d72ca8940838
 lib/alerts.lua	4108	92d3618fe772d5a2
 lib/api.lua	7230	54afeaa36188ce81
 lib/audience.lua	20816	11f23accecec96e4
-lib/band.lua	136024	8a76f09924184d5b
+lib/band.lua	136024	3be5c112a6b529ba
 lib/beats.lua	16726	879068418963e7a4
 lib/bgrender.lua	40501	09bd0b354f29763b
 lib/bounces.lua	40012	fe8c91cbdbdc10fc
@@ -84,7 +84,7 @@ lib/leave.lua	19171	5db14e28cfc30ed4
 lib/libraries.lua	17368	b24ea9062d839b58
 lib/listen.lua	15178	4adb54de15b2e3ce
 lib/live.lua	56915	40d689ba9117748d
-lib/liveaudio.lua	93592	eece29993ca78a27
+lib/liveaudio.lua	94159	2802291d83c79355
 lib/livekeys.lua	15146	3e05d5f62283fdbb
 lib/livemidi.lua	14851	94a7af8c45d31eea
 lib/liverelay.lua	6734	d07c09a5a0bd9cdd
@@ -92,7 +92,7 @@ lib/livex.lua	33288	3667e321bdf7cb04
 lib/loadguard.lua	3577	96361d5a4af8d3a7
 lib/localcopy.lua	27511	0812c67afde3b53c
 lib/midiview.lua	4574	5d606c07d1928700
-lib/mirror.lua	487790	50df648e5f6260a4
+lib/mirror.lua	493120	7828868fc9d6dc18
 lib/mirror_merge.lua	42207	4187ae313a183161
 lib/mixlayer.lua	1668	7a53f6a1e0e1cfb4
 lib/nat.lua	40009	62c9c7ce52db2ba9
@@ -100,7 +100,7 @@ lib/needlist.lua	24454	a4f2a90b9b0649b3
 lib/pack.lua	10256	aaddbb19c6bc82a5
 lib/page_chat.lua	57208	0f6288aa4157837a
 lib/page_groups.lua	40893	3a8d03e292c3785e
-lib/page_health.lua	38876	bb563b68ddaa4128
+lib/page_health.lua	38975	7c4fc4e3679719e9
 lib/page_hear.lua	19254	bf75b91c8c9d9564
 lib/page_play.lua	25274	fb1899749a030137
 lib/page_plugins.lua	19338	5e4407396b752bf8
@@ -140,7 +140,7 @@ lib/startup.lua	17891	e8e1faacfe852f94
 lib/status.lua	5580	482c652e945637d1
 lib/streams.lua	76965	04a81d72f2dfbe97
 lib/suggest.lua	18339	e2b1a18ab1622d4b
-lib/sync.lua	175392	0a932439be2fc52f
+lib/sync.lua	176656	f7cacf77dc2c3ede
 lib/theme.lua	8224	c3d2e15f74d0d441
 lib/together.lua	16159	405347bba08c97a5
 lib/tools.lua	49678	c4ceecc43d60beff
@@ -198,7 +198,7 @@ sha256 e027eeddfeda5a1e8847b05b9df78fd49e67c138a1b76d6fcae02dfe59c8ee34 lib/ai.l
 sha256 9178f966b2a5be07cc7a72c3595717685029776292d2c0a0a4228fe6caef4277 lib/alerts.lua
 sha256 153dea2968aa950af8ed3f85740b680e3206426eb6ecc38c0f3634607c880819 lib/api.lua
 sha256 c900d9f44a758adbc415d53c6758e10d3dfdfea466869535ef3323b6c285d732 lib/audience.lua
-sha256 b165938861484cebdba10240c53658180acd4fc312132fee6f9e1474eb88ca15 lib/band.lua
+sha256 ebfbbab31c46d3dfbc4db3129263441199234af33d0ecb225ef278ca53fe6d9c lib/band.lua
 sha256 cc7ff8511d0c0f6b354972f4b3956ee5c54bac23865045a17a604a71db4f4ca1 lib/beats.lua
 sha256 c024cf380f415eb6655a1145c692477a638712225cba9c4dddb6f5047f61f304 lib/bgrender.lua
 sha256 b77dfdbf187f43260a4eb7f3c263237054cc0260c77549143864c1e04dfc9275 lib/bounces.lua
@@ -251,7 +251,7 @@ sha256 0ea72fa9d67196b1d381bf5b4c636979f2898e1866bd2fa46c11255d495bde53 lib/leav
 sha256 5cd4b93689df7f08bd914386caca528dbd018f88c31e75d177bd74cfa4e425d9 lib/libraries.lua
 sha256 c392146f0524060af3d3e967cda9ea5442563b3607ed3b51accac1fd93428f7d lib/listen.lua
 sha256 d700c279acd87c41e6cd2189b7a64f9b473fe254673a09b01157bf290c869be1 lib/live.lua
-sha256 e41896dc449a1bdd61d299be00c8aab864523193e3fead96425ffda288f5528d lib/liveaudio.lua
+sha256 adc88c62774577c84cdcdba63a19a7640e63e889c3b4b21ab691d4074e67d0fb lib/liveaudio.lua
 sha256 4f05c738feb683dd0a149cd21ebf9e9832d787bc3a342bde31f8d71b9dba4ce7 lib/livekeys.lua
 sha256 25af370d874dcc7f048882d7ad739a43eb30701259bd5071fc04231e54165a26 lib/livemidi.lua
 sha256 d3549ba388b189ce9ded854cb1d087cb6ef68e2ca2cf41792f95c3f278a3cf4a lib/liverelay.lua
@@ -259,7 +259,7 @@ sha256 b38af5ab68bb57abc4fc30946ce744bda85a834b31dea38016911a05d08f9b22 lib/live
 sha256 668fcf204612cfc82a589e83122bdb90a4cfc9cd7d38392a78467c15e39ebd78 lib/loadguard.lua
 sha256 c69b12038f1f6ff720b355afae6b0f28629ed9ec1ea33ebcc500973e6166f866 lib/localcopy.lua
 sha256 2da7657ed2859f7fc2b80b04c61d307bf32a60d46f3912e5f14d7dce7d0c6363 lib/midiview.lua
-sha256 f0abe8381afc3578012f4180ebcd3a65e59ff061cde0ab3487389a21ae9ec1b1 lib/mirror.lua
+sha256 712a5fdf63f77526e5d875d54780aeb0d2547ab9d5df6b08b5830cd89c91d028 lib/mirror.lua
 sha256 aa89113ff250a61ecaff24fc010d6e1821249930e7b10250347585149396e3a5 lib/mirror_merge.lua
 sha256 5cfe7a75ef98b5e770f0cc9679fa0e4b7fea604bc5396e79fb9c2ad09441499f lib/mixlayer.lua
 sha256 9938797d7683c537d21ca261497ce0514e0175db05106e69ac3a24131d7f606f lib/nat.lua
@@ -267,7 +267,7 @@ sha256 4e267ddf0a2a6dc1686a7a1eb46bfef8efd7e4075a73719d5f44a8157afbe9b6 lib/need
 sha256 5d41a90363dff759e9c899999bf38c6a632f50bb3215102a8463bd09fba75cb0 lib/pack.lua
 sha256 3ab99d54c4dfc78c2b4d8cbcc3c58da89504e7a996e2418cdda969499f2615fd lib/page_chat.lua
 sha256 f75438dcc86f99f69d6f26d18b61c04997c809665007766fa17ce02f0059d395 lib/page_groups.lua
-sha256 0fe9e4bfb7a5caafeb78e9f62d03b2f1af245d42b403f8f1985f420cb0f7dbc6 lib/page_health.lua
+sha256 a3ac5c0e3ceb00a5088520d5d283b44c0e5cf8489387569d6705ce715a12c542 lib/page_health.lua
 sha256 61db77ad45edf1a2241dc007e5c1a408707e55544f5096e68a3f5147b567e207 lib/page_hear.lua
 sha256 89e33cc3a2d640203bc0ff99c9ab61881cc65099fe3b4139715cf2099f6b42f3 lib/page_play.lua
 sha256 ec9834227b62807bb00d5c6307f678503ffb92bf60c7b487580a230eb7412042 lib/page_plugins.lua
@@ -307,7 +307,7 @@ sha256 ae8b58f16ff5471e2a5c1ee06f3a72a6b6cc60d76976ceb4b2148706609e0de8 lib/star
 sha256 4ebe9dc5903fefac7750588c2277eadddb4a6f938e7215fd03eb2c00862db1dc lib/status.lua
 sha256 0aed82e7cb0021b43563faaec4b963bd5755fa15849f0d57a3dbca6e14505f19 lib/streams.lua
 sha256 88918dbc07e5298e18de8a55093201c80c91e081a31ccf658ad25356c9909763 lib/suggest.lua
-sha256 4a6a5904ac425f6e208ffad1ce99585701b296fb1f4b9e2f593887da2c353a8a lib/sync.lua
+sha256 db0f22c12ca3643161861820dd673d48a15d9b42922ffa1f9842ebd71bd29b6f lib/sync.lua
 sha256 0008b8d3c4fddda5aeeec15a443fe294c8c89e68e1a0407680b90bf0687b3313 lib/theme.lua
 sha256 66e6998ed7dd4bf46464525e9f275afbb004b77a8a9cc8b6fbb57165bba3ed67 lib/together.lua
 sha256 f3d96f1a755eccfa66c2403383d2d0f5b5d3043986d144cd75df516cc91a751e lib/tools.lua
