@@ -11,6 +11,8 @@
 --  6. A change made below the floor (lv 10; or no lv since the floor) is held on a computer at the floor: not applied, not marked done, not
 --     counted as still to come; a change from before floors (no lv, older than the floor) lands.
 --  7. hv 11: a ranked track's hashed line has no depth (the tree decides it); a track with no rank keeps it.
+--  8. The "older than the studio's" line is said once each time this computer drops below the floor, and again when the floor rises (and a
+--     bandmate's hold again then); Health reads the floor afresh (rt-fixlive1).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local rank = require("rank")
 
@@ -273,6 +275,43 @@ do
   t.rank, u.rank = nil, nil
   assert(mirror.track_hash(t) ~= mirror.track_hash(u), "an unranked track's still is")
   print("rt-floor 7: a ranked track's hash leaves its depth to the tree")
+end
+
+-- ---- 8. said once each time it drops below, not once a session; Health reads the floor afresh (live check floor f3, rt-fixlive1) -----------
+-- Fails on 52ce885: sync.floor_said was set once per Lua state, so a second drop below the floor said nothing.
+do
+  local S = studio("Floor8")
+  local A, B = S.computer("James"), S.computer("Bee")
+  local dir = sync.floor_dir(A.cfg)
+  for p in pairs(files) do if p:find(dir, 1, true) then files[p] = nil end end
+  local function says()
+    local n = 0
+    for _, l in ipairs(logged) do if l:find("older than the studio's", 1, true) then n = n + 1 end end
+    return n
+  end
+  local function post() sync.post(A.cfg, "Floor8", "main", { type = "note", text = "x" }) end
+  level(12, B)
+  level(11, A)
+  logged = {}
+  post(); post()
+  assert(says() == 1, "below the floor: said once (" .. says() .. ")")
+  level(12, A) -- (James updates)
+  level(11, A) -- (and runs the older one again)
+  post(); post()
+  assert(says() == 2, "dropped below again: said again, once (" .. says() .. ")")
+  level(13, B) -- (the floor rises while James is below it)
+  level(11, A)
+  post()
+  assert(says() == 3, "the floor rose: said again (" .. says() .. ")")
+  sync.floor_held = { Cee = true }
+  level(14, B); level(11, A)
+  assert(sync.floor_held == nil, "a bandmate's hold is said again once the floor rises")
+  local src = io.open("lib/page_health.lua"):read("a")
+  assert(src:find("pcall(sync.floor_read, cfg, true)", 1, true), "Health reads the floor afresh at each build (was: up to FLOOR_EVERY late)")
+  for p in pairs(files) do if p:find(dir, 1, true) then files[p] = nil end end
+  sync.LEVEL = LEVEL
+  sync.floor(A.cfg, true)
+  print("rt-floor 8: \"older than the studio's\" is said each time this computer drops below the floor, and again when it rises")
 end
 
 print("ok rt-floor")

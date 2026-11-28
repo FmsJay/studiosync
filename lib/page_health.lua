@@ -279,7 +279,7 @@ function H.build_rows()
   if view.newer then rows[#rows + 1] = { "update " .. view.newer, false, "yellow", "", "StudioSync " .. view.newer .. " is in use in the studio; you have " .. band.VERSION .. ": " .. require("live").PLACES.update .. "." } end
   do -- below the studio's version floor: nothing of yours goes out until you update (lib/sync.lua sync.floor, docs/rt/rt-floor.md)
     local sync = require("sync")
-    local okf, f = pcall(sync.floor_read, cfg)
+    local okf, f = pcall(sync.floor_read, cfg, true) -- (fresh: a floor change shows at the next build, not up to FLOOR_EVERY later. rt-fixlive1)
     if okf and type(f) == "table" and f.below then
       rows[#rows + 1] = { "update floor", false, "red", "", sync.floor_words(f) .. " " .. require("live").PLACES.update .. ".",
         action = { "Update StudioSync", function() return H.web_act("@update", true) end } }

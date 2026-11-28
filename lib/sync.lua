@@ -1877,8 +1877,14 @@ function sync.floor_read(cfg, fresh)
   return f
 end
 -- The floor this Lua state goes by (Live sync's pass, sync.preload): what's held and whether anything goes out. -> floor_now
+-- (the "older than the studio's" lines are said once each time: this computer's again once it's back at the floor and drops below it again or
+-- the floor rises; a bandmate's again once the floor rises. Once per Lua state, a second drop said nothing. Live check floor f3, rt-fixlive1)
 function sync.floor(cfg, fresh)
+  local was = sync.floor_now
   sync.floor_now = sync.floor_read(cfg, fresh)
+  local risen = was ~= nil and was.level ~= sync.floor_now.level
+  if risen or not sync.floor_now.below then sync.floor_said = nil end
+  if risen then sync.floor_held = nil end
   return sync.floor_now
 end
 -- Is this computer below the studio's floor (as last read)? Then nothing goes out (sync.post refuses; the look, heal and Undo don't run).
