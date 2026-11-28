@@ -124,7 +124,8 @@ folder ("... given their folder as a parent").
 
 **Fix.** W.order ranks an empty room's first tracks at once by place (`rank.spread`, as `rank_room` does), when every track here is new
 (never recorded), none ranked, nothing of the band's waits, and it isn't an opening's first look. W.send then marks their folder as meant
-(`pk`), so the first version carries both.
+(`pk`), so the first version carries both. What's waiting (a listing of the room's events) is asked last, only once every track here is
+new (e9e8fbb: asked first, it slowed every look of an unranked song).
 
 **Test.** `test_0_60_rt_rank` 14: two tracks made in an empty room (both computers had looked before), three rounds of keep / receive: no
 "given their" line, exactly two track events, each with rank and folder, the same ranks on Bee's. On 52ce885 both lines appear.
@@ -145,7 +146,16 @@ goes to the others until you unmute (input N ...)". `test_0_60_rt_liveux`.
 
 ## Gates
 
-GATES_PLACEHOLDER
+| Check | Result |
+| --- | --- |
+| `tests/run.py --no-luals`, local time, at 34f1ebe | **fails 0** |
+| the same, `TZ=UTC0` | **fails 0** |
+| on the way | at f449736 (before 9dd3824 / e9e8fbb): `test_0_60_rt_delete_race` failed (an unguarded `w.pending`, fixed in 9dd3824) and `test_0_60_rt_bigproj` failed in both time zones. A/B alternating against 52ce885: 52ce885 5 of 5, final tree 0 of 5; bisected to 44af905 (055cec8 to 8c2edf4 pass as 52ce885 does); e9e8fbb 5 of 5. A real cost, not load: every look of an unranked song listed the room's events |
+| `tools/soak/soak.py --scenario all`, at 34f1ebe | **19 of 19 as they say** (`rename-redo-claim` fails as it says). At e9e8fbb, 17: `reopen-older-file` and `empty-then-load` lost Cee's markers (the timeline look, 34f1ebe) |
+| long soak, `range.py` from a fresh clone of 34f1ebe, 8 procs (no other `range.py` / `soak.py` running: checked before starting) | **237 of 237** (baseline 237) |
+| soak --quick, detcheck (inside run.py) | ok, ok |
+
+The commits after 34f1ebe are this doc only.
 
 ## Live scenarios that should now pass
 
