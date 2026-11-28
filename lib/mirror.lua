@@ -4962,7 +4962,9 @@ function W.one(w, o)
         -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
         or ev_norm and mirror.rounded(ev_norm) == mirror.rounded(o.state)
         -- (or hash version 12's, its fades and snap offset read from shares of the length as near as they can be: beats.upgrade12. rt-sync2g)
-        or ev_norm and tonumber(ev.hv) == 12 and beats.near(ev_norm, o.state)) then
+        or ev_norm and tonumber(ev.hv) == 12 and beats.near(ev_norm, o.state)
+        -- (or 12's or 13's, a take's own stretch markers without the ends today's form writes for them: beats.ends_off. rt-fixlive2)
+        or ev_norm and (tonumber(ev.hv) == 12 or tonumber(ev.hv) == 13) and beats.near(beats.ends_off(ev_norm), beats.ends_off(o.state))) then
       remember(proj, o.oid, rev, o.hash, evid, kord); return
     end
     -- (an item with takes, the band's version from before which take plays travelled: its own author sends the pick it plays, so

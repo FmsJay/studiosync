@@ -486,6 +486,16 @@ do
   assert(o0 == o1, "a take's own stretch markers in beats and its rate as it is: the same after the tempo change:\n" .. o0 .. "\n" .. o1)
   assert(o0:find("\nPLAYRATE 1 1 ", 1, true) and o0:find("\nSM 0.000000 0 + 2.000000 1 + 6.000000 2.5 + 12.000000 5.5\n", 1, true), "(its rate kept, markers in quarter notes): " .. o0)
   assert(beats.item(beats.item_seconds(o1, tm90at(10.5), qn90at(10.5)), 1, qn90at(10.5)) == o1, "and back in seconds, read as it travelled")
+  -- (rt-fixlive2: the same take before REAPER's first tempo change gave it a marker at each end, as REAPER 7.86 wrote it in live check sync2f
+  -- f5 and its probe: SM 1 1 + 3 2.5, then a 100 bpm marker at 4 s, before the item: SM 0 0 + 1.2 1 + 3.6 2.5 + 7.2 5.5. Read with the ends
+  -- it plays anyway, it doesn't go out at that change. Was: "the same before REAPER added the ends")
+  local own_n = "<ITEM\nPOSITION 10\nSNAPOFFS 0\nLENGTH 6\nPLAYRATE 1 1 0 -1 0 0.0025\nSM 1 1 + 3 2.5\n" .. tail
+  local own_e = "<ITEM\nPOSITION 11.2\nSNAPOFFS 0\nLENGTH 7.2\nPLAYRATE 1 1 0 -1 0 0.0025\nSM 0 0 + 1.2 1 + 3.6 2.5 + 7.2 5.5\n" .. tail
+  local function qn100at4(t) if t <= 4 then return t * 2 end return 8 + (t - 4) * 100 / 60 end
+  local function tm100at4(q) if q <= 8 then return q / 2 end return 4 + (q - 8) * 60 / 100 end
+  local on, oe = beats.item(own_n, 1, qn120), beats.item(own_e, 1, qn100at4)
+  assert(on == oe, "the same before REAPER added the ends:\n" .. on .. "\n" .. oe)
+  assert(beats.item(beats.item_seconds(on, tm100at4, qn100at4), 1, qn100at4) == on, "(its ends written as they travel, read back the same)")
   -- a landing of an auto-stretch item here: its chunk set, then C_AUTOSTRETCH off and on (REAPER makes its markers from the map)
   local F = E.new("C:/A/Warp10.rpp")
   reaper = F.reaper
@@ -532,5 +542,30 @@ do
   print("rt-fixlive2 11: a script's automation in an envelope REAPER hadn't taken in follows a tempo change; only the timeline goes out")
 end
 
+-- ---- 12. (rt-fixlive2) updating from hash version 13 sends nothing: a take's own stretch markers, recorded without their ends ------------------
+-- (fails with W.one's ends_off re-anchor taken out: "sends nothing (1: I-...)")
+do
+  local S, A = song("Beats12")
+  T = T + 5
+  S.edit(A, function(F) local it = S.item(A, "Gtr"); F.set_text(it, (it.text:gsub("\nPLAYRATE ([^\n]*)", "\nPLAYRATE %1\nSM 1 1 + 3 2.5", 1))) end)
+  local o
+  for _, x in ipairs(mirror.scan(A.F.proj, "James", S.media, false)) do if x.kind == "item" and x.state:find('NAME "Gtr"', 1, true) then o = x end end
+  assert(o and o.state:find("\nSM 0.000000 0 + ", 1, true), "today's form writes the take's ends: " .. tostring(o and o.state:match("\nSM [^\n]*")))
+  local rev, _, evid = mirror.known(A.F.proj, o.oid)
+  local ev = files[S.dir .. "/events/" .. evid .. ".json"]
+  local old = beats.ends_off(ev.state)
+  assert(old ~= ev.state and old:find("\nSM 2.000000 1 + 6.000000 2.5\n", 1, true), "(hash version 13's form had no ends: " .. tostring(old:match("\nSM [^\n]*")) .. ")")
+  local id = "James-20261127-100000Z-00001-0001"
+  files[S.dir .. "/events/" .. id .. ".json"] = { type = "obj", obj = "item", oid = o.oid, track = o.track, name = ev.name, user = "James", rev = rev, hlc = 1,
+    time = "2026-11-27T10:00:00Z", id = id, format = 2, hv = 13, lv = 13, state = old, hash = mirror.hash(old) }
+  mirror.remember(A.F.proj, o.oid, rev, mirror.hash(old), id, mirror.order_of(files[S.dir .. "/events/" .. id .. ".json"]))
+  mirror.anchor_seen = {}
+  T = T + 5
+  local since = os.date("!%Y-%m-%dT%H:%M:%SZ")
+  S.settle(A)
+  local sent = obj_events(S, "James", since)
+  assert(#sent == 0, "the first look after updating from hash version 13 sends nothing (" .. #sent .. ": " .. tostring(sent[1] and sent[1].oid) .. ")")
+  print("rt-fixlive2 12: updating from hash version 13 sends nothing: a take's own stretch markers recorded without their ends")
+end
 
 print("ok rt-sync2f")

@@ -99,6 +99,21 @@ local function made_span(list, len)
   if #list < 2 or not (sa and sb) or math.abs(a.pos) > 1e-6 or math.abs(b.pos - len) > 1e-6 then return nil end
   return sb - sa
 end
+-- A take's own stretch markers with one at each end of the take (`len`: rate x length) where it has none: what plays there without one (the
+-- source running on 1:1 in take time from the marker next to it), as REAPER writes it at the first tempo change, which adds both and keeps
+-- their source positions (sync2f f5 on 0.64.0: SM 1 1 + 3 2.5 -> 0 0 + 1.2 1 + 3.6 2.5 + 7.2 5.5 at a 100 bpm marker before the item). So
+-- that change leaves the canonical text as it was. Pure.
+local function src9(v) local s = string.format("%.9f", v):gsub("0+$", ""):gsub("%.$", ""); return s == "-0" and "0" or s end
+local function with_ends(list, len)
+  local a, b = list[1], list[#list]
+  local sa, sb = a and tonumber(a.rest:match("^%s*(%S+)")), b and tonumber(b.rest:match("^%s*(%S+)"))
+  if not (sa and sb) then return list end
+  local out = {}
+  if math.abs(a.pos) > 1e-6 then out[1] = { pos = 0, rest = " " .. src9(sa - a.pos) } end
+  for _, x in ipairs(list) do out[#out + 1] = x end
+  if math.abs(b.pos - len) > 1e-6 then out[#out + 1] = { pos = len, rest = " " .. src9(sb + len - b.pos) } end
+  return out
+end
 local function num_at(line, k) -- (the k-th number after the keyword, its text's start and end)
   local n, pos = 0, 1
   while true do
@@ -149,6 +164,7 @@ function beats.item(state, mode, qn)
         span = r and made_span(sm, r * l) or span -- (what plays over the item, which a receiver's rate then gives: beats.item_seconds)
       elseif sm then
         local rr = r or 1
+        if own and not takes.implied then sm = with_ends(sm, rr * l) end
         L[t.sm] = sm_line(sm, function(x) return q6(qn(p + x / rr) - q0) end) -- (to 1e-6: REAPER writes them to 1e-9 s)
       end
       if r and not own then L[t.rate] = set_at(L[t.rate], 1, f9(span)) end
@@ -385,6 +401,21 @@ function beats.near(a, b)
     end
   end
   return true
+end
+-- A canonical item text without the stretch markers at the ends of a take whose markers are its own (no flags): hash version 13 had no ends
+-- where REAPER hadn't written them yet (beats.item's with_ends, rt-fixlive2). For history: two texts the same but for those read alike
+-- (W.one's re-anchor of a record of hash version 12 or 13). Pure.
+function beats.ends_off(state)
+  if beats.mark(state) ~= 1 then return state end
+  local lq = state:match("\n%s*LENGTH (%S+)")
+  return (state:gsub("\n(%s*)SM ([^\n]*)", function(ind, body)
+    local e = {}
+    for x in body:gmatch("[^+]+") do e[#e + 1] = x:match("^%s*(.-)%s*$") end
+    for _, x in ipairs(e) do if select(2, x:gsub("%S+", "")) > 2 then return nil end end -- (flags: not a take's own alone)
+    if #e > 0 and e[1]:match("^0%.000000 ") then table.remove(e, 1) end
+    if #e > 0 and lq and e[#e]:match("^(%S+)") == lq then table.remove(e) end
+    return "\n" .. ind .. "SM " .. table.concat(e, " + ")
+  end))
 end
 -- A canonical text in seconds on `map`. Pure.
 function beats.seconds_on(kind, state, map)
