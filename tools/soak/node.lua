@@ -361,6 +361,8 @@ function N.state()
   for _, t in ipairs(F.tracks) do
     local like = {}
     for _, it in ipairs(t.items) do
+      -- (a grey stand-in left once everything has arrived: grey for good on this computer. rt-sync2c's 9002 and 15011, rt-sync2e)
+      if (it.ext.band_arriving or "") ~= "" then dup[#dup + 1] = "a stand-in left on " .. tostring(t.name) .. ": " .. tostring(it.ext.band_oid or "(no id)") end
       local k = it.text:gsub("\n%s*GUID [^\n]*", ""):gsub("\n%s*SEL [^\n]*", "")
       if like[k] then dup[#dup + 1] = "two items alike on " .. tostring(t.name) .. ": " .. tostring(it.ext.band_oid) .. " and " .. tostring(like[k]) end
       like[k] = it.ext.band_oid or "?"
