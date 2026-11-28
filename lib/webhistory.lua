@@ -43,7 +43,10 @@ function webhistory.detail(text, ev, decode)
   if ev.obj == "track" then -- (a track: which of its fixed lanes play; nil when it has none, everything on it plays)
     return { plays = text:match('"freemode":%s*2[,}]') and text:match('"plays":%s*"([%d,]*)"') or nil, after = text:match('"after":%s*"([^"\\]*)"') }
   end
-  local out = { lane = tonumber(text:match("BANDLANE (%d+)")), len = tonumber(text:match("\\nLENGTH ([%d%.eE%+%-]+)")), midi = text:find("<SOURCE MIDI", 1, true) ~= nil or nil,
+  -- (its length in seconds as the change says it (`len`, since rt-sync2f), else its state's LENGTH, unless that's in quarter notes (BANDBEAT 1,
+  -- lib/beats.lua): then none, and the time lapse keeps the length it had)
+  local len = tonumber(text:match('"len":%s*([%d%.eE%+%-]+)')) or (not text:find("BANDBEAT 1", 1, true) and tonumber(text:match("\\nLENGTH ([%d%.eE%+%-]+)")) or nil)
+  local out = { lane = tonumber(text:match("BANDLANE (%d+)")), len = len, midi = text:find("<SOURCE MIDI", 1, true) ~= nil or nil,
     from = tonumber(text:match('"from_lane":%s*(%d+)')) }
   if (ev.rev or 1) == 1 and not ev.restored and not ev.gone then
     local full = decode and decode(text)

@@ -1,0 +1,21 @@
+{
+ "name": "tempo-ramp",
+ "what": "A gradual tempo change crossing an edit (rt-sync2f, times in beats). Bee is offline from 20 s to 45 s. At 22 s James makes the tempo go from 120 to 80 bpm over the first 16 s (a linear point at 0, a point at 16). At 24 s, on the old map, Bee moves Bass 2 to 10 s (quarter note 20) and adds a Drums automation point at 6 s (quarter note 12) between its points at 4 and 8. When Bee comes back the two cross: James's map lands on Bee after Bee's edits, and Bee's edits land on James and Cee after the map. Each computer must end with Bass 2 and the new point on the beats Bee put them on, at the seconds the gradual map gives those beats. Before rt-sync2f, mirror.retime skipped any map with a gradual tempo ('shortcut: a map with a gradual (linear) tempo change isn't converted at all'): James and Cee put Bass 2 at 10 s, its old seconds, off its beat, and the soak's stand-in (which used mirror.retime for REAPER's move) left it there on Bee too. Now an item and automation travel in quarter notes (lib/beats.lua) and REAPER's own TimeMap2 places them, gradual tempos included.",
+ "phase": 5,
+ "today": "passes",
+ "seed": 1,
+ "faults": {"clean": true, "link_min": 0.01, "link_max": 0.01},
+ "mode": "everyone",
+ "undo_probe": false,
+ "net": [{"t": 20, "offline": "Bee", "until": 45}],
+ "edits": [
+  {"t": 22, "node": "James", "lua": "reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 120, 4, 4, true); reaper.SetTempoTimeSigMarker(F.proj, -1, 16, -1, -1, 80, 4, 4, false); return 'the tempo from 120 to 80 bpm over 16 s'"},
+  {"t": 24, "node": "Bee", "lua": "reaper.SetMediaItemInfo_Value(item('Bass 2'), 'D_POSITION', 10); local t = track('Drums'); t.body = t.body:gsub('\\nPT 8 1 0', '\\nPT 6 0.25 0\\nPT 8 1 0', 1); F.changed(); return 'Bass 2 to 10 s, and a Drums point at 6 s'"}
+ ],
+ "checks": [
+  {"on": "all", "what": "Bass 2 on quarter note 20 under the gradual map, and the tempo map gradual",
+   "lua": "local _, t0, _, _, b0, _, _, lin = reaper.GetTempoTimeSigMarker(F.proj, 0); assert(lin == true and math.abs(b0 - 120) < 1e-9, 'the map is not the gradual one'); local p = reaper.GetMediaItemInfo_Value(item('Bass 2'), 'D_POSITION'); local q = reaper.TimeMap2_timeToQN(F.proj, p); assert(math.abs(q - 20) < 1e-5, 'Bass 2 at ' .. p .. ' s, quarter note ' .. q .. ', not 20')"},
+  {"on": "all", "what": "the Drums point Bee added on quarter note 12",
+   "lua": "local body = track('Drums').body; local found; for t, v in body:gmatch('\\nPT (%S+) (%S+)') do if tonumber(v) == 0.25 then found = tonumber(t) end end; assert(found, 'no point of 0.25 on Drums'); local q = reaper.TimeMap2_timeToQN(F.proj, found); assert(math.abs(q - 12) < 1e-5, 'the point at ' .. found .. ' s, quarter note ' .. q .. ', not 12')"}
+ ]
+}

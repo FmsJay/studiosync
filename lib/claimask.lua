@@ -443,7 +443,8 @@ function claimask.on_sent(o, name, ev)
     if o.kind == "track" then sent_now[#sent_now + 1] = { name = base(name), gone = true } end
     return
   end
-  local len = o.kind == "item" and type(o.state) == "string" and tonumber(o.state:match("\nLENGTH ([%d%.e%-]+)")) or nil
+  -- (its length in seconds: the change says it (`len`, W.send); its state's LENGTH may be in quarter notes, lib/beats.lua. rt-sync2f)
+  local len = o.kind == "item" and (tonumber(ev.len) or type(o.state) == "string" and not require("beats").mark(o.state) and tonumber(o.state:match("\nLENGTH ([%d%.e%-]+)"))) or nil
   sent_now[#sent_now + 1] = { name = base(name), pos = tonumber(ev.pos), len = len, kind = o.kind }
 end
 -- After mirror.watch: what went that nobody had claimed becomes mine; my own auto-claims it touched are touched again. who: the room's.

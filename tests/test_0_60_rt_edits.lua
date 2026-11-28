@@ -341,8 +341,8 @@ local cases = {
     reaper.SetRegionRenderMatrix(F.proj, marker("Chorus").num, bass, 1)
     reaper.SetRegionRenderMatrix(F.proj, marker("Chorus").num, F.master, 1)
   end },
-  -- (REAPER moves what's in beats when the map changes: the fixture does too, as measured on Cross Test. The moved items and points go out
-  -- with the map, and every other computer must end where the desktop is whichever arrives first: REAPER check F6, below.)
+  -- (REAPER moves what's in beats when the map changes: the fixture does too, as measured on Cross Test. What it moved reads the same in beats
+  -- (lib/beats.lua), so only the map goes out, and every other computer ends where the desktop is: REAPER check F6, below. rt-sync2f)
   { name = "a tempo marker added under items in beats (REAPER moves what's after it), one item set to time staying", min = 1, timeline = true, edit = function()
     local last = bass.items[#bass.items]
     set(last, "BEAT", "0")
@@ -350,7 +350,7 @@ local cases = {
     reaper.SetTempoTimeSigMarker(F.proj, -1, 6, -1, -1, 100, 4, 4, false)
     assert(pos(last) == was and pos(last) > 6, "the item in time stayed")
   end },
-  { name = "the first tempo changed under items in beats (REAPER moves them all)", min = 1, timeline = true, edit = function()
+  { name = "the first tempo changed under items in beats (REAPER moves them all, and nothing but the map goes out)", min = 0, timeline = true, edit = function()
     local it = keys.items[#keys.items]
     local was = pos(it)
     reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 132, 4, 4, false)
@@ -876,10 +876,10 @@ end
 
 -- ---- REAPER check F6, 0.59.49.73: a tempo change left the receivers different ----
 -- A 100 bpm marker at 8 s on the desktop: REAPER moved what's in beats after it, and the desktop sent the map and the moved items and points.
--- The laptop got the map first and ended the same. LinuxBox got the items and points first (they go as messages on the link; the map came as
--- a file), put them where the new map has them, and then its REAPER moved them again when the map landed: lengths scaled twice (4.615 s on the
--- desktop, 5.815 s there), and nothing put them right. Now each change made while REAPER moves things for a map says which map (`tl`), and a
--- receiver lands it only once it holds that map; the map goes as a message too.
+-- LinuxBox got the items and points first, put them where the new map has them, and then its REAPER moved them again when the map landed:
+-- lengths scaled twice (4.615 s on the desktop, 5.815 s there). rt-edits answered with `tl` stamps (a change waited for its map). Since
+-- rt-sync2f items and automation travel in beats (lib/beats.lua): a tempo change sends nothing but the map, and an edit made under a map that
+-- hasn't reached a computer yet lands there at once, on its beat, and stays on it when the map comes.
 do
   build("Edits tempo")
   local X, Y, Z = computer("Linus", "C:/X/Edits tempo.rpp"), computer("Yan", "C:/Y/Edits tempo.rpp"), computer("Zed", "C:/Z/Edits tempo.rpp")
@@ -915,30 +915,16 @@ do
     settle(A, true, oids)
     local map
     for _, ev in ipairs(sent) do if ev.type == "timeline" then map = ev end end
-    assert(map and next(oids), what .. ": the map and what REAPER moved went out")
-    for oid, ev in pairs(oids) do assert(type(ev.tl) == "string" and ev.tl:find(map.id, 1, true), what .. ": " .. oid .. " says which map it was made under") end
+    assert(map and not next(oids), what .. ": the map went out, and nothing else (what REAPER moved reads the same in beats)")
     tick()
-    recv(B) -- (the laptop: the map first, as its file sorts)
-    same(A, B, what .. ": the laptop, map first")
-    -- LinuxBox: the items and points are here, the map's file isn't yet
-    local before = state(X)
-    hidden[edir .. "/" .. map.id .. ".json"] = true
-    as(X)
-    X.F.clock = X.F.clock + 1
-    sync.receive(X.F.proj, X.cfg, song, room, yes)
-    for oid, h in pairs(state(X)) do assert(before[oid] == h, what .. ": nothing lands on LinuxBox before its map (" .. oid .. ")") end
-    hidden[edir .. "/" .. map.id .. ".json"] = nil
+    recv(B)
+    same(A, B, what .. ": the laptop")
     tick()
     recv(X)
-    same(A, X, what .. ": LinuxBox, the items and points first")
-    -- a fourth, as LinuxBox got it: the map lands alone, looks run, the items and points trickle in with more looks between, and its REAPER
-    -- writes items its own way. What its REAPER moved when the map landed is never its edit: nothing goes out and nothing is refused or put
-    -- back, at any look. (REAPER checks: 0.59.49.74, both receivers sent their own copies, "...as you did, at the same time: both changes are
-    -- kept"; 0.59.49.75, LinuxBox still asked the track's claimer to let it "edit" and put eight "edits" back at each tempo step, as the
-    -- compare was with the sender's text.)
-    local list = {}
-    for _, ev in pairs(oids) do list[#list + 1] = ev; hidden[edir .. "/" .. ev.id .. ".json"] = true end
-    table.sort(list, function(a, b) return a.id < b.id end)
+    same(A, X, what .. ": LinuxBox")
+    -- a fourth, whose REAPER writes items its own way: what its REAPER moved when the map landed is never its edit: nothing goes out and
+    -- nothing is refused or put back, at any look. (REAPER checks: 0.59.49.74, both receivers sent their own copies, "...as you did, at the
+    -- same time: both changes are kept"; 0.59.49.75, LinuxBox asked the track's claimer to let it "edit" and put eight "edits" back.)
     local function quiet(when)
       local refused = 0
       local opts = { can = function() refused = refused + 1; return false end, mode = "open", quick = true } -- (it may edit nothing: an edit would be refused)
@@ -952,62 +938,50 @@ do
     as(Z)
     Z.F.clock = Z.F.clock + 1
     sync.receive(Z.F.proj, Z.cfg, song, room, yes)
-    quiet("the map alone")
+    quiet("the map")
     quiet("a second look")
-    for i, ev in ipairs(list) do
-      hidden[edir .. "/" .. ev.id .. ".json"] = nil
-      if i == #list // 2 or i == #list then
-        as(Z)
-        Z.F.clock = Z.F.clock + 1
-        sync.receive(Z.F.proj, Z.cfg, song, room, yes)
-        quiet(i == #list and "all of them here" or "half the items here")
-      end
-    end
-    same_timing(what .. ": the map first, looks, then the items and points a few at a time")
-    return map, oids
+    same_timing(what .. ": a computer whose REAPER writes items its own way")
+    return map
   end
   local l0 = len_of(A, "Gtr")
-  local map, oids = tempo_edit("a 100 bpm marker at 6 s", function() reaper.SetTempoTimeSigMarker(F.proj, -1, 6, -1, -1, 100, 4, 4, false) end)
+  tempo_edit("a 100 bpm marker at 6 s", function() reaper.SetTempoTimeSigMarker(F.proj, -1, 6, -1, -1, 100, 4, 4, false) end)
   local l1 = len_of(A, "Gtr")
   assert(math.abs(l1 - l0 * 1.2) < 1e-6 or l1 > l0, "REAPER stretched the item across the marker (" .. l0 .. " -> " .. l1 .. ")")
-  -- the way it went wrong, on a fourth computer: the same changes as 0.59.49.73 sent them (no map named), the map's file after them
-  for oid in pairs(oids) do
-    -- (nor the map itself, `tm`: since rt-converge a version carries it and lands on its beat whenever it comes, tests/test_0_60_rt_converge.lua)
-    for path, ev in pairs(files) do if type(ev) == "table" and ev.oid == oid and ev.tl then ev.tl, ev.tm = nil, nil end end
-  end
-  hidden[edir .. "/" .. map.id .. ".json"] = true
-  sync.ev_cache = {} -- (the stand-in computers share one memory of the files read and still waiting: Yan reads them afresh, without the stamp)
-  as(Y)
-  Y.F.clock = Y.F.clock + 1
-  sync.receive(Y.F.proj, Y.cfg, song, room, yes)
-  hidden[edir .. "/" .. map.id .. ".json"] = nil
-  Y.F.clock = Y.F.clock + 1
-  sync.receive(Y.F.proj, Y.cfg, song, room, yes)
-  local l2 = len_of(Y, "Gtr")
-  assert(l2 > l1 + 0.1, "without the stamp the stand-in REAPER does what REAPER did: the length scaled twice (" .. l1 .. " on the desktop, " .. l2 .. " there)")
   -- the first tempo, then both put back: the same on the laptop and on LinuxBox each time
   tempo_edit("the first tempo to 110", function() reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 110, 4, 4, false) end)
   tempo_edit("the first tempo back", function() reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 120, 4, 4, false) end)
   tempo_edit("the marker taken out", function() reaper.DeleteTempoTimeSigMarker(F.proj, 1) end)
   assert(math.abs(len_of(A, "Gtr") - l0) < 1e-9 and math.abs(len_of(X, "Gtr") - l0) < 1e-9, "and back where it all began")
-  -- a change whose map never comes still lands, after sync.MAP_WAIT
+  -- the way it went wrong: a new map, then an edit of Gtr made under it, and LinuxBox gets the edit first. It lands at once (nothing waits for
+  -- a map now), on its beat on LinuxBox's map; the map comes, REAPER moves it keeping its beats, and it ends where the desktop has it.
   tick()
   as(A)
-  local it = A.F.tracks[1].items[1]
-  A.F.set_text(it, E.set_top(E.set_top(it.text, "MUTE", "1 0"), "SEL", "1"))
-  local o2 = look(A, true)
-  local stuck = o2[it.ext.band_oid]
-  assert(stuck, "an edit went out")
-  files[edir .. "/" .. stuck.id .. ".json"].tl = "9999-01-01T00:00:00ZNobody-1"
+  reaper.SetTempoTimeSigMarker(A.F.proj, -1, 6, -1, -1, 100, 4, 4, false)
+  tick()
+  local _, msent = look(A, true)
+  local map2
+  for _, ev in ipairs(msent) do if ev.type == "timeline" then map2 = ev end end
+  tick()
+  as(A)
+  local g
+  for _, t in ipairs(A.F.tracks) do for _, it in ipairs(t.items) do if it.text:find('NAME "Gtr"', 1, true) then g = it end end end
+  A.F.set_text(g, E.set_top(E.set_top(g.text, "LENGTH", "7.5"), "FADEIN", "1 0.5 0 1 0 0 0"))
+  tick()
+  local o3 = look(A, true)
+  assert(map2 and o3[g.ext.band_oid], "the map, then the Gtr edit made under it, went out")
+  hidden[edir .. "/" .. map2.id .. ".json"] = true
+  sync.ev_cache = {}
   as(X)
   X.F.clock = X.F.clock + 1
   sync.receive(X.F.proj, X.cfg, song, room, yes)
-  assert(state(X)[stuck.oid] ~= state(A)[stuck.oid], "it waits for its map")
-  as(X)
-  X.F.clock = X.F.clock + sync.MAP_WAIT + 1
-  sync.receive(X.F.proj, X.cfg, song, room, yes)
-  assert(state(X)[stuck.oid] == state(A)[stuck.oid], "and lands without it after " .. sync.MAP_WAIT .. " s")
-  print("rt-edits: tempo changes end the same whichever comes first, the map or what REAPER moved for it")
+  assert(math.abs(len_of(X, "Gtr") - len_of(A, "Gtr")) > 0.1 and band.capture_tempo(X.F.proj)[2] == nil, "the edit is on LinuxBox before its map (" .. len_of(X, "Gtr") .. ")")
+  hidden[edir .. "/" .. map2.id .. ".json"] = nil
+  tick()
+  recv(X)
+  same(A, X, "an edit that came before its map")
+  assert(math.abs(len_of(X, "Gtr") - len_of(A, "Gtr")) < 1e-6, "Gtr as long on LinuxBox as on the desktop once the map came (was: scaled twice, REAPER check F6): "
+    .. len_of(A, "Gtr") .. " / " .. len_of(X, "Gtr"))
+print("rt-edits: tempo changes end the same whichever comes first, the map or what REAPER moved for it")
 end
 
 -- ---- REAPER check F7, 0.59.49.73: the desktop had lost the Verse region ----
@@ -2090,17 +2064,21 @@ do
   for i, e in ipairs(all) do if e.act == act then j = j or i; n = n + 1 end end
   local _, ids = mirror.plan_undo_moment(all, j)
   assert(n > 0 and #ids == n, "Undo this change on a row of the Restore covers all " .. n .. " of its changes (" .. #ids .. ")")
-  -- (rt-history2's limit) an item last changed before a tempo change, restored to a point after it, goes onto its beat on the map in place
+  -- (rt-history2's limit) an item last changed before a tempo change, restored to a point after it, goes onto its beat on the map in place.
+  -- A version from before rt-sync2f, in seconds, is read into beats by the map it was made under (beats.upgrade), then put in seconds on today's.
+  local beats = require("beats")
   local tf = { { time = 0, bpm = 120 } }
   local tt = { { time = 0, bpm = 60 } }
+  local function onto(st, from, to, mode) return beats.seconds_on("item", beats.upgrade("item", st, from, mode), to) end
   local item = "<ITEM\nPOSITION 8\nLENGTH 2\nNAME \"x\"\n>"
-  local r = mirror.retime(item, tf, tt, 1)
+  local r = onto(item, tf, tt, 1)
   assert(r:find("\nPOSITION 16\n", 1, true) and r:find("\nLENGTH 4\n", 1, true), "beats (position, length, rate): its beat and length in beats kept (" .. r .. ")")
-  r = mirror.retime(item, tf, tt, 2)
+  r = onto(item, tf, tt, 2)
   assert(r:find("\nPOSITION 16\n", 1, true) and r:find("\nLENGTH 2\n", 1, true), "beats (position only)")
-  assert(mirror.retime(item:gsub("\n>", "\nBEAT 0\n>"), tf, tt, 1) == item:gsub("\n>", "\nBEAT 0\n>"), "an item set to time stays")
-  assert(mirror.retime(item, tf, tt, 0) == item, "a project in time stays")
-  assert(mirror.retime(item, tf, { { time = 0, bpm = 60, linear = true } }, 1) == item, "(a gradual tempo change isn't converted: left as stored)")
+  assert(onto(item:gsub("\n>", "\nBEAT 0\n>"), tf, tt, 1) == item:gsub("\n>", "\nBEAT 0\n>"), "an item set to time stays")
+  assert(onto(item, tf, tt, 0) == item, "a project in time stays")
+  r = onto(item, tf, { { time = 0, bpm = 60, linear = true }, { time = 100, bpm = 60 } }, 1)
+  assert(r:find("\nPOSITION 16\n", 1, true), "a gradual tempo change is converted too, as REAPER's TimeMap2 counts it (" .. r .. ")")
   -- end to end: the desktop's tempo goes to 60 from the start, Gtr (at 2 s, beat 4, under 120) is deleted, then put back from its version made
   -- under 120: on beat 4 under 60, at 4 s
   local v_gtr
@@ -2129,7 +2107,7 @@ do
   -- (rt-p1b) automation restored from a version made under another map: its points onto their beats too (mirror.retime_env), not its seconds
   local v_env, d_oid = nil, select(2, A.F.raw.GetSetMediaTrackInfo_String(drums, "P_EXT:band_oid", "", false)):upper()
   for _, e in ipairs(recall.entries(A.cfg, song, room)) do if e.kind == "obj" and e.obj == "env" and not e.gone and tostring(e.track):upper() == d_oid then v_env = v_env or e end end
-  assert(v_env and type(v_env.state) == "string" and v_env.state:find("\nPT 4 0.5 0\n", 1, true), "Drums' first automation version, made under 120")
+  assert(v_env and type(v_env.state) == "string" and v_env.state:find("\nPT 8.000000 0.5 0\n", 1, true), "Drums' first automation version, made under 120: its point at 4 s on beat 8, in beats as it travels")
   tick()
   as(A)
   res = mirror.revert(A.F.proj, A.cfg, song, room, { [v_env.oid] = v_env }, { can = yes, mode = "open", at_once = true,
@@ -2178,8 +2156,8 @@ do
   same(A, B, "an Undo of a tempo change, with a bandmate's item since")
   print("rt-edits: an Undo that puts a tempo map back sends nothing more as yours")
 end
--- ---- (round 7) REAPER recheck, 0.59.49.80: the desktop's own 90 bpm marker sent 11 items as yours and auto-claimed all three tracks. They
--- travel (made under their map, `tl`), but a move that is only the tempo map's isn't work on a track: no auto-claim ----
+-- ---- (round 7) REAPER recheck, 0.59.49.80: the desktop's own 90 bpm marker sent 11 items as yours and auto-claimed all three tracks. A move
+-- that is only the tempo map's isn't work on a track: since rt-sync2f nothing goes out for it at all (lib/beats.lua), and nothing is claimed ----
 do
   build("Edits tempo claim")
   local claimed = {}
@@ -2194,10 +2172,10 @@ do
   as(A)
   reaper.SetTempoTimeSigMarker(A.F.proj, -1, 2, -1, -1, 90, 4, 4, false)
   local items = 0
-  for _ = 1, 6 do for _, ev in ipairs(claims_look()) do if ev.obj == "item" then items = items + 1; assert(ev.tl, "(made under its map)") end end end
+  for _ = 1, 6 do for _, ev in ipairs(claims_look()) do if ev.obj == "item" or ev.obj == "env" then items = items + 1 end end end
   local names = {}
   for n in pairs(claimed) do names[#names + 1] = n end
-  assert(items >= 5 and #names == 0, "what only the tempo map moved goes out (" .. items .. " items) and claims nothing (" .. table.concat(names, ", ") .. ")")
+  assert(items == 0 and #names == 0, "what only the tempo map moved doesn't go out (" .. items .. " items) and claims nothing (" .. table.concat(names, ", ") .. ")")
   -- a real edit in the same seconds still claims its track
   tick()
   as(A)
@@ -2214,7 +2192,7 @@ do
   tick()
   recv(B)
   same(A, B, "a tempo change that claimed nothing")
-  print("rt-edits: a move that is only the tempo map's travels and claims nothing")
+  print("rt-edits: a move that is only the tempo map's sends nothing and claims nothing")
 end
 
 -- ---- (round 6) REAPER recheck, 0.59.49.79: one Keep logged "Not sent: LinuxBox kept XT Rec A" 10 times; the put-back of a kept deleted track

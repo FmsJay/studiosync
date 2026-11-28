@@ -28,7 +28,8 @@ local function restless_key(line) return line:match('^<%S+%s+"([^"]*)"') or line
 -- same take's audio or notes (its <SOURCE>), the loser's take comes along as one more take, named for them, so nothing they recorded is lost.
 -- base, winner, loser: normalized item states (mirror.item_state). -> the merged state, and the keys both changed. Pure.
 local ITEM_LEVEL = { POSITION = true, SNAPOFFS = true, LENGTH = true, LOOP = true, ALLTAKES = true, FADEIN = true, FADEOUT = true, MUTE = true,
-  BEAT = true, COLOR = true, LOCK = true, GROUP = true, IMGRESOURCEFLAGS = true, ["<NOTES"] = true, ["<EXTI"] = true, BANDLANE = true, BANDTAKE = true }
+  BEAT = true, COLOR = true, LOCK = true, GROUP = true, IMGRESOURCEFLAGS = true, ["<NOTES"] = true, ["<EXTI"] = true, BANDLANE = true, BANDTAKE = true,
+  BANDBEAT = true }
 local function elements(state)
   local els, order, nth, section, depth, block = {}, {}, {}, 0, 0, nil
   local function add(key, text)
@@ -59,7 +60,8 @@ end
 -- Where an item sits and what part of its source plays: one thing, not separate lines. (0.59.14, review: one person's left trim, POSITION
 -- LENGTH and SOFFS, merged with another's move, POSITION alone, gave a state neither made, its audio off by the trim.)
 -- (not the snap offset or the fades: one person's fade and another's snap offset are both kept, as before. merge_items suite, 0.59.14)
-local TIMING = { POSITION = true, LENGTH = true, SOFFS = true, PLAYRATE = true, SM = true }
+-- (and BANDBEAT, the units its times are in: lib/beats.lua. rt-sync2f)
+local TIMING = { POSITION = true, LENGTH = true, SOFFS = true, PLAYRATE = true, SM = true, BANDBEAT = true }
 function M.merge_item(base, winner, loser, loser_name)
   local b, border = elements(base)
   local w, worder = elements(winner)

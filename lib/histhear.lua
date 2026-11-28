@@ -125,7 +125,8 @@ histhear.lit = lit
 -- The saved copy's text rebuilt to a moment. plan: mirror.plan_restore's (oid -> that moment's version, or false: it didn't exist then; an
 -- object not in it stays as it is). o: { media = the room's media folder, now = oid -> the version id held here (an object already at that
 -- version is left as it is, its state never read), exists(path), guid() -> a new "{...}", moves = histhear.moves_since's list (tracks moved
--- since go back), map_of(ev) -> the timeline entry a version was made under (histhear.map_of) }.
+-- since go back), map_of(ev) -> the timeline entry a version was made under (histhear.map_of), then_map = the tempo map then (a version in beats
+-- is put in seconds on it, lib/beats.lua: rt-sync2f) }.
 -- -> the text, and { tracks = track oid -> a track's settings then (prep sets them), items = oid -> { lane, pick, track }, missing = media not here,
 -- len = the song's length in seconds, skipped = parts that couldn't go in (a receive from a track not there), n = objects changed,
 -- placed = item oid -> the timeline entry it was made under (false: before any History keeps) for each item put in from History,
@@ -240,6 +241,11 @@ function histhear.rebuild(text, plan, o)
     if (kind == "fx" or kind == "env" or kind == "recv" or kind == "misc") and not same(oid, ev) then
       local trk = (ev and ev.track) or ("T" .. oid:sub(2))
       local state = ev and type(ev.state) == "string" and ev.state or ""
+      -- (automation and sends in beats: in seconds on the map then, and placed under it. rt-sync2f)
+      local beats = require("beats")
+      local inbeats = o.then_map and beats.mark(state) ~= nil
+      if inbeats then state = beats.seconds_on(kind, state, o.then_map) end
+      local function env_placed() if inbeats then return { tempo = o.then_map } end; return o.map_of and ev and (o.map_of(ev) or false) or nil end
       if trk == mirror.MASTER then
         if kind == "fx" then -- (the master's chain is the project's <MASTERFXLIST>)
           local at
@@ -258,7 +264,7 @@ function histhear.rebuild(text, plan, o)
           local x = mirror.splice_parts("<TRACK\n>\n", "env", state, function() return nil end, function() return nil end) or ""
           info.master = { env = x:gsub("^<TRACK\n", ""):gsub(">\n$", ""), fxen = state:find("BANDFXEN 0", 1, true) and 0 or 1 }
           info.ai.MASTER = ai_lines(state)
-          if o.map_of and ev then info.envplaced.MASTER = o.map_of(ev) or false end
+          local pl = env_placed(); if pl ~= nil then info.envplaced.MASTER = pl end
           info.n = info.n + 1
         else info.skipped = info.skipped + 1 end -- (the master has no sends or other parts in History: F-MASTER and E-MASTER only)
       else
@@ -280,7 +286,7 @@ function histhear.rebuild(text, plan, o)
             local L2 = split(out); r.kids = units(L2, 2, #L2 - 1); info.n = info.n + 1
             if kind == "env" then
               info.ai[r.oid] = ai_lines(state)
-              if o.map_of and ev then info.envplaced[r.oid] = o.map_of(ev) or false end
+              local pl = env_placed(); if pl ~= nil then info.envplaced[r.oid] = pl end
             end
           else info.skipped = info.skipped + 1 end
         end
@@ -305,10 +311,14 @@ function histhear.rebuild(text, plan, o)
         end
         local r = ev and type(ev.state) == "string" and by_oid[ev.track or ""]
         if r then
-          local lines, lane, pick, needs = item_lines(ev.state, media)
+          -- (an item in beats: in seconds on the map then, and placed under it. lib/beats.lua, rt-sync2f)
+          local beats = require("beats")
+          local inbeats = o.then_map and beats.mark(ev.state) ~= nil
+          local lines, lane, pick, needs = item_lines(inbeats and beats.seconds_on("item", ev.state, o.then_map) or ev.state, media)
           r.kids[#r.kids + 1] = { tag = "ITEM", lines = lines, block = true }
           if lane or pick then info.items[oid] = { lane = lane and lane < mirror.BAD_LANE and lane or nil, pick = pick, track = r.oid } end
-          if o.map_of then info.placed[oid] = o.map_of(ev) or false end -- (its seconds are on the tempo map it was made under: histhear.tempo_plan)
+          if inbeats then info.placed[oid] = { tempo = o.then_map }
+          elseif o.map_of then info.placed[oid] = o.map_of(ev) or false end -- (its seconds are on the tempo map it was made under: histhear.tempo_plan)
           for _, p in ipairs(needs) do if o.exists and not o.exists(p) then info.missing[#info.missing + 1] = p end end
         elseif ev then info.skipped = info.skipped + 1 end
         info.n = info.n + 1
@@ -612,7 +622,8 @@ function histhear.first_map(cfg, b, session)
   return type(session) == "table" and type(session.first_timeline) == "table" and session.first_timeline or nil
 end
 -- -> fn(ev): the timeline change an object's version was made under (its seconds are on that map), or nil before any. A change sent while
--- REAPER may still be moving things for a new map names it (`tl`, mirror.map_stamp); others were made under the newest one before them. Pure.
+-- REAPER may still be moving things for a new map names it (`tl`, written before rt-sync2f); others were made under the newest one before them.
+-- Only versions from before times went in beats ask (lib/beats.lua). Pure.
 function histhear.map_of(entries)
   local tls = {}
   for _, e in ipairs(entries) do if is_tl(e) then tls[#tls + 1] = e end end
@@ -898,7 +909,8 @@ local function copy_at(proj, cfg, b, upto, dir)
   local now = {}
   for oid in pairs(plan) do local _, _, ev = mirror.known(proj, oid); now[oid] = ev end
   local out, info = histhear.rebuild(text, plan, { media = sync.room_dir(cfg, b.song, b.room) .. "/media", now = now, exists = reaper.file_exists,
-    guid = function() return reaper.genGuid("") end, moves = entries and histhear.moves_since(entries, upto), map_of = entries and histhear.map_of(entries) })
+    guid = function() return reaper.genGuid("") end, moves = entries and histhear.moves_since(entries, upto), map_of = entries and histhear.map_of(entries),
+    then_map = tl and tl.tempo or band.capture_tempo(proj) })
   info.tl = histhear.tempo_plan(info.placed, tl, band.capture_tempo(proj), info.envplaced) -- (today's map: what the copy was saved with)
   return out, info, tl
 end

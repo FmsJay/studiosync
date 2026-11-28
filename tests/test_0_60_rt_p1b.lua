@@ -1,7 +1,8 @@
 -- rt-p1b (two sync-core leftovers from rt-p6, docs/rt/rt-history2.md round 2): (1) an item restored from a version made under another tempo
 -- map is stretched as REAPER's "beats (position, length, rate)" timebase stretches it (snap offset, fades, an audio take's rate; a MIDI
--- take's rate stays), and an automation part's points and items go onto their beats the same way (mirror.retime, mirror.retime_env; the
--- Restore end to end is in tests/test_0_60_rt_edits.lua); (2) a comp piece's change names the lane it came from (mirror.comp_from, the
+-- take's rate stays), and an automation part's points and items go onto their beats the same way (mirror.retime, mirror.retime_env until
+-- rt-sync2f; now a version from before is read into beats by the map it names and put in seconds on another: lib/beats.lua's upgrade and
+-- seconds_on, the same numbers; the Restore end to end is in tests/test_0_60_rt_edits.lua); (2) a comp piece's change names the lane it came from (mirror.comp_from, the
 -- change's from_lane), which the time lapse reads (lib/webhistory.lua, lib/webui/history.js). Lua 5.4, from the repo root.
 package.path = "lib/?.lua;" .. package.path
 reaper = setmetatable({}, { __index = function(_, k) if not tostring(k):find("^StudioSync_") then return function() return 0 end end end })
@@ -9,6 +10,11 @@ local mirror = require("mirror")
 local wh = require("webhistory")
 local function num(s, pat) return tonumber(s:match(pat)) end
 local function near(a, b) return type(a) == "number" and math.abs(a - b) < 1e-9 end
+local beats = require("beats")
+-- (a version made under `from`, put on `to`: what mirror.retime did, now beats.upgrade then beats.seconds_on)
+local function onto(kind, state, from, to, mode) return beats.seconds_on(kind, beats.upgrade(kind, state, from, mode), to) end
+mirror.retime = function(state, from, to, mode) return onto("item", state, from, to, mode) end
+mirror.retime_env = function(state, from, to, mode) return onto("env", state, from, to, mode) end
 
 -- ---- 1. an item: 120 -> 60 bpm doubles it in mode 1 ----------------------------------------------------------------------------------------
 local A, B = { { time = 0, bpm = 120 } }, { { time = 0, bpm = 60 } }
@@ -40,7 +46,7 @@ assert(e:find("\nBANDAIPT VOLENV2 0 5 0.3 0 0\n", 1, true) and e:find("\nBANDFXE
 e = mirror.retime_env(ENV, A, B, 2)
 assert(e:find("\nPOOLEDENVINST 1 4 2 ", 1, true) and e:find("\nBANDAI VOLENV2 4 2 ", 1, true) and e:find("\nPT 8 0.5 0\n", 1, true), "position only: an item keeps its seconds' length")
 assert(mirror.retime_env(ENV, A, A, 1) == ENV and mirror.retime_env(ENV, A, B, 0) == ENV, "the same map, or time: untouched")
-assert(mirror.retime_env(ENV, A, { { time = 0, bpm = 60, linear = true } }, 1) == ENV, "(a gradual tempo change isn't converted)")
+assert(mirror.retime_env(ENV, A, { { time = 0, bpm = 60, linear = true } }, 1) == mirror.retime_env(ENV, A, B, 1), "(a lone gradual point holds its tempo: converted as 60, as REAPER's TimeMap2 counts it; rt-sync2f)")
 -- a map with a change in it: 120 until 4 s (beat 8), then 60; under 120 throughout, a point at 6 s (beat 12) sits at 8 s
 local AB = { { time = 0, bpm = 120 }, { time = 4, bpm = 60 } }
 assert(mirror.retime_env("PT 2 1 0\nPT 6 1 0\n", A, AB, 1) == "PT 2 1 0\nPT 8 1 0\n", "points before the change stay, after it on their beat")

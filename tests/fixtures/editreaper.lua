@@ -298,51 +298,119 @@ function E.new(path)
   -- (checked against REAPER 7.86 on Cross Test: 130 bpm, a 100 bpm marker added at 8.0 s took an item at 7.385 + 3.692 s to 4.615 s long, an
   -- audio item's end from 22.754 to 27.180 and a region's end from 18.46 to 21.60; the first tempo to 120 then moved that marker to 8.667 s.
   -- An item whose chunk says "BEAT 0" stands for one set to the time timebase, and stays.)
+  -- (gradual tempos too, as TimeMap2 counts them: a point marked linear goes in a straight line to the next point's tempo. And each item by
+  -- its timebase, as REAPER moves it (rt-r4 check 1): its own BEAT line, else its track's C_BEATATTACHMODE, else the project's; 1 (beats:
+  -- position, length, rate) keeps its place and length in beats and stretches what's inside (snap offset, fades, an audio take's rate by the
+  -- inverse), 2 (position only) keeps its place, 0 (time) stays. rt-sync2f)
   F.base_bpm, F.timebase = 120, "beats"
-  local function qn_in(map, base, t)
-    local q, pt, pb = 0, 0, base
-    for _, m in ipairs(map) do
-      if m[1] > t then break end
-      q = q + (m[1] - pt) * pb / 60
-      pt, pb = m[1], m[2]
+  local function seg(pt, pb, lin, nt, nb, dt) -- (quarter notes dt seconds after a point at pt of pb bpm, linear or not, the next at nt of nb)
+    if lin and nt and nt > pt then local k = (nb - pb) / (nt - pt); return dt * (pb + k * dt / 2) / 60 end
+    return dt * pb / 60
+  end
+  local function seg_inv(pt, pb, lin, nt, nb, dq)
+    if lin and nt and nt > pt then
+      local k, b = (nb - pb) / (nt - pt), pb / 60
+      return 2 * dq / (b + math.sqrt(math.max(0, b * b + k * dq / 30)))
     end
-    return q + (t - pt) * pb / 60
+    return dq * 60 / pb
+  end
+  local function qn_in(map, base, t)
+    local q, pt, pb, lin = 0, 0, base, false
+    for _, m in ipairs(map) do
+      if m[1] > t then return q + seg(pt, pb, lin, m[1], m[2], t - pt) end
+      q = q + seg(pt, pb, lin, m[1], m[2], m[1] - pt)
+      pt, pb, lin = m[1], m[2], m[5]
+    end
+    return q + seg(pt, pb, false, nil, nil, t - pt)
   end
   local function time_in(map, base, q)
-    local pq, pt, pb = 0, 0, base
+    local pq, pt, pb, lin = 0, 0, base, false
     for _, m in ipairs(map) do
-      local mq = pq + (m[1] - pt) * pb / 60
-      if mq > q then break end
-      pq, pt, pb = mq, m[1], m[2]
+      local mq = pq + seg(pt, pb, lin, m[1], m[2], m[1] - pt)
+      if mq > q then return pt + seg_inv(pt, pb, lin, m[1], m[2], q - pq) end
+      pq, pt, pb, lin = mq, m[1], m[2], m[5]
     end
-    return pt + (q - pq) * 60 / pb
+    return pt + seg_inv(pt, pb, false, nil, nil, q - pq)
   end
   function F.qn_of(t) return qn_in(tempo, F.base_bpm, t) end
   function F.time_of(q) return time_in(tempo, F.base_bpm, q) end
   local function g14(x) return string.format("%.14g", x) end
+  -- (REAPER's stretch of an item in beats (position, length, rate) whose length went `s` times as long: snap offset and fades with it, each
+  -- audio take's rate by the inverse; a MIDI take's notes are in beats already)
+  local function stretch(text, s)
+    local L, d, take = lines(text), 0, {}
+    local takes = { take }
+    for i, l in ipairs(L) do
+      local st = l:match("^%s*(.-)%s*$")
+      if d == 1 then
+        local k = st:match("^(%S+)")
+        if k == "TAKE" then take = {}; takes[#takes + 1] = take
+        elseif k == "SNAPOFFS" then
+          local v, rest = st:match("^SNAPOFFS (%S+)(.*)$")
+          if v then L[i] = "SNAPOFFS " .. g14((tonumber(v) or 0) * s) .. rest end
+        elseif k == "FADEIN" or k == "FADEOUT" then
+          local sh, len, auto, rest = st:match("^%S+ (%S+) (%S+) (%S+)(.*)$")
+          if sh then L[i] = k .. " " .. sh .. " " .. g14((tonumber(len) or 0) * s) .. " " .. g14((tonumber(auto) or 0) * s) .. rest end
+        elseif k == "PLAYRATE" then take.rate = i end
+      end
+      if st:find("^<SOURCE MIDI") then take.midi = true end
+      if st:sub(1, 1) == "<" then d = d + 1 elseif st == ">" then d = d - 1 end
+    end
+    for _, t in ipairs(takes) do
+      if t.rate and not t.midi then
+        local v, rest = L[t.rate]:match("^%s*PLAYRATE (%S+)(.*)$")
+        if v then L[t.rate] = "PLAYRATE " .. g14((tonumber(v) or 1) / s) .. rest end
+      end
+    end
+    return table.concat(L, "\n") .. "\n"
+  end
+  function F.project_timebase() local v = info.PROJECT_TIMEBASE; if v ~= nil then return math.floor(v) end; return F.timebase == "beats" and 1 or 0 end
+  function F.item_timebase(it)
+    local b = tonumber(top_value(it.text, "BEAT"))
+    if b and b >= 0 then return b end
+    local t = it.track and it.track.vals and tonumber(it.track.vals.C_BEATATTACHMODE)
+    if t and t >= 0 then return t end
+    return F.project_timebase()
+  end
   -- One edit of the tempo map (`fn` makes it and returns the marker it set or took out).
   function F.tempo_edit(fn)
     local old, old_base, at = {}, F.base_bpm, {}
-    for i, m in ipairs(tempo) do old[i] = { m[1], m[2] } end
+    for i, m in ipairs(tempo) do old[i] = { m[1], m[2], m[3], m[4], m[5] } end
     for _, m in ipairs(tempo) do at[m] = qn_in(old, old_base, m[1]) end
     local edited = fn()
     table.sort(tempo, function(a, b) return a[1] < b[1] end)
-    local et, built = edited and edited[1] or math.huge, {}
-    for _, m in ipairs(tempo) do -- (the tempo markers after it keep their beats)
-      if m ~= edited and at[m] and m[1] > et then m[1] = time_in(built, F.base_bpm, at[m]) end
-      built[#built + 1] = m
+    -- (the tempo markers after it keep their beats. Into a marker from a gradual one before it the tempo is a straight line, so the beats
+    -- between them are a trapezoid's: placed as if the line stopped at the one before, a marker after a gradual change landed before the one
+    -- ahead of it, the map out of order (the long soak's 13005, rt-sync2f))
+    local et, prev, q_prev = edited and edited[1] or math.huge, nil, 0
+    for _, m in ipairs(tempo) do
+      if prev and m ~= edited and at[m] and m[1] > et then
+        local dq = at[m] - q_prev
+        m[1] = prev[1] + (prev[5] and dq * 120 / (prev[2] + m[2]) or dq * 60 / prev[2])
+      end
+      q_prev = prev and (q_prev + seg(prev[1], prev[2], prev[5], m[1], m[2], m[1] - prev[1])) or seg(0, F.base_bpm, false, nil, nil, m[1])
+      prev = m
     end
-    if F.timebase == "beats" then
-      local function move(t) return time_in(tempo, F.base_bpm, qn_in(old, old_base, t)) end
-      for _, t in ipairs(tracks) do
-        for _, it in ipairs(t.items) do
-          if top_value(it.text, "BEAT") ~= "0" then
-            local p, l = tonumber(top_value(it.text, "POSITION")) or 0, tonumber(top_value(it.text, "LENGTH")) or 0
-            local np, ne = move(p), move(p + l)
-            if math.abs(np - p) > 1e-12 then it.text = set_top(it.text, "POSITION", g14(np)) end
-            if math.abs((ne - np) - l) > 1e-12 then it.text = set_top(it.text, "LENGTH", g14(ne - np)) end
+    local function move(t) return time_in(tempo, F.base_bpm, qn_in(old, old_base, t)) end
+    for _, t in ipairs(tracks) do
+      for _, it in ipairs(t.items) do
+        local mode = F.item_timebase(it)
+        if mode == 1 or mode == 2 then
+          local p, l = tonumber(top_value(it.text, "POSITION")) or 0, tonumber(top_value(it.text, "LENGTH")) or 0
+          local np = move(p)
+          if math.abs(np - p) > 1e-12 then it.text = set_top(it.text, "POSITION", g14(np)) end
+          if mode == 1 then
+            local nl = move(p + l) - np
+            if math.abs(nl - l) > 1e-12 then
+              it.text = set_top(it.text, "LENGTH", g14(nl))
+              if l > 0 then it.text = stretch(it.text, nl / l) end
+            end
           end
         end
+      end
+    end
+    if F.project_timebase() ~= 0 then
+      for _, t in ipairs(tracks) do
         if t.body ~= "" then
           t.body = t.body:gsub("(\n?)PT (%S+)", function(nl, v)
             local x = tonumber(v)
@@ -430,6 +498,7 @@ function E.new(path)
     GetMediaTrackInfo_Value = function(t, k)
       local fld = TV[k]
       if fld then return t[fld] or 0 end
+      if k == "C_BEATATTACHMODE" and t.vals[k] == nil then return -1 end -- (a track's timebase: the project's, as REAPER's new tracks. rt-sync2f)
       if k == "IP_TRACKNUMBER" then return t.is_master and -1 or index_of(t) or 0 end
       if k == "I_NCHAN" then return 2 end
       local v = t.vals[k]
@@ -509,6 +578,7 @@ function E.new(path)
       if k == "B_UISEL" then return tonumber(top_value(it.text, "SEL")) or 0 end
       if k == "I_CURTAKE" then return cur_take(it) end
       if k == "I_FIXEDLANE" then return it.lane or 0 end
+      if k == "C_BEATATTACHMODE" then return tonumber(top_value(it.text, "BEAT")) or -1 end
       if k == "I_CUSTOMCOLOR" then return tonumber((top_value(it.text, "COLOR") or "0"):match("^(%S+)")) or 0 end
       if k == "IP_ITEMNUMBER" then for i, x in ipairs(it.track.items) do if x == it then return i - 1 end end end
       return 0

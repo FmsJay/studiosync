@@ -4,6 +4,7 @@ local mirror = {}
 local merges = require("mirror_merge") -- (pure: the three-way merges, rt-sync2 phase 1)
 local judge = require("judge") -- (pure: what each object is, from its own versions: rt-sync2 phase 2)
 local rank = require("rank") -- (pure: a track's place as a code that sorts, rt-sync2 phase 4)
+local beats = require("beats") -- (items' and automation's times in the units their timebase keeps: rt-sync2 phase 5, rt-sync2f)
 mirror.byte_less = rank.less -- (ids compared byte by byte where an order decides anything: lib/judge.lua says why. rt-sync2e)
 
 -- Lines in an item chunk that are this machine's business only: selection, REAPER's own ids (regenerated on
@@ -421,7 +422,7 @@ end
 -- (measured, REAPER 7.83: no @init, even with a changed parameter). Which envelopes show, which is armed and how
 -- tall its lane is stay each person's own. A receive names its source track by oid (REAPER's chunk says its
 -- position); receives from a track that isn't mirrored (Real time, live views) stay as they are on each machine.
-mirror.HV = 11 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv), and raise sync.LEVEL with it (the studio's version floor). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c). 10: and its parent again, now the folder it is in for real (rt-sync2d). 11: and no depth when it has a rank (rt-floor)
+mirror.HV = 12 -- how object hashes are made: bump it whenever what goes into one changes (events carry it as hv), and raise sync.LEVEL with it (the studio's version floor). 8: a track's line leaves out its parent (0.59.14). 9: and has its rank, when it has one (rt-sync2c). 10: and its parent again, now the folder it is in for real (rt-sync2d). 11: and no depth when it has a rank (rt-floor). 12: an item's and automation's times in the units their timebase keeps (lib/beats.lua, rt-sync2f)
 mirror.KIND = { T = "track", F = "fx", E = "env", R = "recv", M = "misc", I = "item" } -- (an oid's first letter)
 mirror.PART = { fx = "the plug-ins", env = "the automation", recv = "the sends", misc = "the groups, lock, input FX or note names" }
 mirror.PARTS = { "F", "E", "R", "M" } -- (what a track oid T-x carries: F-x, E-x, R-x, M-x)
@@ -1464,234 +1465,11 @@ function mirror.whose(list)
   return table.concat(out, " and ")
 end
 
--- Automation without what a tempo change moves: each point's time (and an automation item's place and length), its value and shape kept.
--- (Just after a tempo change landed, any automation that differed was taken for REAPER moving it with the tempo, and kept here as the band's:
--- a point drawn then was neither sent nor put back. Now only one that differs in its times alone is. 0.59.39) Pure.
-function mirror.env_sans_tempo(state)
-  local out = {}
-  for line in (state or ""):gmatch("[^\n]+") do
-    local kw, rest = line:match("^%s*(%S+)%s*(.*)$")
-    if kw == "PT" then out[#out + 1] = "PT " .. rest:gsub("^%S+%s*", "")
-    elseif kw == "POOLEDENVINST" then out[#out + 1] = "POOLEDENVINST " .. rest:gsub("^%S+%s+%S+%s+%S+%s*", "")
-    -- (and an automation item's place and length, and its points' times, as mirror.ai_lines writes them: a tempo change moves those too.
-    -- rt-fix9)
-    elseif kw == "BANDAI" then out[#out + 1] = "BANDAI " .. rest:gsub("^(%S+)%s+%S+%s+%S+", "%1")
-    elseif kw == "BANDAIPT" then out[#out + 1] = "BANDAIPT " .. rest:gsub("^(%S+%s+%S+)%s+%S+", "%1")
-    else out[#out + 1] = line end
-  end
-  return table.concat(out, "\n")
-end
--- Two automation states alike but for what a tempo change moves (env_sans_tempo), line by line and number by number: a point's line written
--- with other digits, or without the trailing fields another REAPER writes (missing ones read as 0), is the same point. A bandmate's REAPER
--- writes its automation its own way, and the text compare took this computer's own tempo change, made right after a bandmate's, for an edit
--- of the one track with automation, and claimed it (rt-r4's bug B, three of three; never after a tempo change of this computer's own). Pure.
-local function same_words(x, y)
-  if x == y then return true end
-  local tx, ty = {}, {}
-  for t in x:gmatch("%S+") do tx[#tx + 1] = t end
-  for t in y:gmatch("%S+") do ty[#ty + 1] = t end
-  if tx[1] ~= ty[1] then return false end
-  for i = 2, math.max(#tx, #ty) do
-    local p, q = tx[i] or "0", ty[i] or "0"
-    if p ~= q then
-      local m, n = tonumber(p), tonumber(q)
-      if not (m and n and math.abs(m - n) <= 1e-9 * math.max(1, math.abs(m))) then return false end
-    end
-  end
-  return true
-end
-function mirror.env_same_but_times(a, b)
-  local la, lb = {}, {}
-  for l in mirror.env_sans_tempo(a):gmatch("[^\n]+") do la[#la + 1] = l end
-  for l in mirror.env_sans_tempo(b):gmatch("[^\n]+") do lb[#lb + 1] = l end
-  if #la ~= #lb then return false end
-  for i = 1, #la do if not same_words(la[i], lb[i]) then return false end end
-  return true
-end
--- An item without what a tempo change moves: where it sits, how long, and how fast. Pure.
-local TEMPO_MOVES = { POSITION = true, LENGTH = true, PLAYRATE = true, SOFFS = true, SNAPOFFS = true, FADEIN = true, FADEOUT = true }
-function mirror.sans_tempo(state)
-  local out = {}
-  for line in (state or ""):gmatch("[^\n]+") do
-    if not TEMPO_MOVES[line:match("^%s*(%S+)") or ""] then out[#out + 1] = line end
-  end
-  return table.concat(out, "\n")
-end
--- An item's version made under the tempo map `from`, put where REAPER would have moved it on the map `to` (band.capture_tempo's lists): on the
--- same beat, by its timebase (its BEAT line, else `mode`, the project's: 1 beats (position, length, rate), 2 beats (position only), 0 time).
--- A take restored to a point after a tempo change it was last changed before sat at its old seconds, off its beat (rt-history2's limits).
--- Mode 1 stretches the whole item as REAPER does for that timebase: its length to the same beats, and with it the snap offset and fades
--- (seconds inside the item: they stay on the same part of the audio), and an audio take's rate by the inverse (the same stretch of source
--- fills the new length; SOFFS, a source position, stays). A MIDI take's rate stays: its notes are in beats already. Mode 2 moves the
--- position only. (rt-p1b, P6's round 2 proposal)
--- shortcut: a map with a gradual (linear) tempo change isn't converted at all, the item's timebase -1 goes by the project's (not its track's),
--- and take envelopes stay as stored. Upgrade if a REAPER check shows those off. Pure.
-local function map_qn(map, t)
-  local q, pt, pb = 0, 0, map[1].bpm
-  for _, m in ipairs(map) do
-    if m.time > t then break end
-    q, pt, pb = q + (m.time - pt) * pb / 60, m.time, m.bpm
-  end
-  return q + (t - pt) * pb / 60
-end
-local function map_time(map, q)
-  local pq, pt, pb = 0, 0, map[1].bpm
-  for _, m in ipairs(map) do
-    local mq = pq + (m.time - pt) * pb / 60
-    if mq > q then break end
-    pq, pt, pb = mq, m.time, m.bpm
-  end
-  return pt + (q - pq) * 60 / pb
-end
-local function maps_ok(from, to)
-  if type(from) ~= "table" or type(to) ~= "table" or #from == 0 or #to == 0 then return false end
-  for _, map in ipairs({ from, to }) do
-    for _, m in ipairs(map) do if m.linear or not (tonumber(m.time) and tonumber(m.bpm) and m.bpm > 0) then return false end end
-  end
-  return true
-end
--- A time under one tempo map, on the same beat under another: a marker's place (sync.undo_timeline). As mirror.retime: only where the
--- timebase is beats and neither map has a gradual change; else the time as it is. Pure. rt-converge
+-- A time under one tempo map, on the same beat under another: a marker's place (sync.undo_timeline). Only where the timebase is beats
+-- (`mode` 1 or 2); else the time as it is. Gradual tempos count (lib/beats.lua's maths, as REAPER's TimeMap2). Pure. rt-converge, rt-sync2f
 function mirror.time_on(t, from, to, mode)
-  if (mode ~= 1 and mode ~= 2) or type(t) ~= "number" or not maps_ok(from, to) then return t end
-  return map_time(to, map_qn(from, t))
-end
-local function g14(x) return string.format("%.14g", x) end
-local function join_like(L, was) if L[#L] == "" then L[#L] = nil end; return table.concat(L, "\n") .. (was:sub(-1) == "\n" and "\n" or "") end
-function mirror.retime(state, from, to, mode)
-  if type(state) ~= "string" or not maps_ok(from, to) then return state end
-  local beat = tonumber(state:match("\n%s*BEAT (%-?%d+)"))
-  if beat and beat >= 0 then mode = beat end
-  local p, l = tonumber(state:match("\n%s*POSITION ([%d%.%-e]+)")), tonumber(state:match("\n%s*LENGTH ([%d%.%-e]+)"))
-  if (mode ~= 1 and mode ~= 2) or not p then return state end
-  local np = map_time(to, map_qn(from, p))
-  local out = state
-  if math.abs(np - p) > 1e-9 then out = out:gsub("(\n%s*POSITION )[^\n]+", "%1" .. g14(np), 1) end
-  if mode == 1 and l and l > 0 then
-    local nl = map_time(to, map_qn(from, p + l)) - np
-    if math.abs(nl - l) > 1e-9 then
-      local s = nl / l
-      out = out:gsub("(\n%s*LENGTH )[^\n]+", "%1" .. g14(nl), 1)
-      -- (the item's own lines, depth 1, take by take: SNAPOFFS, FADEIN/FADEOUT's length and auto length, each audio take's PLAYRATE)
-      local L, depth, take = {}, 0, { midi = false }
-      local takes = { take }
-      for line in (out .. "\n"):gmatch("([^\n]*)\n") do
-        L[#L + 1] = line
-        local kw = line:match("^%s*(%S+)") or ""
-        if depth == 1 then
-          if kw == "TAKE" then take = { midi = false }; takes[#takes + 1] = take
-          elseif kw == "SNAPOFFS" then L[#L] = line:gsub("^(%s*SNAPOFFS )(%S+)", function(a, v) return a .. g14((tonumber(v) or 0) * s) end)
-          elseif kw == "FADEIN" or kw == "FADEOUT" then
-            L[#L] = line:gsub("^(%s*%S+ %S+ )(%S+) (%S+)", function(a, len, auto) return a .. g14((tonumber(len) or 0) * s) .. " " .. g14((tonumber(auto) or 0) * s) end)
-          elseif kw == "PLAYRATE" then take.rate = #L end
-        end
-        if line:find("^%s*<SOURCE MIDI") then take.midi = true end
-        if kw:sub(1, 1) == "<" then depth = depth + 1 elseif kw == ">" then depth = depth - 1 end
-      end
-      for _, t in ipairs(takes) do
-        if t.rate and not t.midi then L[t.rate] = L[t.rate]:gsub("^(%s*PLAYRATE )(%S+)", function(a, v) return a .. g14((tonumber(v) or 1) / s) end) end
-      end
-      out = join_like(L, out)
-    end
-  end
-  return out
-end
--- An automation part's version made under the map `from`, onto the same beats on `to`, as REAPER moves points when the map changes (`mode`:
--- the project's timebase; 0 = time, nothing moves): each point (PT), each automation item's place (POOLEDENVINST; BANDAI, mirror.ai_lines)
--- and, in mode 1, its length, and its points (BANDAIPT, project time) onto their beats. An item's rate stays: its pool is in beats
--- (D_POOL_QNLEN). (P6's round 2 proposal, rt-p1b. shortcut: as mirror.retime, a gradual tempo change isn't converted.) Pure.
-function mirror.retime_env(state, from, to, mode)
-  if type(state) ~= "string" or (mode ~= 1 and mode ~= 2) or not maps_ok(from, to) then return state end
-  local function at(t) return map_time(to, map_qn(from, t)) end
-  local function put(was, now) return math.abs(now - tonumber(was)) > 1e-9 and g14(now) or was end -- (unmoved: its text kept)
-  local L = {}
-  for line in (state .. "\n"):gmatch("([^\n]*)\n") do
-    local a, t, z = line:match("^(%s*PT )(%S+)(.*)$")
-    local h, pos, len, rest = line:match("^(%s*POOLEDENVINST %S+ )(%S+) (%S+)(.*)$")
-    if not h then h, pos, len, rest = line:match("^(BANDAI %S+ )(%S+) (%S+)(.*)$") end
-    local ph, pt, pz = line:match("^(BANDAIPT %S+ %S+ )(%S+)(.*)$")
-    if a and tonumber(t) then line = a .. put(t, at(tonumber(t))) .. z
-    elseif h and tonumber(pos) and tonumber(len) then
-      local np = at(tonumber(pos))
-      line = h .. put(pos, np) .. " " .. (mode == 1 and put(len, at(tonumber(pos) + tonumber(len)) - np) or len) .. rest
-    elseif ph and tonumber(pt) then line = ph .. put(pt, at(tonumber(pt))) .. pz end
-    L[#L + 1] = line
-  end
-  return join_like(L, state)
-end
--- The tempo map a version's seconds are on travels with it (rt-converge): `tm`, band.capture_tempo's list as it was where the version was made,
--- and `tb`, that project's timebase. An item's or automation's text is in seconds, and every computer's REAPER moves it onto its beat when a
--- tempo map lands; a version that crossed paths with a map (made just before it arrived, put back after it, merged with one made across it,
--- read by a late joiner in another order) sat at its old seconds on some computers and not others, for good (the soak's bugs 5 and 7, and
--- most of its tempo failures). So whoever puts a version in place puts it on the same beat under the map in place (mirror.on_map, from
--- mirror.apply), versions made under different maps are merged on one map (event_file), and "is this only the map's move?" is asked of the
--- version on today's map (mirror.map_moved), not of a 15 s window. A version from before this carries no map and is taken as it is.
--- shortcut: a map of more than MAP_MAX points isn't carried (a 4 KB tail on every change): those versions land as before. Upgrade to naming
--- the timeline change (its id) and reading its map if long tempo maps show the old drift.
-mirror.MAP_MAX = 64
--- (what arrives is a bandmate's: only a list of points with a place and a tempo is a map. Pure)
-local function map_ok(m)
-  if type(m) ~= "table" or #m == 0 or #m > mirror.MAP_MAX then return false end
-  for _, p in ipairs(m) do
-    if type(p) ~= "table" or type(p.time) ~= "number" or type(p.bpm) ~= "number" or not (p.bpm > 0 and p.bpm < 1e6 and p.time >= 0 and p.time < 1e9) then return false end
-  end
-  return true
-end
-local function same_map(a, b)
-  if #a ~= #b then return false end
-  for i, x in ipairs(a) do
-    local y = b[i]
-    if math.abs(x.time - y.time) > 1e-9 or math.abs(x.bpm - y.bpm) > 1e-9 or (x.linear and true or false) ~= (y.linear and true or false) then return false end
-  end
-  return true
-end
-mirror.map_ok, mirror.same_map = map_ok, same_map
--- A version about to go out, stamped with the map in place (items and automation: what a tempo map moves). -> ev.
-function mirror.map_tag(proj, ev)
-  if (ev.obj == "item" or ev.obj == "env") and type(ev.state) == "string" then
-    local map = require("band").capture_tempo(proj)
-    if map_ok(map) then ev.tm, ev.tb = map, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false) end
-  end
-  return ev
-end
--- A version's state on the map `to`, by the timebase `mode`: on the same beats as under the map it was made on. -> the state, and whether
--- that moved it. Pure.
-function mirror.state_on(ev, to, mode)
-  if not (type(ev) == "table" and (ev.obj == "item" or ev.obj == "env") and type(ev.state) == "string" and map_ok(ev.tm) and map_ok(to)) or same_map(ev.tm, to) then
-    return type(ev) == "table" and ev.state or nil, false
-  end
-  local st = (ev.obj == "item" and mirror.retime or mirror.retime_env)(ev.state, ev.tm, to, mode)
-  return st, st ~= ev.state
-end
--- ... on the map in place in `proj`.
-function mirror.on_map(proj, ev)
-  if not (type(ev) == "table" and type(ev.tm) == "table") then return type(ev) == "table" and ev.state or nil, false end
-  return mirror.state_on(ev, require("band").capture_tempo(proj), reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false))
-end
--- Did a tempo map, not a hand, make `now` out of `was`: two readings of one item or automation on this computer, under the maps `from` and `to`
--- (`mode`: the project's timebase)? As mirror.only_map_moved, but against this computer's own reading at its last look instead of the band's
--- text, which another REAPER writes its own way: W.send's other way to tell a tempo change of yours from an edit. Pure. rt-fix9
-function mirror.moved_by_map(kind, was, now, from, to, mode)
-  if type(was) ~= "string" or type(now) ~= "string" or not (map_ok(from) and map_ok(to)) or same_map(from, to) then return false end
-  if kind == "env" then return mirror.env_same_but_times(was, now) end
-  if kind ~= "item" or mirror.sans_tempo(was) ~= mirror.sans_tempo(now) then return false end
-  local want = mirror.retime(was, from, to, mode)
-  for _, k in ipairs({ "POSITION", "LENGTH" }) do
-    local a, b = tonumber(want:match("\n%s*" .. k .. " ([%d%.%-e]+)")), tonumber(now:match("\n%s*" .. k .. " ([%d%.%-e]+)"))
-    if a and b and math.abs(a - b) > 1e-6 then return false end
-  end
-  return true
-end
--- `state` with each line that says the same as a line of `ref` to 7 decimals written as `ref` writes it: a place worked out two ways (REAPER's
--- own move for a map, mirror.retime's) differs in its last digits, and a merge reading that as "both changed it" called a clash. Pure.
-local function near_key(line) return (line:gsub("%-?%d+%.%d+e?%-?%d*", function(x) local n = tonumber(x); return n and string.format("%.7f", n) or x end)) end
-function mirror.snap_to(state, ref)
-  local exact, near = {}, {}
-  for line in ref:gmatch("[^\n]+") do exact[line] = true; if line:find("%d%.%d") then near[near_key(line)] = line end end
-  return (state:gsub("[^\n]+", function(line)
-    if exact[line] or not line:find("%d%.%d") then return nil end
-    return near[near_key(line)]
-  end))
+  if (mode ~= 1 and mode ~= 2) or type(t) ~= "number" or not (beats.map_ok(from) and beats.map_ok(to)) then return t end
+  return beats.map_time(to, beats.map_qn(from, t))
 end
 
 -- ---- REAPER side ------------------------------------------------------------------------------------------
@@ -1946,10 +1724,13 @@ function mirror.tried_track(proj, tr)
   local try = require("band").colour_try(proj)
   return try and try.tracks and try.tracks[reaper.GetTrackGUID(tr)] or nil
 end
+-- (its times in the units its timebase keeps, as it travels: lib/beats.lua. rt-sync2f)
+local function item_proj(it) return reaper.GetItemProjectContext and reaper.GetItemProjectContext(it) or 0 end
 function mirror.item_state(it, media_dir)
   local _, chunk = reaper.GetItemStateChunk(it, "", false)
-  local st = item_base(chunk, media_dir) .. item_tail(it)
-  local try = reaper.GetItemProjectContext and require("band").colour_try(reaper.GetItemProjectContext(it))
+  local proj = item_proj(it)
+  local st = beats.read_item(proj, item_base(chunk, media_dir) .. item_tail(it), reaper.GetMediaItem_Track(it))
+  local try = reaper.GetItemProjectContext and require("band").colour_try(proj)
   return try and try.items and untried_item(st, try.items[select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))]) or st
 end
 -- Every listed item's state for a look ({ ptr, tr, guid }: mirror.scan), in order. A track whose whole chunk, items and all, is byte for byte
@@ -1992,6 +1773,15 @@ function mirror.item_states(proj, list, chunks, media_dir, dirty, partial, poole
   local was, now, out = look_items[pk] or {}, {}, {}
   local try = require("band").colour_try(proj)
   local tried = try and try.items -- (a colour look tried here: mirror.item_state)
+  -- (each state in beats where its timebase keeps them (lib/beats.lua), kept with the map and timebases it was read under: a tempo change
+  -- moves a beats item's seconds in REAPER and nothing of what travels. rt-sync2f)
+  local mkey, tmode = beats.map_key(proj), {}
+  local function canon(keep, st, tr)
+    if tmode[tr] == nil then tmode[tr] = math.floor(tonumber((reaper.GetMediaTrackInfo_Value(tr, "C_BEATATTACHMODE"))) or -1) end
+    local key = mkey .. "|" .. tmode[tr]
+    if keep.canon_in ~= st or keep.canon_key ~= key then keep.canon_in, keep.canon_key, keep.canon = st, key, beats.read_item(proj, st, tr, tmode[tr]) end
+    return keep.canon
+  end
   for _, x in ipairs(list) do
     local box = now[x.tr]
     if not box then
@@ -2020,10 +1810,10 @@ function mirror.item_states(proj, list, chunks, media_dir, dirty, partial, poole
     -- (a lane or take line unchanged: last look's whole state, the same string, so item_hash's memo finds it without hashing it all again.
     -- Cost: one short string compare an item. Round 4 review, 0.59.49)
     local tail = item_tail(x.ptr)
-    if tail == "" then out[i] = keep.base
+    if tail == "" then out[i] = canon(keep, keep.base, x.tr)
     else
       if keep.tail ~= tail then keep.tail, keep.st = tail, keep.base .. tail end
-      out[i] = keep.st
+      out[i] = canon(keep, keep.st, x.tr)
     end
     if tried then out[i] = untried_item(out[i], tried[x.guid]) end
   end
@@ -2296,11 +2086,17 @@ local function head_parts(chunk, lfx, at_sig, oid_at)
   return mirror.memo("t\0" .. at_sig .. "\0" .. restless_sig() .. "\0" .. lfx, head, function() return mirror.track_head_parts(head, lfx, oid_at) end)
 end
 -- A track's plug-ins, automation, sends and the rest as objects (its automation items read through the API every look, as always).
-local function add_parts(objs, by_oid, tr, oid, parts)
+-- (automation and sends in beats where the project's timebase keeps them (lib/beats.lua), worked out once per text and map: `mkey`,
+-- beats.map_key. rt-sync2f)
+local function env_canon(proj, mkey, text)
+  if text == "" then return text end
+  return mirror.memo("benv\0" .. mkey, text, function() return beats.read_env(proj, text) end)
+end
+local function add_parts(objs, by_oid, tr, oid, parts, proj, mkey)
   mirror.mod_params[tr] = parts.mods -- (every plug-in, in REAPER's order: what mirror.fx_params counts by)
   local fo = { kind = "fx", oid = "F" .. oid:sub(2), ptr = tr, track = oid, state = parts.fx, hash = parts.fxh }
   objs[#objs + 1], by_oid[fo.oid] = fo, fo
-  local env, recv = parts.env .. mirror.ai_lines(tr), parts.recv .. mirror.ai_lines(tr, "recv")
+  local env, recv = env_canon(proj, mkey, parts.env .. mirror.ai_lines(tr)), env_canon(proj, mkey, parts.recv .. mirror.ai_lines(tr, "recv"))
   for _, p in ipairs({ { "E", "env", env }, { "R", "recv", recv }, { "M", "misc", parts.misc } }) do
     local po = { kind = p[2], oid = p[1] .. oid:sub(2), ptr = tr, track = oid, state = p[3], hash = mirror.hash(p[3]) }
     objs[#objs + 1], by_oid[po.oid] = po, po
@@ -2312,7 +2108,7 @@ local function add_master(proj, objs, by_oid, oid_at)
   local mfx = mirror.fxchain(mch, mirror.live_fx(master)) or ""
   mirror.mod_params[master] = mirror.modulated(mirror.fxchain(mch) or "")
   if mfx:match("^<FXCHAIN[^\n]*\n>%s*$") then mfx = "" end -- (only this computer's live mix on it: Real time mode read as "changed the plug-ins on the master")
-  local menv = mirror.track_parts(mch, oid_at) .. mirror.ai_lines(master) .. mirror.master_fxen_line(proj, master)
+  local menv = beats.read_env(proj, mirror.track_parts(mch, oid_at) .. mirror.ai_lines(master) .. mirror.master_fxen_line(proj, master))
   for _, p in ipairs({ { "F-MASTER", "fx", mfx }, { "E-MASTER", "env", menv } }) do
     local po = { kind = p[2], oid = p[1], ptr = master, track = mirror.MASTER, state = p[3], hash = p[2] == "fx" and mirror.fx_hash(p[3]) or mirror.hash(p[3]) }
     objs[#objs + 1], by_oid[po.oid] = po, po
@@ -2443,6 +2239,7 @@ function mirror.scan(proj, user, media_dir, local_mix, rec)
   mirror.restless_load()
   local objs, by_oid, tracks, chunks, pools = {}, {}, {}, {}, {}
   local tl, oid_at, at_sig = scan_tracks(proj, user)
+  local mkey = beats.map_key(proj)
   local tg = {} -- track -> its record (rec)
   for _, x in ipairs(tl) do
     local tr, oid = x.ptr, x.oid
@@ -2455,7 +2252,7 @@ function mirror.scan(proj, user, media_dir, local_mix, rec)
       pools[tr] = mirror.pool_ids(chunk)
       local lfx = track_lfx(tr)
       local parts = head_parts(chunk, lfx, at_sig, oid_at)
-      add_parts(objs, by_oid, tr, oid, parts)
+      add_parts(objs, by_oid, tr, oid, parts, proj, mkey)
       if rec then
         local e = { ptr = tr, oid = oid, chunk = chunk, lfx = lfx, parts = parts, pools = pools[tr], fp = track_fp(tr, o.hash, lfx), items = {},
           lanes = t.freemode == 2 }
@@ -2513,6 +2310,7 @@ function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
   if not L or ctx ~= L.ctx then return nil end
   local N = new_look(L, ctx, now)
   local tfp = tempo_fp(proj)
+  local mkey = beats.map_key(proj)
   -- (every chunk: due, ripple editing on all tracks (it moves everyone's items after an edit), or the tempo map changed (items and points move))
   local wide = now - L.all_at >= mirror.QUICK_ALL_SECS or reaper.GetToggleCommandStateEx(0, 41991) == 1 or tfp ~= L.tempo
   N.tempo = tfp
@@ -2643,7 +2441,7 @@ function mirror.quick_scan(proj, user, media_dir, local_mix, L, remembered, now)
       ne = e.fp == r.fp and e or { ptr = e.ptr, oid = e.oid, chunk = e.chunk, lfx = e.lfx, parts = e.parts, pools = e.pools, fp = r.fp, items = e.items }
     end
     ne.pooled = mirror.in_pool(ne.pools, shared)
-    add_parts(objs, by_oid, tr, oid, ne.parts)
+    add_parts(objs, by_oid, tr, oid, ne.parts, proj, mkey)
     if r.changed or r.need then for k = #objs - 3, #objs do check[#check + 1] = objs[k] end end
     N.tracks[g], N.guid_of[tr] = ne, g
     for _, p in ipairs({ "T", table.unpack(mirror.PARTS) }) do
@@ -3154,13 +2952,6 @@ local function on_gone_track(proj, ev)
   if ev.gone and ev.obj == "item" and mirror.find(proj, "item", ev.oid) then return false end
   return true
 end
--- Is this computer's record of an item a change that only moved it as a tempo change does (mirror.sans_tempo), against what it built on?
-function mirror.only_retimed(proj, io, room_dir)
-  local _, _, kev = mirror.known(proj, io)
-  local e = room_dir and (kev or "") ~= "" and mirror.event_file(room_dir, kev)
-  local b = e and e.base_ev and mirror.event_file(room_dir, e.base_ev)
-  return b and type(e.state) == "string" and type(b.state) == "string" and mirror.sans_tempo(e.state) == mirror.sans_tempo(b.state) or false
-end
 -- Is this computer's record of an item its own new work: every version back to the first this person's (a take just recorded, trimmed since)?
 -- An edit of an item the band had isn't: a track's deletion made without seeing it beats it, as for any edit (the judge's deletion rule, lib/judge.lua). A version that
 -- can't be read here counts as new (kept, as before). LinuxBox's move of the desktop's take, made with Live sync off, kept the deleted track as
@@ -3204,7 +2995,6 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
   mirror.applied = (mirror.applied or 0) + 1 -- (StudioSync wrote the project: lib/dawview.lua reads every track for the page again. rt-perfcut4)
   if ev.obj == "track" then mirror.order_band[tostring(proj)] = true end
   local kind, oid = ev.obj, ev.oid
-  mirror.retimed_here = false -- (set where an item or automation is put on another tempo map than it was made under: mirror.on_map)
   if ev.gone and mirror.PART[kind] then
     -- a part back to "didn't exist" (a track's first plug-in undone, say): an empty one, as put_back does for misc. Gone did nothing to a
     -- part, so the chain stayed everywhere and went out again. 0.59.14, review. (Its track from its oid when the event doesn't name it;
@@ -3231,8 +3021,7 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
       for i = reaper.CountTrackMediaItems(p) - 1, 0, -1 do
         local it = reaper.GetTrackMediaItem(p, i)
         local io = itm_oid(it)
-        -- (not one whose just-sent change was only REAPER re-timing it for a tempo map that landed: nobody's work, and kept, a delete-all
-        -- with a tempo change left "(yours, not sent)" tracks on the computers that had re-timed it. Cross test, James, rt)
+        -- (a tempo map that landed sends nothing for what REAPER moved, so no version of ours is only its move: lib/beats.lua, rt-sync2f)
         -- (and just made here only when it's new work of ours: an edit of the band's item made without seeing the deletion goes with it. rt-fix6a)
         -- (nor an edit of the band's item held here for the answer of the bandmate who has now deleted the track: nothing is left to answer,
         -- and it goes with the track as it would have had it gone out, where it was kept on "(yours, not sent)" for holding their claim on a
@@ -3243,10 +3032,10 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
         if moot then mirror.unsent[tostring(proj) .. io], mirror.asked_of[tostring(proj) .. io] = nil, nil end
         -- (new work of yours the deleter never saw: a fact since the deletion names what went with it (`items`, mirror.named_items): not named
         -- there, and every version of it yours. From a StudioSync before that (or past ITEMS_MAX), the old guess: yours, from the last two
-        -- minutes, not a re-time. rt-sync2 section 1, rt-sync2b)
+        -- minutes. rt-sync2 section 1, rt-sync2b)
         local mine_new = io ~= "" and mirror.known(proj, io) ~= nil
         if mine_new and named then mine_new = not named[io] and mirror.new_here(proj, io, room_dir)
-        elseif mine_new then mine_new = mirror.just_made_here(proj, io) and not mirror.only_retimed(proj, io, room_dir) and mirror.new_here(proj, io, room_dir) end
+        elseif mine_new then mine_new = mirror.just_made_here(proj, io) and mirror.new_here(proj, io, room_dir) end
         -- (a grey stand-in holds no work: it goes with the track. Kept, it lost its id there and stayed grey for good: rt-sync2c's 15011, rt-sync2e)
         if mirror.is_standin(it) then
         elseif io == "" or not mirror.known(proj, io) or ((mirror.unsent[tostring(proj) .. io] or elsewhere[io]) and not moot) or mine_new then
@@ -3399,16 +3188,13 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
     end
     local function oid_at(i) return at[i] end
     local _, chunk = reaper.GetTrackStateChunk(tr, "", false)
-    -- (automation made under another tempo map: onto its beats under the one in place, as an item is. rt-converge)
-    if kind == "env" then
-      local st, moved = mirror.on_map(proj, ev)
-      if moved then ev = setmetatable({ state = st }, { __index = ev }); mirror.retimed_here = true end
-    end
-    local new = mirror.splice_parts(chunk, kind, ev.state or "", function(o) return pos[o] end, oid_at)
+    -- (automation and sends travel in beats where the timebase keeps them: in seconds on the map in place here. lib/beats.lua, rt-sync2f)
+    local state = beats.write(proj, kind, ev.state or "")
+    local new = mirror.splice_parts(chunk, kind, state, function(o) return pos[o] end, oid_at)
     if not new then return false end -- a receive's source track hasn't arrived yet
     if new ~= chunk then reaper.SetTrackStateChunk(tr, new, false) end
     if kind == "misc" then -- note names: through the API (see splice_parts)
-      local have, want = mirror.note_names(chunk), mirror.note_names(ev.state or "")
+      local have, want = mirror.note_names(chunk), mirror.note_names(state)
       for k in pairs(have) do if not want[k] then local c, n = k:match("^(%S+) (%S+)$"); reaper.SetTrackMIDINoteNameEx(proj, tr, tonumber(n), tonumber(c), "") end end
       for k, name in pairs(want) do
         if have[k] ~= name then local c, n = k:match("^(%S+) (%S+)$"); reaper.SetTrackMIDINoteNameEx(proj, tr, tonumber(n), tonumber(c), name) end
@@ -3416,18 +3202,21 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
     end
     local _, after = reaper.GetTrackStateChunk(tr, "", false)
     local env, recv, misc = mirror.track_parts(after, oid_at)
-    if kind == "env" then mirror.set_ai(proj, tr, ev.state or ""); env = env .. mirror.ai_lines(tr) end
-    if kind == "env" and ev.track == mirror.MASTER then mirror.set_master_fxen(proj, tr, ev.state or ""); env = env .. mirror.master_fxen_line(proj, tr) end
-    if kind == "recv" then mirror.set_ai(proj, tr, ev.state or "", "recv"); recv = recv .. mirror.ai_lines(tr, "recv") end
-    return true, mirror.hash(kind == "env" and env or kind == "recv" and recv or misc)
+    if kind == "env" then mirror.set_ai(proj, tr, state); env = env .. mirror.ai_lines(tr) end
+    if kind == "env" and ev.track == mirror.MASTER then mirror.set_master_fxen(proj, tr, state); env = env .. mirror.master_fxen_line(proj, tr) end
+    if kind == "recv" then mirror.set_ai(proj, tr, state, "recv"); recv = recv .. mirror.ai_lines(tr, "recv") end
+    return true, mirror.hash(kind == "env" and beats.read_env(proj, env) or kind == "recv" and beats.read_env(proj, recv) or misc)
   elseif kind == "item" then
     mirror.in_editor = nil -- (set below when its take is open in the MIDI editor: put_back then waits quietly)
     local tr = mirror.find(proj, "track", ev.track)
     if not tr then return false end
+    -- (in seconds on the map in place here: it travels in beats where its timebase keeps them, lib/beats.lua. Arriving before or after a
+    -- bandmate's tempo change, it sits on the same beat: REAPER moves it with the map when that lands after it. rt-sync2f)
+    local secs = beats.write(proj, "item", ev.state)
     for _, path in ipairs(mirror.media_needed(ev.state, media_dir)) do
       if not reaper.file_exists(path) then -- still on its way: a grey stand-in shows where it goes until it lands
         -- (not for StudioSync's Undo / Redo (`no_standin`): it doesn't try again, so its stand-in stayed grey for good. rt-sync2e)
-        if not no_standin and not mirror.find(proj, "item", oid) then mirror.placeholder(tr, oid, ev.state, ev.name) end
+        if not no_standin and not mirror.find(proj, "item", oid) then mirror.placeholder(tr, oid, secs, ev.name) end
         return false
       end
     end
@@ -3438,7 +3227,7 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
     -- with an id of its own, and goes out as theirs. Left, it stayed grey for good: rt-sync2c's 9002, rt-sync2e)
     local copies = {}
     if it and mirror.is_standin(it) then
-      local vpos = tonumber(ev.state:match("\nPOSITION ([%d%.%-e]+)")) or 0
+      local vpos = tonumber(secs:match("\nPOSITION ([%d%.%-e]+)")) or 0
       local function far(x) return (reaper.GetMediaItem_Track(x) == tr and 0 or 1e9) + math.abs(reaper.GetMediaItemInfo_Value(x, "D_POSITION") - vpos) end
       local all = mirror.standins(proj, oid)
       for _, x in ipairs(all) do if far(x) < far(it) then it = x end end
@@ -3471,9 +3260,7 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
     end
     -- (a colour look tried here on this item, and the band's version keeps the colour from before it: the tried colour stays on, so the try
     -- still shows, Keep still sends it and Put back still restores. The bandmate's change replaced it. Backlog 1.6, rt-p1)
-    -- (on its beat under the map in place, when it was made under another: mirror.on_map. rt-converge)
-    local state, moved = mirror.on_map(proj, ev)
-    mirror.retimed_here = moved
+    local state = secs
     local try = require("band").colour_try(proj)
     local tried = try and try.items and try.items[select(2, reaper.GetSetMediaItemInfo_String(it, "GUID", "", false))]
     if tried and portable(state:match("\n(COLOR [^\n]*)") or "") == portable(tried[1] or "") then state = mirror.with_colour_line(state, tried[2] or "") end
@@ -3825,7 +3612,7 @@ function mirror.receive(proj, ev, media_dir, local_mix, me, more, s, force)
       local what = merging.obj == "track" and ("track " .. on) or merging.obj == "env" and ("the automation on " .. on) or merging.obj == "fx" and ("the plug-ins on " .. on) or ("an item on " .. on)
       local takes = false
       for _, key in ipairs(merging.clashed or {}) do takes = takes or (key:find("<SOURCE", 1, true) ~= nil and not key:find("\0notes", 1, true)) end
-      -- (nothing said where your side was only your tempo change's move: you changed nothing of it. rt-fix9)
+      -- (nothing said where your side was only your tempo change's move, in history from before rt-sync2f: you changed nothing of it. rt-fix9)
       local only_map = lost and lost.user == me and merging.l_retimed or merging.user == me and merging.w_retimed
       if only_map then
       elseif lost and me and lost.user == me and #(merging.clashed or {}) > 0 then -- (only what you both changed is theirs; Use mine brings all of yours back)
@@ -3865,8 +3652,8 @@ function mirror.receive(proj, ev, media_dir, local_mix, me, more, s, force)
   -- (nor when the colour counts on one machine and not the other: SWS auto-colouring)
   local same_way = land.obj ~= "track" or type(land.state) ~= "table" or (land.state.autocolour == true) == (mirror.own_colours() == true)
     and (land.local_mix == true) == (local_mix == true) -- (nor when one has Local mixing on and the other not: their faders count differently. 0.59.14)
-  -- (nor when it was put on another tempo map than it was made under: it reads as it should here, not as it did there. rt-converge)
-  if ok and land.hash and land.hv == mirror.HV and same_way and h ~= land.hash and not land.gone and not mirror.retimed_here and not band_h then
+  -- (on another tempo map too: what travels, and what's hashed, is in beats where the timebase keeps them, lib/beats.lua. rt-sync2f)
+  if ok and land.hash and land.hv == mirror.HV and same_way and h ~= land.hash and not land.gone and not band_h then
     local band = require("band")
     local n = (tonumber(reaper.GetExtState(band.SECTION, "mirror drift " .. tostring(proj))) or 0) + 1
     reaper.SetExtState(band.SECTION, "mirror drift " .. tostring(proj), tostring(n), false)
@@ -3896,8 +3683,19 @@ local function plain_event(room_dir, evid)
     ev = room_parent[room_dir] and plain_event((room_dir:gsub("[^/]+$", (room_parent[room_dir]:gsub("%%", "%%%%")))), evid) or nil
   end
   if type(ev) == "table" then
+    mirror.legacy_beats(ev)
     if plain_n > 20000 then plain_cache, plain_n = {}, 0 end -- shortcut: a whole flush past 20,000 events, enough for any song's working set
     plain_cache[key], plain_n = ev, plain_n + 1
+  end
+  return ev
+end
+-- A version of an item or automation from before times went in beats (format 1, no BANDBEAT mark), read the way a version is now: its seconds
+-- were read under the tempo map it names (`tm`, with that project's timebase `tb`: rt-converge), so its beats are known (beats.upgrade). This
+-- is the reader for history; nothing writes `tm` any more. One with no map (before rt-converge) keeps its seconds and lands as they are, as
+-- before. In place, once per event read (plain_event). rt-sync2f
+function mirror.legacy_beats(ev)
+  if type(ev) == "table" and (ev.obj == "item" or ev.obj == "env") and type(ev.state) == "string" and type(ev.tm) == "table" then
+    ev.state = beats.upgrade(ev.obj, ev.state, ev.tm, ev.tb)
   end
   return ev
 end
@@ -3942,21 +3740,14 @@ local function event_file(room_dir, evid, depth)
   if not (b and type(b.state) == type(w.state)) then return nil end
   local v = {}
   for k, x in pairs(w) do v[k] = x end
-  -- (made under different tempo maps: all three on the winner's first (the merge is then on that map, and says so: v.tm is the winner's).
-  -- Merged as their seconds stood, the side REAPER had moved for the map "changed its place" and the other's move was lost, or both read as
-  -- changing it. From the versions alone, so every computer builds the same merge. rt-converge)
+  v.tm, v.tb = nil, nil -- (its sides are read into beats already: mirror.legacy_beats)
+  -- (items and automation are in beats where their timebase keeps them (lib/beats.lua; one from before, read so as it was read: plain_event):
+  -- versions made under different tempo maps merge as they are, the map's move being no change of either's. rt-sync2f)
   local bs, ws, ls = b.state, w.state, l.state
-  if (w.obj == "item" or w.obj == "env") and map_ok(w.tm) then
-    local moved_b, moved_l
-    bs, moved_b = mirror.state_on(b, w.tm, w.tb)
-    ls, moved_l = mirror.state_on(l, w.tm, w.tb)
-    if moved_b or moved_l then ws, ls = mirror.snap_to(ws, bs), mirror.snap_to(ls, bs) end
-  end
-  -- (a side that is only the map's move of the version both came from (`retimed`, W.send) brings nothing of its own: the merge is the other
-  -- side's, on the winner's map. Against a version from before maps were named, its moved timing read as a change of its own: the other's move
-  -- "clashed", "theirs stands where you both changed it" was said on the computer that had only changed the tempo (rt-r4 check 1), and where
-  -- the map's side won, the hand's move was lost. rt-fix9)
-  -- (only where that side builds straight on that version: one on a change of its own made since keeps that change)
+  -- (history: a side that is only the map's move of the version both came from (`retimed`, sent by a StudioSync before rt-sync2f, which sent
+  -- what REAPER moved for a tempo change) brings nothing of its own: the merge is the other side's. Against a version from before maps were
+  -- named, its moved timing read as a change of its own and the other's move "clashed" (rt-r4 check 1). Only where that side builds straight on
+  -- that version: one on a change of its own made since keeps that change. rt-fix9; nothing sends `retimed` now)
   local only_w = w.retimed and not l.retimed and w.base_ev == base_id
   local only_l = l.retimed and not w.retimed and l.base_ev == base_id
   if only_w then ws = bs elseif only_l then ls = bs end
@@ -4085,99 +3876,6 @@ mirror.tree_seen = mirror.tree_seen or {} -- project -> oid -> "parent|depth" at
 mirror.order_band = mirror.order_band or {} -- project -> a band's track landed since the last look
 mirror.holds = mirror.holds or {} -- project -> track oid -> { what runs through it }, as of the last look
 mirror.bus_said = mirror.bus_said or {} -- track oid -> when "that changes how X sounds" was last said
-mirror.tempo_until = mirror.tempo_until or {} -- project -> until when items may be moving for a tempo change
-mirror.TEMPO_SECS = 15
--- `from` (optional): the tempo map before this change (band.capture_tempo's list), when it's this computer's own; the first of a burst is kept.
-mirror.tempo_from = mirror.tempo_from or {} -- project -> the map items were on before the tempo change REAPER may be moving them for
-function mirror.tempo_changed(proj, from)
-  local pk = tostring(proj)
-  if reaper.time_precise() >= (mirror.tempo_until[pk] or 0) then mirror.tempo_from[pk] = nil end
-  if type(from) == "table" and not mirror.tempo_from[pk] then mirror.tempo_from[pk] = { map = from, at = os.date("!%Y-%m-%dT%H:%M:%SZ") } end
-  mirror.tempo_until[pk] = reaper.time_precise() + mirror.TEMPO_SECS
-end
--- Did the tempo map, not a hand, move this item from its last version (`last`, an event) to `now` (its state)? Only where this computer's own
--- map change is known (mirror.tempo_from): REAPER keeps an item on its beat, so where the old map's beat falls on the new map (mirror.retime)
--- is where the map put it; a version made after the change is already on the new map. Elsewhere: true, as before. (An item moved by hand in
--- the 15 s after a tempo change read as the map's move and didn't claim its track. Backlog 1.10, rt-p1)
--- shortcut: in a burst of tempo changes, a version made between two of them is judged against the first map: a map move then claims, as
--- before AL. Keep each change's map if REAPER checks show bursts claiming.
--- (a version that names its map, `tm`: exactly, on any computer and at any time: it's the map's move only if the map in place puts that
--- version where the item now is. Under the map it was made on, nothing moved it: any difference is an edit. A hand edit in the 15 s after a
--- bandmate's map landed was taken for REAPER's move and kept on that computer alone, silently: the soak's bug 1. rt-converge)
-function mirror.map_moved(proj, last, now)
-  if type(last.state) ~= "string" then return true end
-  local want
-  if map_ok(last.tm) then
-    local moved
-    want, moved = mirror.on_map(proj, last)
-    if not moved then return false end
-  else
-    local tf = mirror.tempo_from[tostring(proj)]
-    if not tf then return true end
-    local to = require("band").capture_tempo(proj)
-    want = last.state
-    if not (type(last.time) == "string" and last.time > tf.at) then want = mirror.retime(want, tf.map, to, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false)) end
-  end
-  for _, k in ipairs({ "POSITION", "LENGTH" }) do
-    local a, b = tonumber(want:match("\n%s*" .. k .. " ([%d%.%-e]+)")), tonumber(now:match("\n%s*" .. k .. " ([%d%.%-e]+)"))
-    if a and b and math.abs(a - b) > 1e-6 then return false end
-  end
-  return true
-end
--- Does `o` (an item or automation as a look reads it) differ from the band's version `last` only as a tempo map moved it? A version that
--- names its map (`tm`) is judged exactly, whenever; one from before only in the TEMPO_SECS after a tempo change here, as before. rt-converge
-function mirror.only_map_moved(proj, o, last)
-  if not (last and type(last.state) == "string" and type(o.state) == "string") then return false end
-  local named = map_ok(last.tm)
-  if not named and reaper.time_precise() >= (mirror.tempo_until[tostring(proj)] or 0) then return false end
-  if o.kind == "env" then
-    return mirror.env_same_but_times(o.state, last.state) and (not named or select(2, mirror.on_map(proj, last)) == true)
-  end
-  -- (and on the track the band has it on: a tempo map never moves an item to another track. Moved there with its position unchanged, it read
-  -- as the map's move after a tempo change, was recorded as it was and never sent: the item sat on another track on that computer alone, which
-  -- the soak's oracle can't see (it hashes an item's text). Found by rt-sync2b's track check: seeds 5000, 9001, 9002, 9006)
-  return o.kind == "item" and (last.track == nil or o.track == nil or last.track == o.track) and mirror.sans_tempo(o.state) == mirror.sans_tempo(last.state)
-    and mirror.map_moved(proj, last, o.state)
-end
--- A tempo map that wasn't made here is put in place by `set` (a bandmate's change, or the studio's map as a project opens): what REAPER moves
--- for it isn't this computer's edit. Every item and automation is read before and after; one that was as the studio has it and now differs
--- only in its timing has its record moved with it, there and then, so no look ever sees it as changed: nothing is sent, nobody is asked,
--- nothing is put back, however late the sender's own versions arrive (they land over it). By this computer's own two readings, not against
--- the event's text: LinuxBox's REAPER writes an item a little differently from the desktop's, so a compare with the sender's text failed there
--- and it asked the track's claimer to let it "edit", then put its "edit" back, eight lines at each tempo step. REAPER checks, 0.59.49.74-75,
--- rt-edits. Cost: two full reads of the project per tempo map that lands. -> how many it moved.
-function mirror.map_landing(proj, user, media_dir, local_mix, set)
-  local ok, objs = pcall(mirror.scan, proj, user, media_dir, local_mix)
-  local before = {}
-  for _, o in ipairs(ok and objs or {}) do
-    if (o.kind == "item" or o.kind == "env") and type(o.state) == "string" then before[o.oid] = o end
-  end
-  set()
-  local ok2, after = pcall(mirror.scan, proj, user, media_dir, local_mix)
-  if not (ok and ok2) then return 0 end
-  local n = 0
-  for _, o in ipairs(after) do
-    local b = before[o.oid]
-    if b and b.hash ~= o.hash and b.track == o.track and type(o.state) == "string" then
-      local rev, h, evid, kord = mirror.known(proj, o.oid)
-      if rev and h == b.hash and (o.kind == "env" and mirror.env_same_but_times(o.state, b.state)
-          or o.kind == "item" and mirror.sans_tempo(o.state) == mirror.sans_tempo(b.state)) then
-        mirror.remember(proj, o.oid, rev, o.hash, evid, kord)
-        n = n + 1
-      end
-    end
-  end
-  return n
-end
--- The tempo map a change was made under, while REAPER may be moving things for one (TEMPO_SECS after a tempo change here): the newest map this
--- project holds, as sync.NEWEST names it. It goes on the change as `tl`, and a receiver lands the change only once it holds that map
--- (sync.receive). An item or automation that came before its map was put where the new map has it, then moved again by REAPER when the map
--- landed: lengths scaled twice on LinuxBox, and nothing put them right (REAPER check F6, rt-edits). nil outside that window.
-function mirror.map_stamp(proj)
-  if reaper.time_precise() >= (mirror.tempo_until[tostring(proj)] or 0) then return nil end
-  local v = select(2, reaper.GetProjExtState(proj, require("sync").NEWEST, "timeline"))
-  return v ~= "" and v or nil
-end
 -- One act, one id (rt-edits): every change a look sends carries it, and a tempo map or marker change sent just before that look
 -- (sync.watch_timeline runs first) takes the id the look will use, so Undo puts the act's region or markers back with its items.
 mirror.ACT_SECS = 2.5
@@ -4258,7 +3956,7 @@ function mirror.keep_suggested(proj, c, room_dir)
     local it = reaper.AddMediaItemToTrack(keep_track(proj, c.name or ""))
     -- (only the studio's media paths, as any band version: anyone can write a parts file in the room's folder, and a path it named was put on
     -- a track of yours, then copied out by your next send. Security, Round 3 review, 0.59.48. Cost: one pattern)
-    local chunk = mirror.resolve_media(mirror.only_shared((c.state:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", ""))), room_dir .. "/media")
+    local chunk = mirror.resolve_media(mirror.only_shared((beats.write(proj, "item", c.state):gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", ""))), room_dir .. "/media")
     chunk = chunk:gsub("\n%s*POOLEDEVTS[^\n]*", ""):gsub("\n%s*I?GUID[^\n]*", ""):gsub("<SOURCE MIDIPOOL", "<SOURCE MIDI")
     reaper.SetItemStateChunk(it, chunk, false)
     reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -4763,16 +4461,6 @@ function W.propose(w, o, rev, who, claim_name, pos, name, gone)
   return suggest.add(room_dir, me, who, c)
 end
 -- It may go: out it goes, as this person's change.
--- An item's or automation's reading at the look `L` (the last one's record), if it was the band's version then (W.one found it unchanged):
--- what W.send tells a tempo change's move from an edit by. Automation as its track's lines, without automation items' (read through the API,
--- not kept): a track with those goes by the band's text as before. -> the state, or nil. rt-fix9
-local function look_reading(L, o)
-  if not (L.map and L.clean and L.clean[o.oid] ~= nil and L.where and L.tracks) then return nil end
-  local e = L.tracks[L.where[o.oid] or ""]
-  if not e then return nil end
-  if o.kind == "env" then return e.parts and e.parts.env end
-  for _, q in ipairs(o.kind == "item" and e.items or {}) do if q.oid == o.oid then return q.state end end
-end
 function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
   local room_dir, media, objs, by_oid, holds, playing = w.room_dir, w.media, w.objs, w.by_oid, w.holds, w.playing
@@ -4812,7 +4500,8 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
       -- send played its first take, for everyone. And no BANDTAKE line inside REAPER's chunk. Review, 0.58.87)
       local cur, sel, grp = reaper.GetMediaItemInfo_Value(o.ptr, "I_CURTAKE"), reaper.IsMediaItemSelected(o.ptr), reaper.GetMediaItemInfo_Value(o.ptr, "I_GROUPID")
       local theirs = select(2, reaper.GetSetMediaItemInfo_String(o.ptr, mirror.THEIRS, "", false)) -- (the chunk set below has no such P_EXT: kept)
-      reaper.SetItemStateChunk(o.ptr, mirror.resolve_media((shared:gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", "")), media), false)
+      -- (in seconds for REAPER: what travels is in beats where the item's timebase keeps them, lib/beats.lua. rt-sync2f)
+      reaper.SetItemStateChunk(o.ptr, mirror.resolve_media((beats.write(proj, "item", shared):gsub("BANDLANE %d+\n?", ""):gsub("BANDTAKE %d+\n?", "")), media), false)
       if cur < reaper.CountTakes(o.ptr) then reaper.SetMediaItemInfo_Value(o.ptr, "I_CURTAKE", cur) end
       if theirs ~= "" then reaper.GetSetMediaItemInfo_String(o.ptr, mirror.THEIRS, theirs, true) end
       reaper.SetMediaItemSelected(o.ptr, sel)
@@ -4833,8 +4522,10 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   mirror.hlc_seen(last and last.hlc) -- (the clock past what this builds on: after a restart it could fall behind, and every walk stopped short)
   local ev = { type = "obj", obj = o.kind, oid = o.oid, rev = same_edit and rev or mirror.next_rev(rev, owned), base = rev or 0, state = state, track = o.track,
     base_ev = evid ~= "" and evid or nil, -- (the version this one started from: a merge finds the base there, mirror.merge_item)
-    name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act, tl = mirror.map_stamp(proj) } -- (hash: what it is here; every receiver checks it came out the same)
-  mirror.map_tag(proj, ev) -- (the tempo map its seconds are on: whoever lands it elsewhere puts it on the same beat there. rt-converge)
+    name = name, pos = o.pos, hash = o.hash, hv = mirror.HV, act = w.act } -- (hash: what it is here; every receiver checks it came out the same)
+  -- (an item's length in seconds here, beside its place (`pos`): its state's LENGTH may be in quarter notes, lib/beats.lua. History's time
+  -- lapse and claims read it. rt-sync2f)
+  if o.kind == "item" and o.ptr then ev.len = reaper.GetMediaItemInfo_Value(o.ptr, "D_LENGTH") end
   -- (in a room with ranks, its folder is meant (`pk`: mirror.parent_in): the one this person put it in, else the studio's tree's for it, so a
   -- stale parent an older StudioSync left in its version isn't made the truth by an edit of something else. And the folder it left, when
   -- they moved it (`unfolder`): what Undo puts back. rt-sync2d)
@@ -4855,8 +4546,9 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
   if ev.moved ~= nil then w.order_out = true end -- (a move of yours goes out: the studio's order list follows, after this look's sends)
   if o.kind == "item" and type(state) == "string" and state:find("BANDLANE", 1, true) then -- (a comp piece's source lane: mirror.comp_from)
     local others, t = {}, by_oid[o.track]
-    for _, x in ipairs(objs or {}) do if x.kind == "item" and x.track == o.track and x.oid ~= o.oid then others[#others + 1] = x.state end end
-    ev.from_lane = mirror.comp_from(state, t and type(t.state) == "table" and t.state.plays, others)
+    -- (in seconds: a piece's place against its source's, and a beats item's text is in quarter notes. rt-sync2f)
+    for _, x in ipairs(objs or {}) do if x.kind == "item" and x.track == o.track and x.oid ~= o.oid then others[#others + 1] = beats.write(proj, "item", x.state) end end
+    ev.from_lane = mirror.comp_from(beats.write(proj, "item", state), t and type(t.state) == "table" and t.state.plays, others)
   end
   if o.kind == "track" and o.ptr and (tonumber(o.state.lanes) or 0) > 1 then
     -- (the first comp area: REAPER's new lane holds only that piece, and the rest of the part goes silent, with no word: Mac, 0.42.10)
@@ -4888,17 +4580,11 @@ function W.send(w, o, rk, rev, evid, kord, last, name, knobs)
     local files = require("fxfiles").share(mirror.take_fx(state), media, last and type(last.state) == "string" and mirror.take_fx(last.state) or nil, last and last.files, mirror.theirs(o.ptr))
     if #files > 0 then ev.files = files end
   end
-  -- (not a move that is only the tempo map's: it travels, made under its map (`tl`), but nobody worked on that track. The desktop's own 90 bpm
-  -- marker sent 11 items and auto-claimed all three tracks. REAPER recheck, 0.59.49.80, round 7)
-  -- (or against this computer's own reading at its last look, while it was the band's: the band's text is another REAPER's when a bandmate's
-  -- change was the last, and a tempo change made after a bandmate's auto-claimed the track with automation, three of three (rt-r4's bug B).
-  -- Said on the change (`retimed`): a merge then takes nothing of it but the map, mirror.event_file. rt-fix9)
-  local tempo_only = (ev.tl ~= nil or map_ok(last and last.tm)) and mirror.only_map_moved(proj, o, last)
-    or w.look_was and mirror.moved_by_map(o.kind, look_reading(w.look_was, o), o.state, w.look_was.map, w.map_now, reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false))
-  if tempo_only then ev.retimed = true end
+  -- (a tempo change never comes here: what REAPER moves for it reads the same in beats, so nothing is sent and nothing claimed for it (rt-r4's
+  -- bug B, the desktop's 90 bpm marker that sent 11 items and claimed three tracks). lib/beats.lua, rt-sync2f)
   local id = sync.post(cfg, song, room, ev)
   -- (and only from an edit of yours: mirror.user_edited. rt-fix6a)
-  if opts.sent and not tempo_only and w.edited ~= false then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
+  if opts.sent and w.edited ~= false then pcall(opts.sent, o, name, ev) end -- (Claims: what you edit becomes yours. lib/claimask.lua, rt-claims)
   pcall(require("compat").sent, proj, o.oid, name, o.kind, o.ptr, ev.auto) -- (changed again right after a bandmate's change, or by itself: lib/compat.lua)
   require("streams").offer_media(cfg, song, room, media, ev, last) -- (the media it newly names, to whoever's here over the direct link too. James, rt)
   if o.kind == "fx" and o.ptr then mirror.fx_quiet[rk], mirror.fx_quiet_presets[rk] = mirror.fx_params(o.ptr), mirror.fx_presets(o.ptr); knobs_agreed(proj, o, rk) end -- (what it's changed from, next time)
@@ -4967,12 +4653,7 @@ function W.refuse(w, o, rk, rev, evid, kord, last, name, ok_before)
   if o.kind == "track" and last and type(last.state) == "table" and mirror.same_line(o.state, last.state, opts.local_mix) then
     return put_back(o, rev, evid, { name = name })
   end
-  -- the tempo changed and REAPER moved this with it: nobody's edit. It's where it should be, and whoever may change it sends
-  -- it. (Put back, a bandmate's part sat at its old time, out of step with the new tempo, until theirs arrived.)
-  if mirror.only_map_moved(proj, o, last) then
-    mirror.unsent[rk] = nil
-    return remember(proj, o.oid, rev, o.hash, evid, kord)
-  end
+  -- (a tempo change's move never reaches here: it reads the same in beats, lib/beats.lua. rt-sync2f)
   -- only how its folder closes differs, in the same folder: a track added or copied after it did that, and nobody changed
   -- this one. Nothing to ask its owner about (a copy of Keys asked Mac about Keys)
   if o.kind == "track" and last and type(last.state) == "table" then
@@ -5179,7 +4860,14 @@ function W.one(w, o)
     -- hashed anew", as both checks took the track it's on now, so the move was never sent. REAPER check, rt-edits)
     local on_its_track = ev and (ev.track == nil or ev.track == o.track)
     local ev_norm = on_its_track and ev.hash ~= o.hash and o.kind == "item" and type(ev.state) == "string" and mirror.normalize_item(ev.state)
+    -- (and in beats, as a version is read now: one from before them with no map of its own (before rt-converge) read on the map here, which
+    -- is where it sits if nobody moved it. The first look after updating finds every beats item and automation hashed anew, and sends none
+    -- of them. lib/beats.lua, rt-sync2f)
+    if ev_norm and not beats.mark(ev_norm) then ev_norm = beats.read_item(proj, ev_norm, o.ptr and reaper.GetMediaItem_Track(o.ptr) or nil) end
+    local ev_env = ev and ev.hash ~= o.hash and (o.kind == "env" or o.kind == "recv") and type(ev.state) == "string"
+      and (beats.mark(ev.state) and ev.state or beats.read_env(proj, ev.state))
     if ev and (ev.hash == o.hash or ev_norm and mirror.item_hash(o.track, ev_norm) == o.hash
+        or ev_env and mirror.hash(ev_env) == o.hash
         or o.kind == "fx" and type(ev.state) == "string" and mirror.fx_hash(ev.state) == o.hash
         -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
         or ev_norm and mirror.rounded(ev_norm) == mirror.rounded(o.state)) then
@@ -5912,7 +5600,6 @@ end
 -- The look done: what it saw, for the next quick look to build on. `N`: the scan's record; `full`: this was a full look.
 local function look_commit(w, N, raw, L, now, full, undo, redo, all)
   if not N then return end
-  N.map = w.map_now -- (the tempo map its readings are under: W.send's look_reading. rt-fix9)
   local proj, pk = w.proj, tostring(w.proj)
   local flags, dirty, where, attn = flagged(pk), w.dirty, N.where, N.attn
   N.raw = raw
@@ -6063,9 +5750,7 @@ function mirror.watch(proj, cfg, song, room, opts)
   local suggest = require("suggest")
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
-    back_tracks = {}, held_tracks = {}, clean = {}, unasked = {},
-    -- (the last look's record, with each item's reading and the map then, and this look's map: W.send. rt-fix9)
-    look_was = L, map_now = band.capture_tempo(proj), remembered = remembered }
+    back_tracks = {}, held_tracks = {}, clean = {}, unasked = {}, remembered = remembered }
   local top = reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil
   local es = mirror.edit_seen[pk]
   -- (a new undo point of someone's on top since the last look: what a project emptied of tracks needs before its deletions go. W.gone, rt-guard)
@@ -6295,15 +5980,17 @@ end
 -- it out: 4 of 8 items gone on every computer, alike, so nothing flagged it. REAPER check, 0.59.49.74, rt-edits.
 function mirror.sits_there(proj, ev, plan)
   if ev.obj ~= "item" or type(ev.state) ~= "string" or mirror.find(proj, "item", ev.oid) then return false end
+  local function secs(st) return beats.write(proj, "item", st) end -- (places in seconds here: lib/beats.lua. rt-sync2f)
   local function leaving(it, lane, pos)
     local to = plan and plan[itm_oid(it)]
     if to == nil then return false end
     if to == false then return true end
     if type(to) ~= "table" or type(to.state) ~= "string" then return false end
-    local tl, tp = tonumber(to.state:match("BANDLANE (%d+)")), tonumber(to.state:match("POSITION ([%d%.%-e]+)"))
+    local tl, tp = tonumber(to.state:match("BANDLANE (%d+)")), tonumber(secs(to.state):match("POSITION ([%d%.%-e]+)"))
     return to.track ~= ev.track or tl ~= lane or not tp or math.abs(tp - pos) >= 1e-6
   end
-  local lane, pos, len = tonumber(ev.state:match("BANDLANE (%d+)")), tonumber(ev.state:match("POSITION ([%d%.%-e]+)")), tonumber(ev.state:match("LENGTH ([%d%.%-e]+)"))
+  local st = secs(ev.state)
+  local lane, pos, len = tonumber(st:match("BANDLANE (%d+)")), tonumber(st:match("POSITION ([%d%.%-e]+)")), tonumber(st:match("LENGTH ([%d%.%-e]+)"))
   local tr = ev.track and mirror.find(proj, "track", ev.track)
   if not (tr and lane and pos and len) then return false end
   -- (by name without what a print adds: the same pass reads "x", "dry - x" or "wet - x" by whether it's been printed yet: Mac, 0.45.0)
@@ -6393,7 +6080,6 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
   end
   list = sorted
   local done, refused, kept, kept_names, there, waiting, edited, gone_since = 0, 0, 0, {}, 0, 0, 0, 0
-  local now_map -- (the tempo map in place, read once: opts.map_of below)
   local tree_par -- (the studio's folders, read once: a track's below. rt-sync2d)
   local function one(p)
     local rev, h, evid = mirror.known(proj, p.oid)
@@ -6438,23 +6124,15 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
         end
       end
     end
-    -- (an item's version made under another tempo map than the one in place now goes onto its beat here, as REAPER moved it when the maps
-    -- changed: opts.map_of(version) -> the map it was made under (History's Restore: lib/histhear.lua). rt-history2's limits, rt-edits round 6)
-    -- (and an automation part's points and items the same way: mirror.retime_env. rt-p1b)
-    -- (the map the version itself names (`tm`, mirror.map_tag) first: Undo and Redo pass no map_of, and a put-back version named the wrong
-    -- seconds across a tempo change. What goes out below is on the map in place, and says so. rt-converge)
-    if p.t and (p.t.obj == "item" or p.t.obj == "env") and type(p.t.state) == "string" then
-      local mode = reaper.GetSetProjectInfo(proj, "PROJECT_TIMEBASE", 0, false)
-      now_map = now_map or require("band").capture_tempo(proj)
-      if mirror.map_ok(p.t.tm) then
-        local st, moved = mirror.state_on(p.t, now_map, mode)
-        if moved then p.t = setmetatable({ state = st, tm = now_map, tb = mode }, { __index = p.t }) end
-      else
-        local from = opts.map_of and opts.map_of(p.t)
-        if from then
-          local st = (p.t.obj == "item" and mirror.retime or mirror.retime_env)(p.t.state, from, now_map, mode)
-          if st ~= p.t.state then p.t = setmetatable({ state = st }, { __index = p.t }) end
-        end
+    -- (an item's or automation's version from before times went in beats: read into them by the map it was made under, the one it names
+    -- (`tm`) or opts.map_of(version)'s (History's Restore: lib/histhear.lua), so it lands on its beat here, as REAPER moved it when the maps
+    -- changed. A version in beats needs nothing: mirror.apply puts it on the map in place. lib/beats.lua, rt-sync2f)
+    if p.t and (p.t.obj == "item" or p.t.obj == "env") and type(p.t.state) == "string" and not beats.mark(p.t.state) then
+      local named = beats.map_ok(p.t.tm)
+      local from = named and p.t.tm or (opts.map_of and opts.map_of(p.t))
+      if from then
+        local st = beats.upgrade(p.t.obj, p.t.state, from, named and p.t.tb or beats.project_mode(proj))
+        if st ~= p.t.state then p.t = setmetatable({ state = st }, { __index = p.t }) end
       end
     end
     -- (an owner's restore or deletion takes the owner step, as their sends do: mirror.owned. Round 1 review, 0.59.45)
@@ -6480,11 +6158,10 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       -- (not a part recorded as gone with its track, which still names its last real change: Restore brought a deleted track back bare. Full
       -- review, 0.59.44. But only when its track is here (tracks are placed first): a still-deleted track's parts read as "couldn't change here
       -- yet, do it again" for good. Round 1 review, 0.59.45)
-    -- (opts.retimed: the undo just put the tempo map back, and REAPER moved the items and points with it. That isn't an edit of yours made
-    -- since, nor "already there": each still goes back to what it was and is sent, or the look after took REAPER's moves for new changes of
-    -- yours, and Redo had nothing to redo. rt-edits)
-    elseif p.t and not opts.exact and not (opts.retimed and (p.t.obj == "item" or p.t.obj == "env")) and mirror.sits_there(proj, p.t, plan) then there = there + 1
-    elseif not opts.exact and not (opts.retimed and p.t and (p.t.obj == "item" or p.t.obj == "env")) and mirror.edited_here(proj, p.oid, h, last, media, opts.local_mix) then
+    -- (an undo that put the tempo map back first: what REAPER moved with it reads the same in beats, so it isn't an edit of yours made since.
+    -- lib/beats.lua, rt-sync2f)
+    elseif p.t and not opts.exact and mirror.sits_there(proj, p.t, plan) then there = there + 1
+    elseif not opts.exact and mirror.edited_here(proj, p.oid, h, last, media, opts.local_mix) then
       -- (changed here since it last went out or came in, and not sent yet (a look hasn't run): left as it is. Going back
       -- put the old version over it for everyone, with no copy and nothing in History. Cost: one hash per planned item or track. Round 1
       -- review, 0.59.45)
@@ -6504,8 +6181,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil, pk = p.t.obj == "track" and p.t.pk or nil, unfolder = p.unfolder,
-          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act, tl = mirror.map_stamp(proj) }
-        mirror.map_tag(proj, ev)
+          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, act = opts.act }
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
@@ -6525,8 +6201,7 @@ function mirror.revert(proj, cfg, song, room, plan, opts)
       if ok then
         mirror.hlc_seen(last and last.hlc)
         local ev = { type = "obj", obj = p.t.obj, oid = p.oid, rev = mirror.next_rev(rev, owned(p.t.pos)), base = rev or 0, base_ev = evid ~= "" and evid or nil, state = p.t.state, track = p.t.track, name = name, pos = p.t.pos, restored = p.t.id, moved = p.moved, from_lane = p.t.from_lane, rk = p.t.obj == "track" and 1 or nil, pk = p.t.obj == "track" and p.t.pk or nil, unfolder = p.unfolder,
-          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act, tl = mirror.map_stamp(proj) } -- (act: a History page restore is one act, rt-history)
-        mirror.map_tag(proj, ev)
+          undoes = opts.undoes, redoes = opts.redoes, undoes_all = opts.undoes_all, redoes_all = opts.redoes_all, revived = (last and last.gone and last.user ~= cfg.user) or nil, act = opts.act } -- (act: a History page restore is one act, rt-history)
         local id = sync.post(cfg, song, room, ev)
         remember(proj, p.oid, ev.rev, nh, id, mirror.order_of(ev))
         done = done + 1
@@ -7404,7 +7079,7 @@ function mirror.post_into(cfg, song, from, to, list, here)
     local cur = newest[ev.oid]
     mirror.hlc_seen(cur and cur.hlc) -- (the clock past the version it lands on there, as W.send does. Round 1 review, 0.59.45)
     local new = { type = "obj", obj = ev.obj, oid = ev.oid, rev = (cur and cur.rev or 0) + 1, base = cur and cur.rev or 0, base_ev = cur and cur.id,
-      state = ev.state, track = ev.track, name = ev.name, pos = ev.pos, gone = ev.gone, from_room = from, tm = ev.tm, tb = ev.tb }
+      state = ev.state, track = ev.track, name = ev.name, pos = ev.pos, gone = ev.gone, from_room = from }
     sync.post(cfg, song, to, new)
     if here and reaper.ValidatePtr2(0, here, "ReaProject*") then -- (with that tab's own Local mixing: off, its faders took the band's. 0.59.14, review)
       mirror.receive(here, new, tdir .. "/media", select(2, reaper.GetProjExtState(here, band.SECTION, "local_mix")) == "1")

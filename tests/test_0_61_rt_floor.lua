@@ -266,7 +266,7 @@ end
 
 -- ---- 7. hv 11: no depth in a ranked track's line ------------------------------------------------------------------------------------------------
 do
-  assert(mirror.HV == 11 and sync.LEVEL >= mirror.HV, "hv 11, and the level not below it")
+  assert(mirror.HV >= 11 and sync.LEVEL >= mirror.HV, "hv 11 or later, and the level not below it")
   local t = { name = "Gtr", parent = "B", depth = -1, rank = "V" }
   local u = { name = "Gtr", parent = "B", depth = 0, rank = "V" }
   assert(mirror.track_hash(t) == mirror.track_hash(u), "a ranked track's depth isn't in its hash")

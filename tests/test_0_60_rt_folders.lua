@@ -164,7 +164,7 @@ do
   T = T + 5
   S.edit(A, function(F) arrange(F, { { "Drums", 0 }, { "Bass", 1 }, { "Gtr", -1 }, { "Keys", 0 } }) end) -- (Gtr dragged into Bass)
   local g = S.events(function(v) return v.obj == "track" and v.name == "Gtr" and v.state.parent ~= "" end)[1]
-  assert(g and g.pk == 1 and g.hv == 11 and g.state.parent == S.track(A, "Bass").ext.band_oid, "Gtr's version names Bass as its folder, meant (pk), hash version 11")
+  assert(g and g.pk == 1 and g.hv == mirror.HV and g.state.parent == S.track(A, "Bass").ext.band_oid, "Gtr's version names Bass as its folder, meant (pk), hash version " .. mirror.HV)
   S.recv(B)
   assert(tree(S, B) == "Drums 0, Bass 1, Gtr -1 <Bass, Keys 0", "in Bass's folder on Bee's: " .. tree(S, B))
   T = T + 5

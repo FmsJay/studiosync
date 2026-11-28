@@ -196,7 +196,7 @@ A.F.add_marker(false, 12, 12, "Bridge") -- (a timeline edit)
 local by = look(A, true)
 local moved, renamed = false, nil
 for _, ev in pairs(by) do
-  if type(ev.state) == "string" and ev.state:find("POSITION 0.25", 1, true) then moved = true end
+  if type(ev.state) == "string" and require("beats").write(P, "item", ev.state):find("POSITION 0.25", 1, true) then moved = true end -- (in beats as it travels: lib/beats.lua)
   if type(ev.state) == "table" and ev.state.name == "Keys 2" then renamed = ev.state end
 end
 assert(moved, "trying: an item moved elsewhere went out")

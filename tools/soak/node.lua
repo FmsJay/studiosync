@@ -145,20 +145,8 @@ direct.send_live = function(_, kind, d, song, room, id)
 end
 require("prints").choose = function() end -- (which take plays: this computer's own)
 package.loaded.trust = setmetatable({ claim_ok = function() return true end }, { __index = require("trust") }) -- (Syncthing says who wrote each file: here, truly them)
--- (REAPER's own move of an item for a tempo change: the stand-in moves its place and length; REAPER, in beats (position, length, rate), also
--- stretches what's inside it (fades, snap offset, an audio take's rate), which is what mirror.retime does when StudioSync puts a version on
--- another map (rt-p1b). Two computers that reached one map by the two roads then differed in the soak alone, by the stand-in's shortfall.
--- Here REAPER's move is mirror.retime's, for every item. rt-converge)
-do
-  local real = F.tempo_edit
-  F.tempo_edit = function(fn)
-    local old, was = band.capture_tempo(F.proj), {}
-    for _, it in ipairs(F.all_items()) do was[it] = it.text end
-    real(fn)
-    local new = band.capture_tempo(F.proj)
-    for it, text in pairs(was) do it.text = mirror.retime(text, old, new, 1) end
-  end
-end
+-- (REAPER's own move of an item for a tempo change, by its timebase (its stretch of what's inside in beats (position, length, rate) too) and
+-- with gradual tempos: tests/fixtures/editreaper.lua's F.tempo_edit since rt-sync2f, where mirror.retime stood in for it here before.)
 -- (REAPER keeps one tempo marker to a place, and a second inserted where one is is ignored, the first tempo kept: rt-r4 check 9,
 -- AddTempoTimeSigMarker at 10 s with 120 and again with 110 left one marker of 120, both calls returning true. The stand-in added a second
 -- marker. Here an insert (SetTempoTimeSigMarker's index -1, or AddTempoTimeSigMarker) at a marker's time does nothing. Changing the marker that
@@ -619,9 +607,11 @@ end
 EDITS.tempo = function(r)
   local n = reaper.CountTempoTimeSigMarkers(F.proj)
   local bpm = 80 + math.floor(r[2] * 80)
+  -- (a third of them gradual: the tempo goes in a straight line to the next marker's, as TimeMap2 counts it in the stand-in. rt-sync2f)
+  local lin = r[4] < 0.3
   if r[1] < 0.4 then
-    reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, bpm, 4, 4, false)
-    return "first tempo to " .. bpm
+    reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, bpm, 4, 4, lin)
+    return "first tempo to " .. bpm .. (lin and " (gradual)" or "")
   elseif r[1] < 0.75 or n < 2 then
     local t = 2 + math.floor(r[3] * 40)
     -- (one tempo marker to a place, as REAPER keeps them: a second set at a marker's time changes that marker. The stand-in kept both, in
@@ -631,8 +621,8 @@ EDITS.tempo = function(r)
       local _, mt = reaper.GetTempoTimeSigMarker(F.proj, i)
       if math.abs(mt - t) < 1e-9 then at = i end
     end
-    reaper.SetTempoTimeSigMarker(F.proj, at, t, -1, -1, bpm, 4, 4, false)
-    return "tempo marker " .. bpm .. " at " .. t
+    reaper.SetTempoTimeSigMarker(F.proj, at, t, -1, -1, bpm, 4, 4, lin)
+    return "tempo marker " .. bpm .. " at " .. t .. (lin and " (gradual)" or "")
   end
   local i = 1 + math.floor(r[3] * (n - 1))
   reaper.DeleteTempoTimeSigMarker(F.proj, i)

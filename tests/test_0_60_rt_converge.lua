@@ -1,8 +1,9 @@
 -- rt-converge (docs/rt/rt-converge.md): the sync core converging under concurrent edits, the soak's bugs (docs/rt/rt-soak.md). Lua 5.4, from
 -- the repo root. Each part fails with its fix taken out (checked against a copy of lib/ without it).
---  1. A version names the tempo map its seconds are on (`tm`): put in place on another map it lands on its beat (mirror.apply), versions made
---     under different maps merge on one map (mirror.event_file), and a hand edit after a bandmate's map isn't taken for the map's move
---     (mirror.map_moved): the soak's bugs 1, 5 and 7.
+--  1. A version lands on its beat whatever map is in place (the soak's bugs 1, 5 and 7). Since rt-sync2f an item's and automation's times
+--     travel in beats (lib/beats.lua): put in place on another map a version lands on its beat (mirror.apply), versions made under different
+--     maps merge as they are, a version from before that names its map (`tm`) is read into beats by it (mirror.legacy_beats), and what REAPER
+--     moves for a map reads the same, so a hand edit after a bandmate's map is simply an edit.
 --  2. A received change is judged by the claims as they stood when it was made (sync.authority's `at`): bug 3.
 --  3. A track change moves its track only when its place is what it changes (mirror.receive): bug 6.
 --  4. A track that comes back brings its items back on every computer (mirror.apply's note, mirror.heal): bug 4.
@@ -36,8 +37,9 @@
 -- 31. A track's part changed just as the track was deleted comes back as it was changed when the track does (mirror.receive's record).
 -- (rt-fix9, from the fifth REAPER re-check, rt-r4)
 -- 32. A track's settings changed here and not sent yet stand through a bandmate's change to that track (mirror.receive): rt-r4's bug A, rt-r5.
--- 33. A tempo change made after a bandmate's claims nothing (mirror.env_same_but_times, mirror.moved_by_map in W.send): rt-r4's bug B.
--- 34. A merge with a side that's only the tempo map's move takes the other side's (`retimed`, mirror.event_file), and says nothing of it.
+-- 33. A tempo change made after a bandmate's claims nothing (rt-r4's bug B): it sends nothing, its moves reading the same in beats (rt-sync2f).
+-- 34. A merge with a side that's only the tempo map's move (history from before rt-sync2f, `retimed`) takes the other side's (mirror.event_file),
+--     and says nothing of it.
 -- 35. An auto-claim on a name no track has lets go at once (sync.drop_gone_claims).
 -- 36. StudioSync's Undo asks without a modal box (lib/undo.lua, claimask.tick, claimask.bar). And 22: the Undo's words for a marker change.
 -- 37. A change of another setting than a bandmate's live preview shows goes out at once (W.past_preview): rt-r6's G.
@@ -71,79 +73,62 @@ end
 local M120 = { { time = 0, bpm = 120, num = 4, denom = 4, linear = false } }
 local M106 = { { time = 0, bpm = 106, num = 4, denom = 4, linear = false } }
 
--- ---- 1a. pure: a version on another map, and what counts as a map -----------------------------------------------------------------------------
+-- ---- 1a. pure: a version from before times went in beats, read into them by its map; what counts as a map --------------------------------
+local beats = require("beats")
 do
-  local ev = { obj = "item", state = midi(8, 4), tm = M120, tb = 1 }
-  local st, moved = mirror.state_on(ev, M106, 1)
-  assert(moved and near(num(st, "POSITION"), 8 * 120 / 106) and near(num(st, "LENGTH"), 4 * 120 / 106), "made at 120, placed at 106: the same beats")
-  local same, moved2 = mirror.state_on(ev, { { time = 0, bpm = 120 } }, 1)
-  assert(same == ev.state and moved2 == false, "the same map: as it is")
-  assert(select(2, mirror.state_on({ obj = "item", state = midi(8, 4) }, M106, 1)) == false, "a version from before (no map): as it is")
-  assert(select(2, mirror.state_on(ev, M106, 0)) == false, "the time timebase: nothing moves")
+  local ev = mirror.legacy_beats({ obj = "item", state = midi(8, 4), tm = M120, tb = 1 })
+  local st = beats.seconds_on("item", ev.state, M106)
+  assert(beats.mark(ev.state) == 1 and near(num(st, "POSITION"), 8 * 120 / 106) and near(num(st, "LENGTH"), 4 * 120 / 106), "made at 120, placed at 106: the same beats")
+  assert(near(num(beats.seconds_on("item", ev.state, M120), "POSITION"), 8), "on its own map: its seconds")
+  assert(mirror.legacy_beats({ obj = "item", state = midi(8, 4) }).state == midi(8, 4), "a version from before maps were named: its seconds stand")
+  assert(mirror.legacy_beats({ obj = "item", state = midi(8, 4), tm = M120, tb = 0 }).state == midi(8, 4), "the time timebase: its seconds stand")
   for _, bad in ipairs({ "x", {}, { "x" }, { { time = "0", bpm = 120 } }, { { time = 0, bpm = 0 } }, { { time = 0 } }, { { time = -1, bpm = 120 } } }) do
-    assert(not mirror.map_ok(bad) and select(2, mirror.state_on({ obj = "item", state = midi(8, 4), tm = bad }, M106, 1)) == false, "not a map: taken as it is, never an error")
+    assert(not beats.map_ok(bad) and mirror.legacy_beats({ obj = "item", state = midi(8, 4), tm = bad }).state == midi(8, 4), "not a map: taken as it is, never an error")
   end
   local long = {}
-  for i = 1, mirror.MAP_MAX + 1 do long[i] = { time = i - 1, bpm = 120 } end
-  assert(not mirror.map_ok(long), "a map past MAP_MAX isn't carried")
-  local env = { obj = "env", state = "<VOLENV2\nPT 0 1 0\nPT 8 0.5 0\n>", tm = M120, tb = 1 }
-  local es, em = mirror.state_on(env, M106, 1)
-  assert(em and near(tonumber(es:match("PT (%S+) 0.5")), 8 * 120 / 106), "automation's points the same way")
-  assert(mirror.snap_to("POSITION 9.0566037735849\nLENGTH 4\n", "POSITION 9.05660377358491\nLENGTH 5\n") == "POSITION 9.05660377358491\nLENGTH 4\n",
-    "a place that differs past its 7th decimal is written as the other writes it; a real difference stays")
-  print("rt-converge 1a: a version onto another map (pure)")
+  for i = 1, 100 do long[i] = { time = i - 1, bpm = 120 } end
+  assert(beats.map_ok(long), "a long map is a map (MAP_MAX's 64 went with rt-sync2f: nothing carries a map now)")
+  local env = mirror.legacy_beats({ obj = "env", state = "<VOLENV2\nPT 0 1 0\nPT 8 0.5 0\n>", tm = M120, tb = 1 })
+  assert(near(tonumber(beats.seconds_on("env", env.state, M106):match("PT (%S+) 0.5")), 8 * 120 / 106), "automation's points the same way")
+  print("rt-converge 1a: a version from before onto another map (pure)")
 end
 
--- ---- 1b. mirror.apply puts a version on the map in place; map_tag names it; map_moved is exact ------------------------------------------------
+-- ---- 1b. mirror.apply puts a version on the map in place; REAPER's move for a map is no change ---------------------------------------------
 local R = "R/Song/rooms/main"
 do
   local F = F0
   local tr = F.add_track("Keys")
   reaper.GetSetMediaTrackInfo_String(tr, "P_EXT:band_oid", "T-A-1", true)
+  -- (a version made at 120: its place and length in beats, 16 and 8 quarter notes)
   local ev = { type = "obj", obj = "item", oid = "I-A-1", track = "T-A-1", name = "Keys", rev = 1, id = "A-20270115-080000Z-00001-0001", user = "A",
-    time = iso(T), state = midi(8, 4) }
-  mirror.map_tag(F.proj, ev)
-  assert(mirror.map_ok(ev.tm) and #ev.tm == 1 and ev.tm[1].bpm == 120 and ev.tb == 1, "a version going out names the map in place and the timebase")
-  local tev = mirror.map_tag(F.proj, { obj = "track", state = { name = "x" } })
-  assert(tev.tm == nil, "a track's settings have no place in time: no map")
+    time = iso(T), state = beats.item(midi(8, 4), 1, function(t) return t * 2 end) }
+  assert(ev.state:find("\nPOSITION 16.000000\n", 1, true) and ev.state:find("\nLENGTH 8.000000\n", 1, true), "in beats as it travels")
   -- the map changes here before the version lands (it was made just before the map reached its maker)
   reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 106, 4, 4, false)
   local ok, h = mirror.apply(F.proj, ev, R .. "/media", false)
-  assert(ok and mirror.retimed_here == true, "applied, and moved for the map")
+  assert(ok, "applied")
   local it = F.all_items()[1]
   assert(near(num(it.text, "POSITION"), 8 * 120 / 106) and near(num(it.text, "LENGTH"), 4 * 120 / 106),
     "a version made under the old map lands on its beat under the new one (was: at its old seconds, for good)")
+  local media = R .. "/media"
+  local read = mirror.item_state(it, media)
+  assert(read:find("\nPOSITION 16.000000\n", 1, true) and read:find("\nLENGTH 8.000000\n", 1, true) and h == mirror.item_hash("T-A-1", read), "and reads back as it was sent")
   mirror.remember(F.proj, "I-A-1", 1, h, ev.id, mirror.order_of(ev))
   files[R .. "/events/" .. ev.id .. ".json"] = ev
   -- the same version put back (W.put_back applies the last event): still on its beat
   ok = mirror.apply(F.proj, ev, R .. "/media", false)
   assert(ok and near(num(F.all_items()[1].text, "POSITION"), 8 * 120 / 106), "a put-back of that version lands on today's map too (bug 5)")
-  -- is a difference only the map's move?
-  local here = F.all_items()[1].text
-  assert(mirror.map_moved(F.proj, ev, here) == true, "where the map put it: the map's move")
-  mirror.tempo_changed(F.proj) -- (a bandmate's map just landed: the 15 s window, with no map from before known)
-  local by_hand = here:gsub("POSITION [^\n]+", "POSITION 15.98")
-  assert(mirror.map_moved(F.proj, ev, by_hand) == false, "moved by hand inside the 15 s after a bandmate's map: an edit, not the map's move (bug 1)")
-  -- (as a look reads it: the item's normalized state against the band's version of it)
-  local media = R .. "/media"
-  local last = mirror.map_tag(F.proj, { obj = "item", state = mirror.item_state(F.all_items()[1], media) })
-  reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 90, 4, 4, false) -- (another map lands: REAPER moves the item)
-  mirror.tempo_changed(F.proj)
-  local moved_state = mirror.item_state(F.all_items()[1], media)
-  assert(moved_state ~= last.state and mirror.only_map_moved(F.proj, { kind = "item", state = moved_state }, last) == true, "REAPER's move for the map: taken in, nobody's edit")
-  assert(mirror.only_map_moved(F.proj, { kind = "item", state = (moved_state:gsub("POSITION [^\n]+", "POSITION 15.98")) }, last) == false,
-    "moved by hand on top, inside the window: a look asks about it or sends it")
+  -- another map lands: REAPER moves the item, and what travels doesn't change, so a look finds nothing to send
+  reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 90, 4, 4, false)
+  assert(math.abs(num(F.all_items()[1].text, "POSITION") - 8 * 120 / 90) < 1e-9 and mirror.item_state(F.all_items()[1], media) == read, "REAPER's move for the map: the same in beats, nobody's edit")
+  -- moved by hand after it: an edit (bug 1)
+  F.all_items()[1].text = F.all_items()[1].text:gsub("POSITION [^\n]+", "POSITION 15.98")
+  assert(mirror.item_state(F.all_items()[1], media) ~= read, "moved by hand after a bandmate's map: an edit, not the map's move (bug 1)")
   reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 106, 4, 4, false)
-  -- a version made under the map in place: no map moved it, whatever the window says
-  local ev2 = mirror.map_tag(F.proj, { obj = "item", state = here })
-  assert(mirror.map_moved(F.proj, ev2, by_hand) == false and mirror.map_moved(F.proj, ev2, (here:gsub("FADEIN 1 0", "FADEIN 1 0.5"))) == false,
-    "under the map it was made on, a move or a fade is an edit")
-  -- a version from before (no map named): as before, inside the window anything that only moved is the map's
-  assert(mirror.map_moved(F.proj, { state = midi(8, 4) }, by_hand) == true, "no map named: the old rule")
-  print("rt-converge 1b: a version lands on its beat under the map in place; a hand edit after a map isn't the map's move")
+  print("rt-converge 1b: a version lands on its beat under the map in place; a hand edit after a map is an edit")
 end
 
--- ---- 1c. versions made under different maps merge on one map ----------------------------------------------------------------------------------
+-- ---- 1c. versions made under different maps merge on one footing -----------------------------------------------------------------------------
 do
   local hlc = math.floor(T * 1000)
   local function put(id, user, state, base, tm, n)
@@ -151,22 +136,21 @@ do
     files[R .. "/events/" .. id .. ".json"] = ev
     return ev
   end
+  -- (history from before rt-sync2f: versions in seconds, each naming its map)
   local base = put("A-20270115-080001Z-00001-0001", "A", midi(8, 4), nil, M120, 1)
   -- Cee set the tempo to 106: REAPER moved the item there, and it went out as only that
   local w = put("Cee-20270115-080003Z-00001-0002", "Cee", midi(string.format("%.14g", 8 * 120 / 106), string.format("%.14g", 4 * 120 / 106)), base.id, M106, 3)
   -- Bee, who hadn't the map yet, moved the item to 20 s
   local l = put("Bee-20270115-080002Z-00001-0003", "Bee", midi(20, 4), base.id, M120, 2)
   local m = mirror.event_file(R, mirror.merge_id(w.id, l.id))
-  assert(m and mirror.same_map(m.tm, M106), "the merge is on the winner's map, and says so")
-  assert(near(num(m.state, "POSITION"), 20 * 120 / 106) and near(num(m.state, "LENGTH"), 4 * 120 / 106),
-    "Bee's move stands, on its beat under the new map (was: lost to the map's own move, read as Cee's edit): " .. tostring(num(m.state, "POSITION")))
+  local on106 = m and beats.seconds_on("item", m.state, M106)
+  assert(m and beats.mark(m.state) == 1 and near(num(on106, "POSITION"), 20 * 120 / 106) and near(num(on106, "LENGTH"), 4 * 120 / 106),
+    "Bee's move stands, on its beat under the new map (was: lost to the map's own move, read as Cee's edit): " .. tostring(on106 and num(on106, "POSITION")))
   assert(#(m.clashed or {}) == 0, "and nobody 'changed the same thing'")
-  -- the other way round: the hand edit wins the order, the map's move is the loser
+  -- the other way round: the hand edit wins the order, the map's move is the loser: the same version
   local m2 = mirror.event_file(R, mirror.merge_id(l.id, w.id))
-  assert(m2 and mirror.same_map(m2.tm, M120) and near(num(m2.state, "POSITION"), 20) and #(m2.clashed or {}) == 0, "on the old map, the move alone")
-  local on106 = mirror.state_on(m2, M106, 1)
-  assert(near(num(on106, "POSITION"), 20 * 120 / 106), "which lands at the same place under the new map as the other merge does")
-  print("rt-converge 1c: versions made under different tempo maps merge on one map")
+  assert(m2 and m2.state == m.state and #(m2.clashed or {}) == 0, "the move alone, the same in beats whichever won")
+  print("rt-converge 1c: versions made under different tempo maps merge on one footing")
 end
 
 -- ---- 2. a change is judged by the claims as they stood when it was made -----------------------------------------------------------------------
@@ -1304,7 +1288,7 @@ do
   files[S.dir .. "/claims/Cee.json"] = { user = "Cee", time = iso(T), tracks = { "Keys" }, since = { ["tracks:keys"] = iso(T) }, auto = { ["tracks:keys"] = iso(T) } }
   local cees = band.json_decode(band.json_encode(first))
   cees.id, cees.rev, cees.base, cees.base_ev, cees.hlc, cees.user, cees.time = "Cee-20270115-130000Z-00001-0025", first.rev + 1, first.rev, first.id, math.floor(T * 1000), "Cee", iso(T)
-  cees.state, cees.hash, cees.pos = first.state:gsub("POSITION [^\n]+", "POSITION 3"), nil, 3
+  cees.state, cees.hash, cees.pos = first.state:gsub("POSITION [^\n]+", "POSITION 6.000000"), nil, 3 -- (in beats as it travels: 3 s at 120 is quarter note 6. rt-sync2f)
   files[S.dir .. "/events/" .. cees.id .. ".json"] = cees
   T = T + 5
   S.recv(A); S.recv(B)
@@ -1663,19 +1647,18 @@ end
 
 -- ---- 33. a tempo change made after a bandmate's claims nothing (rt-r4's bug B) ----------------------------------------------------------------
 do
-  -- a. pure: automation and items told from the map's move number by number, and by this computer's own two readings
-  local a = "<VOLENV2\nACT 1 -1\nPT 0 1 0 0 0\nPT 4 0.5 0 0 0\nBANDAI 1 2 4 0 0\nBANDAIPT 1 0 2 0.5 0 0\n>"
-  local b = "<VOLENV2\nACT 1 -1\nPT 0 1 0\nPT 4.8 0.50000000000001 0\nBANDAI 1 2.4 4.8 0 0\nBANDAIPT 1 0 2.4 0.5 0 0\n>"
-  assert(mirror.env_same_but_times(a, b), "the same points written another way, moved in time: alike")
-  assert(not mirror.env_same_but_times(a, (b:gsub("0%.50000000000001", "0.6"))), "a point's value changed: not alike")
-  assert(not mirror.env_same_but_times(a, b .. "\nPT 9 1 0"), "a point added: not alike")
-  assert(mirror.moved_by_map("env", a, b, M120, { { time = 0, bpm = 100 } }, 1), "automation moved by a map change here")
-  assert(not mirror.moved_by_map("env", a, b, M120, M120, 1), "no map change: an edit")
+  -- a. pure: automation and items as REAPER moves them for a map change read the same in beats; a hand's change doesn't (lib/beats.lua)
+  local q120, q100, q106 = function(t) return t * 2 end, function(t) return t * 100 / 60 end, function(t) return t * 106 / 60 end
+  local a = "<VOLENV2\nACT 1 -1\nPT 0 1 0\nPT 4 0.5 0\n>\nBANDAI 1 2 4 0 0\nBANDAIPT 1 0 2 0.5 0 0\n"
+  local b = "<VOLENV2\nACT 1 -1\nPT 0 1 0\nPT 4.8 0.5 0\n>\nBANDAI 1 2.4 4.8 0 0\nBANDAIPT 1 0 2.4 0.5 0 0\n"
+  assert(beats.env(a, 1, q120) == beats.env(b, 1, q100), "automation moved by a map change: alike")
+  assert(beats.env(a, 1, q120) ~= beats.env((b:gsub("PT 4%.8 0%.5", "PT 4.8 0.6")), 1, q100), "a point's value changed: not alike")
+  assert(beats.env(a, 1, q120) ~= beats.env(b:gsub(">\n", "PT 9 1 0\n>\n", 1), 1, q100), "a point added: not alike")
   local it = midi(8, 4)
-  local moved = mirror.retime(it, M120, M106, 1)
-  assert(mirror.moved_by_map("item", it, moved, M120, M106, 1), "an item REAPER moved for the map")
-  assert(not mirror.moved_by_map("item", it, (moved:gsub("POSITION [^\n]+", "POSITION 20")), M120, M106, 1), "moved by hand as well: an edit")
-  assert(not mirror.moved_by_map("item", it, (moved:gsub('NAME "K"', 'NAME "L"')), M120, M106, 1), "renamed as well: an edit")
+  local moved = beats.seconds_on("item", beats.item(it, 1, q120), M106)
+  assert(beats.item(it, 1, q120) == beats.item(moved, 1, q106), "an item REAPER moved for the map: alike")
+  assert(beats.item(it, 1, q120) ~= beats.item((moved:gsub("POSITION [^\n]+", "POSITION 20")), 1, q106), "moved by hand as well: an edit")
+  assert(beats.item(it, 1, q120) ~= beats.item((moved:gsub('NAME "K"', 'NAME "L"')), 1, q106), "renamed as well: an edit")
   -- b. a bandmate's REAPER writes the automation's points with trailing fields this one doesn't, and this one rewrites them its own way once
   -- its own tempo change moves them; and the band's text of an item isn't this computer's reading of it
   local S = studio("Conv33", "open")
@@ -1701,7 +1684,7 @@ do
   -- (and the band's text of Rec's item isn't James's reading of it: a line another REAPER writes its own way)
   local _, _, kev = mirror.known(A.F.proj, mirror.item_oid(S.track(A, "Rec").items[1]))
   local band_item = mirror.event_file(S.dir, kev)
-  assert(band_item and band_item.user == "Bee", "the item's newest version on James's is Bee's re-sent one")
+  assert(band_item and band_item.user == "James", "the item's newest version on James's is still his: Bee's tempo change sent nothing for it (rt-sync2f)")
   band_item.state = band_item.state:gsub("LOOP 0", "LOOP 0\nCHANMODE 0")
   T = T + 5
   S.edit(A, function(F) reaper.SetTempoTimeSigMarker(F.proj, 0, 0, -1, -1, 90, 4, 4, false); wrote_own(F) end)
@@ -1729,11 +1712,12 @@ do
   -- Bee, without the map yet, moved the item to 20 s
   local l = put("Bee-20270116-080002Z-00001-0003", "Bee", midi(20, 4), base.id, M120, 2)
   local m = mirror.event_file(R, mirror.merge_id(w.id, l.id))
-  assert(m and near(num(m.state, "POSITION"), 20 * 120 / 106) and near(num(m.state, "LENGTH"), 4 * 120 / 106) and #(m.clashed or {}) == 0,
-    "the map's side won: Bee's move stands on the new map, nothing clashed (was: Cee's timing stood, Bee's move lost): " .. tostring(num(m.state, "POSITION")))
+  local m106 = m and beats.seconds_on("item", m.state, M106) -- (in beats since rt-sync2f: Bee's side, read by the map it names)
+  assert(m and near(num(m106, "POSITION"), 20 * 120 / 106) and near(num(m106, "LENGTH"), 4 * 120 / 106) and #(m.clashed or {}) == 0,
+    "the map's side won: Bee's move stands on the new map, nothing clashed (was: Cee's timing stood, Bee's move lost): " .. tostring(num(m106, "POSITION")))
   assert(m.retimed == nil and m.w_retimed == true, "the merge isn't the map's move alone; it says the winner's side was")
   local m2 = mirror.event_file(R, mirror.merge_id(l.id, w.id))
-  assert(m2 and near(num(m2.state, "POSITION"), 20) and #(m2.clashed or {}) == 0, "the hand's side won: its move, nothing clashed (was: 'theirs stands where you both changed it')")
+  assert(m2 and near(num(beats.seconds_on("item", m2.state, M120), "POSITION"), 20) and #(m2.clashed or {}) == 0, "the hand's side won: its move, nothing clashed (was: 'theirs stands where you both changed it')")
   -- a side that's the map's move of a change of its own made since keeps that change: only a side built straight on the shared version is
   -- the map's move alone
   local x = put("Cee-20270116-080004Z-00001-0004", "Cee", (midi(8, 4):gsub('NAME "K"', 'NAME "Cee"')), base.id, M120, 4)

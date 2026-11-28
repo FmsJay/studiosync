@@ -1,7 +1,8 @@
 -- 0.60.0-rt (cross test, step 1): A deletes every track (and its items) in one undo block that also changes the tempo; B and C, which got the
 -- tempo map first, send their re-timed parts as edits built on the version A deleted. Every computer must end the same in every arrival order:
 -- the tracks and items gone, nothing kept as "(yours, not sent)", and each holding A's deletion. Fails with mirror.gone_race, the on_gone_track
--- record, the re-time check in apply or sync.receive's race check reverted. Lua 5.4, from the repo root.
+-- record or sync.receive's race check reverted. Lua 5.4, from the repo root. (Since rt-sync2f a tempo change sends nothing: the re-timed
+-- versions here are history from older StudioSyncs.)
 package.path = "lib/?.lua;" .. package.path
 local exts, gext, clock = {}, {}, 1000
 local function sec_of(p, sec) exts[p] = exts[p] or {}; exts[p][sec] = exts[p][sec] or {}; return exts[p][sec] end
@@ -144,7 +145,9 @@ local function check(who, user, holds, item_ev, arriving)
 end
 check("a third computer", "Xa", true, V1, { GT, GI, EC, EB })
 check("Mac, which re-timed it", "Mac", true, EC, { GT, GI, EB })
-check("Bo, which re-timed it", "Bo", true, EB, { GT, GI, EC })
+-- (Bo's: since rt-sync2f a tempo change sends nothing, so a version like EB, Bo's own built on Bo's own, is an edit of his own item, which a
+-- deletion that doesn't name its items (an older StudioSync's) keeps on "(yours, not sent)" as new work: mirror.new_here. The re-time guess,
+-- mirror.only_retimed, went with the re-times. Mac's, built on Bo's, still goes with the track.)
 check("Al, which deleted it", "Al", false, nil, { EC, EB })
 
 -- the live run's orders by name (all in the permutations above too): on the Mac, the track's deletion, then Bo's re-time on the deleted track,
@@ -159,9 +162,9 @@ do
   local p = start("Bo", true, EB)
   mirror.receive(p, EC, MEDIA, false, "Bo")
   local _, _, kev = mirror.known(p, I)
-  assert(kev == mirror.merge_id(EB.id, EC.id) and mirror.just_made_here(p, I) and mirror.only_retimed(p, I, R), "Bo holds the merge, its own, and a re-time only")
+  assert(kev == mirror.merge_id(EB.id, EC.id) and mirror.just_made_here(p, I), "Bo holds the merge, its own")
   for _, e in ipairs({ GT, GI }) do mirror.receive(p, e, MEDIA, false, "Bo") end
-  assert(shape(p) == WANT, "Bo: merged re-times, then the deletions: " .. shape(p))
+  assert(shape(p) == WANT, "Bo: the merge (with Mac's, so not all his own), then the deletions: " .. shape(p))
 end
 
 -- rt-sync2b: a track's deletion names the items that went with it (`items`, rt-sync2 section 1). An item of yours the deleter never saw (not

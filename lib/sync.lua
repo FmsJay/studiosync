@@ -124,8 +124,7 @@ end
 sync.TIMELINE_FORMAT = 6 -- (4: the recording-over-items choice joined the shared project settings: the first look after updating is not taken for an edit. James, rt; 5: the video settings, rt-video2; 6: markers' numbers and the region render matrix, rt-edits)
 local function timeline_sig(proj) return band.json_encode({ band.capture_tempo(proj), band.capture_markers(proj), band.capture_project(proj), sync.TIMELINE_FORMAT }) end
 -- The tempo map alone, said one way (round-tripped through JSON), to tell a tempo change from a marker or notes one: only a tempo change
--- moves parts by itself (mirror.tempo_changed). A marker set the window going too, and for 15 s a nudge, a fade or automation drawn
--- went nowhere. Review, 0.58.87.
+-- moves parts by itself. Review, 0.58.87.
 local function tempo_sig(tempo) return band.json_encode(band.json_decode(band.json_encode(tempo or {}))) end
 sync.tempo_sig = tempo_sig
 sync.timeline_sig = timeline_sig
@@ -851,13 +850,9 @@ function sync.restore_timeline(proj, cfg, song, room, entries, upto, session, fr
   local now = band.json_decode(sync.timeline_sig(proj))
   if type(now) == "table" and band.json_encode({ t.tempo, t.markers or {} }) == band.json_encode({ now[1], now[2] }) then return false end
   sync.audio_follow_tempo(proj)
-  -- (what REAPER moves for the map is the Restore's, as when a bandmate's map lands (mirror.map_landing): read as unsent edits, 10 of a
-  -- whole-song Restore were left as they were, then went out as the person's own act, which StudioSync's Undo took back instead. Every
-  -- receiver moves its own for the map. REAPER recheck, 0.59.49.79, rt-edits round 6)
-  if tempo_sig(t.tempo) ~= tempo_sig(band.capture_tempo(proj)) then
-    require("mirror").tempo_changed(proj)
-    require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, t.tempo) end)
-  else band.apply_tempo(proj, t.tempo) end
+  -- (what REAPER moves for the map reads the same in beats, so it's nobody's edit and nothing goes out for it: every receiver moves its own.
+  -- lib/beats.lua, rt-sync2f)
+  band.apply_tempo(proj, t.tempo)
   band.apply_markers(proj, t.markers or {})
   -- (restored: a Restore, not a change StudioSync's Undo steps back, as a restored object isn't: mirror.last_mine. rt-edits)
   sync.post(cfg, song, room, { type = "timeline", tempo = t.tempo, markers = t.markers or {}, restored = true, act = act }, proj) -- (proj: ordered after the newest map seen here. Review, 0.58.95)
@@ -1148,7 +1143,7 @@ function sync.post(cfg, song, room, ev, proj)
   -- (an object change also as a message: a file waits its turn on the link's one sending thread, behind every computer's copy, the clock's
   -- pings and the streams, so a slow or asleep computer first in line held the others' up to 1.5 s; each bandmate's messages go at once on a
   -- lane of their own. Up to direct.MSG_MAX (a big chain or MIDI item goes as the file only); the file is still the record. rt-look)
-  -- (and a tempo map or marker change: the items REAPER moved for it wait for it on the other side, sync.map_waits. rt-edits)
+  -- (and a tempo map or marker change, at once like the object changes beside it. rt-edits)
   if ev.type == "obj" or ev.type == "timeline" then direct.send_live(cfg, "event", ev, song, room, ev.id) end
   if proj then stamp(proj, ev) end
   if ev.type == "start" or ev.type == "stop" then -- (a cue: Syncthing told to look at it now, not when its watcher gets round to it)
@@ -1249,15 +1244,8 @@ end
 function sync.note_item(proj, ev)
   return (ev.take and band.find_take(proj, ev.take)) or (type(ev.item) == "string" and require("mirror").find(proj, "item", ev.item)) or nil
 end
--- A change stamped with the tempo map it was made under (mirror.map_stamp) waits while this project's newest map is older than that one: up
--- to MAP_WAIT seconds from when it came, then it lands anyway (the map was refused here, or never arrives). rt-edits
-sync.MAP_WAIT = 30
 sync.RENAME_BACK = 600 -- seconds within which a rename of your claimed track, from a StudioSync that didn't ask, is put back (sync.receive)
 sync.CUE_OLD = 120 -- seconds after which a start or stop that arrives is only history (sync.receive)
-function sync.map_waits(proj, ev, me)
-  if type(ev.tl) ~= "string" or ev.user == me or ev.tl <= ext(proj, sync.NEWEST, "timeline") then return false end
-  return reaper.time_precise() - sync.refused_since("map " .. tostring(ev.id)) <= sync.MAP_WAIT
-end
 -- Whether a change that isn't an object's changes this project: a play or stop together, a driver change and a note on nothing here don't.
 -- (only then an arrival's undo block: opened for every bandmate's event, it closed empty on top of REAPER's list and sent Ctrl+Z StudioSync's
 -- way. Cost: a lookup per note. Round 4 review, 0.59.49)
@@ -1326,10 +1314,7 @@ function sync.timeline_carry(proj, d)
 end
 -- (after the newer timeline is in place and noted as seen: yours again on top. `who`: whose timeline landed, for the log.)
 function sync.timeline_redo(proj, d, who)
-  if d.tempo then
-    require("mirror").tempo_changed(proj)
-    band.apply_tempo(proj, d.tempo)
-  end
+  if d.tempo then band.apply_tempo(proj, d.tempo) end
   local cur, added, removed = band.capture_markers(proj), 0, 0
   for _, m in ipairs(d.removed) do
     local j = mark_at(cur, m) or mark_at(cur, m, true) -- (by place; else by number, where the two maps differ)
@@ -1361,12 +1346,8 @@ function sync.apply(proj, ev, dir, can, me)
     local mine, untold
     if me then mine, untold = sync.timeline_unsent(proj) end -- (yours, not sent yet: kept on top below)
     sync.audio_follow_tempo(proj)
-    local moves = tempo_sig(ev.tempo) ~= tempo_sig(band.capture_tempo(proj))
-    if moves then require("mirror").tempo_changed(proj) end
-    if moves and me then
-      -- (a map that wasn't made here: what REAPER moves for it is taken in as it lands, never this computer's edit. mirror.map_landing, rt-edits)
-      require("mirror").map_landing(proj, me, dir .. "/media", sync.local_mix, function() band.apply_tempo(proj, ev.tempo or {}) end)
-    else band.apply_tempo(proj, ev.tempo or {}) end
+    -- (what REAPER moves for a map that wasn't made here reads the same in beats: never this computer's edit. lib/beats.lua, rt-sync2f)
+    band.apply_tempo(proj, ev.tempo or {})
     if mine then sync.timeline_carry(proj, mine) end
     band.apply_project(proj, ev.project) -- (title, notes, group names, timebase, ruler lanes: from 0.31.1; before the markers that sit in them)
     band.apply_markers(proj, ev.markers or {})
@@ -1455,9 +1436,8 @@ function sync.timeline_heal(proj, cfg, song, room)
   reaper.Undo_BeginBlock2(proj)
   local ok, e = pcall(function()
     if tempo_sig(t.tempo) ~= tempo_sig(band.capture_tempo(proj)) then
-      require("mirror").tempo_changed(proj)
       sync.audio_follow_tempo(proj)
-      require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, t.tempo) end)
+      band.apply_tempo(proj, t.tempo)
     end
     if type(t.project) == "table" then band.apply_project(proj, t.project) end
     band.apply_markers(proj, t.markers)
@@ -1599,11 +1579,9 @@ function sync.undo_timeline(proj, cfg, song, room, entries, j, tags, session)
   reaper.Undo_BeginBlock2(proj)
   local ok, e = pcall(function()
     if want_t then
-      require("mirror").tempo_changed(proj)
       sync.audio_follow_tempo(proj)
-      -- (what REAPER moves for it, outside the act being undone, isn't the person's edit: each receiver moves its own. As sync.restore_timeline,
-      -- rt-edits round 6)
-      require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, want_t) end)
+      -- (what REAPER moves for it, outside the act being undone, reads the same in beats: nobody's edit. lib/beats.lua, rt-sync2f)
+      band.apply_tempo(proj, want_t)
     end
     band.apply_markers(proj, want_m)
   end)
@@ -1679,10 +1657,7 @@ function sync.watch_timeline(proj, cfg, song, room, can)
         local mine = sync.timeline_unsent(proj)
         reaper.Undo_BeginBlock2(proj)
         local ok, e = pcall(function() -- (the undo point closed whatever happens: review, 0.58.92)
-          if tempo_off then
-            require("mirror").tempo_changed(proj)
-            require("mirror").map_landing(proj, cfg.user, sync.room_dir(cfg, song, room) .. "/media", sync.local_mix, function() band.apply_tempo(proj, s.tempo) end)
-          end
+          if tempo_off then band.apply_tempo(proj, s.tempo) end
           if mine then sync.timeline_carry(proj, mine) end
           if proj_off then band.apply_project(proj, s.project) end
           band.apply_markers(proj, s.markers)
@@ -1713,8 +1688,6 @@ function sync.watch_timeline(proj, cfg, song, room, can)
   -- file's markers sent with one edit of yours would replace everyone's. A marker of yours added before the open still goes out at once when
   -- nothing newer waits. sync.timeline_behind, REAPER check F7, rt-edits)
   if seen ~= sig and seen ~= "" and sync.loading[tostring(proj)] and sync.timeline_behind(proj, cfg, song, room) ~= false then
-    local was = band.json_decode(seen)
-    if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj) end
     return
   end
   -- (and what this project's stamp says it holds is what's here: sync.timeline_heal, once per stamp. rt-edits)
@@ -1723,9 +1696,6 @@ function sync.watch_timeline(proj, cfg, song, room, can)
     if okh and healed then sig = timeline_sig(proj); seen = sig; setext(proj, band.SECTION, "timeline", sig) end
   end
   if seen ~= sig then
-    local was = seen ~= "" and band.json_decode(seen)
-    -- (with the map from before it: an item moved by hand in these seconds is told from one the map moved. mirror.map_moved, backlog 1.10, rt-p1)
-    if not (type(was) == "table" and tempo_sig(was[1]) == tempo_sig(band.capture_tempo(proj))) then require("mirror").tempo_changed(proj, type(was) == "table" and was[1] or nil) end
     if seen ~= "" then
       -- (another script's doing: the grid turning this computer's own is no change; a ReaPersona persona switch is put back. lib/compat.lua, James, rt)
       local okv, veto = pcall(require("compat").timeline_veto, proj, seen, sig)
@@ -1874,7 +1844,7 @@ end
 -- new code still finds it. A computer below the floor sends nothing and says "update StudioSync" (Live sync, Health); one at the floor holds,
 -- never applies, a change made below it: one with a lower `lv`, or one with none (a StudioSync from before floors) made since the floor was
 -- first recorded. Held, not dropped: it stays in the room unapplied and unmarked (docs/rt/rt-floor.md says why that loses nothing).
-sync.LEVEL = 11 -- (11: rt-floor, the first floor; mirror.HV 11)
+sync.LEVEL = 12 -- (11: rt-floor, the first floor; mirror.HV 11. 12: times in beats, mirror.HV 12, rt-sync2f)
 sync.FLOOR_EVERY = 10 -- seconds a read of the floor folder is kept
 sync.floor_now = nil -- { level, since, below, root } as last read (sync.floor), or nil: none read in this Lua state yet (nothing held)
 local floor_read = {} -- root -> { at, f }
@@ -2304,12 +2274,10 @@ function sync.receive(proj, cfg, song, room, can)
     if budget_out then -- (the rest next pass: their changes are still waiting; what a returning track holds, as owed)
       if not groups[oid] then sync.contents_due[pk] = sync.contents_due[pk] or {}; sync.contents_due[pk][oid] = true end
     else
-      -- (made while REAPER moved things for a tempo map that isn't here yet: it lands once the map has, in the pass that brings it, which is
-      -- just above for one in this pass. Landed before it, REAPER moved it a second time when the map came: REAPER check F6. rt-edits)
+      -- (a change made just before a tempo map it hasn't reached here yet lands now, in beats: REAPER keeps it on its beat when the map comes,
+      -- so it no longer waits for the map (REAPER check F6's double move can't happen). lib/beats.lua, rt-sync2f)
       local list = {}
-      for _, x in ipairs(groups[oid] or {}) do
-        if sync.map_waits(proj, x, cfg.user) then sync.waited[x.id], skip[x.id] = true, true else list[#list + 1] = x end
-      end
+      for _, x in ipairs(groups[oid] or {}) do list[#list + 1] = x end
       local ev = list[#list] -- (the newest that came in: what the log names)
       local wkey = ev and ev.id or ("obj " .. oid) -- (the newest change's id: as each change's own was before)
       local waited = sync.waited[wkey]

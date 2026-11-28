@@ -126,8 +126,9 @@ local function restore_tracks(i, point, scope, opts)
   return mirror.revert(proj, cfg, b.song, b.room, plan_for(i, point, scope), opts)
 end
 -- "Undo this change": the change and the rest of its moment. On a whole-song Restore's row, the tempo map and markers it put in go back first,
--- as StudioSync's Undo takes back an act's (sync.undo_timeline): the items then land under today's map, and what REAPER moves for it isn't an
--- edit of yours (opts.retimed). Only where the map is still the Restore's and yours to change. James, 2026-11-21 (rt-edits round 6 question 1 (b)).
+-- as StudioSync's Undo takes back an act's (sync.undo_timeline): the items then land under today's map, and what REAPER moves for it reads the
+-- same in beats, no edit of yours (lib/beats.lua). Only where the map is still the Restore's and yours to change. James, 2026-11-21 (rt-edits
+-- round 6 question 1 (b)).
 local function undo_change(i, opts)
   local b, cfg, proj, view = E.b(), E.cfg(), E.proj(), E.view()
   local e, tl = entries[i], nil
@@ -138,9 +139,8 @@ local function undo_change(i, opts)
     end
   end
   if tl then
-    local ok, changed, tempo = pcall(sync.undo_timeline, proj, cfg, b.song, b.room, entries, tl, { restored = true }, view.session)
+    local ok, changed = pcall(sync.undo_timeline, proj, cfg, b.song, b.room, entries, tl, { restored = true }, view.session)
     if not ok then band.log("undo: the tempo map and markers stay as they are (" .. tostring(changed) .. ")") end
-    opts.retimed = ok and changed == true and tempo == true
   end
   return mirror.revert(proj, cfg, b.song, b.room, mirror.plan_undo_moment(entries, i), opts)
 end

@@ -194,7 +194,7 @@ do
   local opts = { can = yes, mode = "open" }
   res = R.test.undo_change(j, opts)
   assert(timeline(A) == today, "Undo this change on a whole-song Restore's row puts today's tempo map back (" .. tostring(res) .. ")\n" .. timeline(A) .. "\n" .. today)
-  assert(opts.retimed, "(and what REAPER moved for it isn't an edit of yours)")
+  -- (what REAPER moved for it reads the same in beats, so it isn't an edit of yours: no flag needed since rt-sync2f, lib/beats.lua)
   assert(math.abs(pos(item_named(drums, "Drums 2")) - moved_to) < 1e-6 and E.top_value(item_named(bass, "Bass 1").text, "MUTE") == "1 0",
     "the items are as today, under today's map (Drums 2 at " .. pos(item_named(drums, "Drums 2")) .. ")")
   local undo_tl
@@ -252,9 +252,9 @@ do
   page_entries()
   R.test.restore_whole(point, nil, { can = yes, mode = "open" })
   mirror.revert = real
-  local v
-  for _, e in ipairs(page_entries()) do if e.kind == "obj" and e.name == "Gtr" and e.obj == "item" and not e.gone and e.tl then v = v or e end end -- (the one REAPER's move to 60 sent)
-  assert(got and got.map_of and v and got.map_of(v) and got.map_of(v)[1].bpm == 60, "the whole-song Restore says which map each version was made under")
+  -- (since rt-sync2f a tempo change sends nothing, so no version here was REAPER's move to 60; map_of is for versions from before times went
+  -- in beats, lib/beats.lua's legacy reader)
+  assert(got and type(got.map_of) == "function", "the whole-song Restore hands mirror.revert the map each older version was made under")
   print("rt-answers: the page's Restore puts a take on its beat under the map in place")
 end
 print("ok rt-answers")

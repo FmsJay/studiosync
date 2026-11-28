@@ -29,12 +29,14 @@ assert(#v["T-LEAD"] == 1 and v["T-LEAD"][1] == "T-KEYS" and v["T-BASS"] == nil, 
 -- whose parts, in words
 assert(mirror.whose({ { "Mac", "Keys" }, { "Bee", "Bass" }, { "Mac", "Guitar" } }) == "Bee's Bass and Mac's Guitar, Keys")
 
--- a tempo change moves an item, stretches it and nothing else
+-- a tempo change moves an item, stretches it and nothing else: the same part in beats (lib/beats.lua; mirror.sans_tempo until rt-sync2f)
+local beats = require("beats")
+local at120, at60 = function(t) return t * 2 end, function(t) return t end
 local a = "<ITEM\nPOSITION 1\nLENGTH 2\nMUTE 0\n<SOURCE MIDI\nE 0 90 40 100\n>\n>\n"
-local b = "<ITEM\nPOSITION 3.5\nLENGTH 4\nMUTE 0\n<SOURCE MIDI\nE 0 90 40 100\n>\n>\n"
-local c = "<ITEM\nPOSITION 1\nLENGTH 2\nMUTE 1\n<SOURCE MIDI\nE 0 90 40 100\n>\n>\n"
-local d = "<ITEM\nPOSITION 1\nLENGTH 2\nMUTE 0\n<SOURCE MIDI\nE 0 90 41 100\n>\n>\n"
-assert(mirror.sans_tempo(a) == mirror.sans_tempo(b), "moved and stretched: the same part")
-assert(mirror.sans_tempo(a) ~= mirror.sans_tempo(c), "muted: an edit")
-assert(mirror.sans_tempo(a) ~= mirror.sans_tempo(d), "another note: an edit")
+local b = "<ITEM\nPOSITION 2\nLENGTH 4\nMUTE 0\n<SOURCE MIDI\nE 0 90 40 100\n>\n>\n"
+local c = "<ITEM\nPOSITION 2\nLENGTH 4\nMUTE 1\n<SOURCE MIDI\nE 0 90 40 100\n>\n>\n"
+local d = "<ITEM\nPOSITION 2\nLENGTH 4\nMUTE 0\n<SOURCE MIDI\nE 0 90 41 100\n>\n>\n"
+assert(beats.item(a, 1, at120) == beats.item(b, 1, at60), "moved and stretched by a tempo change (120 to 60): the same part")
+assert(beats.item(a, 1, at120) ~= beats.item(c, 1, at60), "muted: an edit")
+assert(beats.item(a, 1, at120) ~= beats.item(d, 1, at60), "another note: an edit")
 print("ok")
