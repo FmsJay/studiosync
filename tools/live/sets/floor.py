@@ -100,8 +100,9 @@ def below(ctx):
     for w in ctx.on:
         said = [l for l in ctx.log_since(w, marks) if "older than the studio" in l]
         ctx.check(said, f"{NAMES[w]}'s log doesn't say it is older than the studio's")
-    health = json.dumps(json.load(urllib.request.urlopen("http://127.0.0.1:47281/api/state", timeout=10)))
-    ctx.check("update floor" in health, "the desktop's web page has no 'update floor' Health row")
+    # (Health's rows are rebuilt on their own beat, not at once: wait for the row as f6 does, up to 60 s)
+    ctx.wait("the desktop's web page's 'update floor' Health row",
+             lambda: "update floor" in json.dumps(json.load(urllib.request.urlopen("http://127.0.0.1:47281/api/state", timeout=10))), timeout=60)
     t1 = time.time()
     ctx.do("d", f"LV.rename(P, {lua_str(T(ctx, 'Gtr'))}, {lua_str(T(ctx, 'Gtr floor'))}) return LV.out(true)")
     ctx.do(B(ctx), f"LV.rename(P, {lua_str(T(ctx, 'Keys'))}, {lua_str(T(ctx, 'Keys floor'))}) return LV.out(true)")
