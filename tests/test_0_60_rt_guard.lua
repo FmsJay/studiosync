@@ -323,4 +323,31 @@ do
   print("rt-guard 8: a new track under a deleted one lands where that one sat")
 end
 
+-- ---- 9. a delete-all right after another deletion, both REAPER's "Remove tracks" (rt-live bug 1, sync2c c1.4b; c1.4c is part 3) ----------
+-- Fails on 52ce885: the undo point was told by its name, so the second "Remove tracks" wasn't a new point; the emptied project waited, then
+-- the studio's tracks came back with nothing sent.
+do
+  local S, A, B = song("Guard9")
+  T = T + 2
+  S.as(A)
+  A.F.clock = A.F.clock + 1
+  reaper.DeleteTrack(S.track(A, "Keys"))
+  A.F.undo, A.F.undo_n = "Remove tracks", 1
+  A.edited = A.F.clock
+  S.settle(A)
+  assert(S.gone_by("James") == 3, "Keys and its two items go (" .. S.gone_by("James") .. ")")
+  T = T + 17
+  A.F.clock = A.F.clock + 17
+  for i = #A.F.tracks, 1, -1 do reaper.DeleteTrack(A.F.tracks[i]) end
+  A.F.undo, A.F.undo_n = "Remove tracks", 2
+  A.edited = A.F.clock
+  S.settle(A)
+  A.F.clock = A.F.clock + mirror.EMPTY_SECS + 1
+  S.settle(A)
+  assert(#A.F.tracks == 0, "the delete-all stays deleted here (was: put back after EMPTY_SECS): " .. S.names(A))
+  S.recv(B)
+  assert(#B.F.tracks == 0, "and goes to Bee: " .. S.names(B))
+  print("rt-guard 9: a delete-all right after another deletion (two \"Remove tracks\" in a row) goes")
+end
+
 print("ok rt-guard")

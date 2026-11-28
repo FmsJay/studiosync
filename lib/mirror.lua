@@ -5696,14 +5696,25 @@ mirror.edit_seen = mirror.edit_seen or {} -- tostring(proj) -> { base = the firs
 function mirror.user_point(top) -- an undo point that's someone's edit (a web page's or the phone's too), not StudioSync syncing or recolouring
   return type(top) == "string" and top ~= "" and not top:find("^StudioSync: ") and not top:find("^BandSync") and not require("compat").OWN[top]
 end
-function mirror.user_edited(pk, edited_at, now, top)
+-- The undo point on top, and a key that tells it from an earlier point of the same name by its place in REAPER's undo history and when it
+-- was made (REAPER 7.79+; the name alone before). By name alone two deletions in a row ("Remove tracks", twice) were one point, and a delete-all
+-- right after another deletion was put back with no ask and nothing sent (rt-live bug 1, sync2c c1.4b). -> top (the name or nil), key
+function mirror.undo_top(proj)
+  local top = reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil
+  if top == nil or not (reaper.Undo_GetCurEntry and reaper.Undo_GetEntryTime) then return top, top end
+  local i = reaper.Undo_GetCurEntry(proj) or -1
+  return top, top .. "\0" .. tostring(i) .. "@" .. tostring(reaper.Undo_GetEntryTime(proj, i))
+end
+-- top: the undo point's name on top; key: mirror.undo_top's (the name when not given).
+function mirror.user_edited(pk, edited_at, now, top, key)
+  key = key or top
   local s = mirror.edit_seen[pk]
   if not s then s = { base = edited_at or false }; mirror.edit_seen[pk] = s end
   local last_top = s.top -- (nil only before the first look; nothing to undo is "")
-  s.top = top or ""
+  s.top = key or ""
   if edited_at == nil then return true end
   if edited_at ~= s.base and now - edited_at <= mirror.EDIT_SECS then return true end
-  return last_top ~= nil and (top or "") ~= last_top and mirror.user_point(top)
+  return last_top ~= nil and (key or "") ~= last_top and mirror.user_point(top)
 end
 -- One pass: what changed here goes out if this person may change it, else the band's version is put back.
 -- opts: local_mix, can (sync.authority's), mode (room mode); ask(name, pos), sent(o, name, ev): Claims mode's asks and auto-claims (lib/claimask.lua);
@@ -5751,11 +5762,11 @@ function mirror.watch(proj, cfg, song, room, opts)
   local w = { band = band, sync = sync, proj = proj, cfg = cfg, song = song, room = room, opts = opts, me = me, room_dir = room_dir, media = media,
     objs = objs, by_oid = by_oid, sent = 0, back = 0, suggest = suggest, kept_back = {}, holds = mirror.holds[tostring(proj)] or {}, credit = {},
     back_tracks = {}, held_tracks = {}, clean = {}, unasked = {}, remembered = remembered }
-  local top = reaper.Undo_CanUndo2 and reaper.Undo_CanUndo2(proj) or nil
+  local top, top_key = mirror.undo_top(proj)
   local es = mirror.edit_seen[pk]
   -- (a new undo point of someone's on top since the last look: what a project emptied of tracks needs before its deletions go. W.gone, rt-guard)
-  w.new_point = es ~= nil and es.top ~= nil and (top or "") ~= es.top and mirror.user_point(top)
-  w.edited = mirror.user_edited(pk, opts.edited_at, now, top) -- (auto-claims: rt-fix6a)
+  w.new_point = es ~= nil and es.top ~= nil and (top_key or "") ~= es.top and mirror.user_point(top)
+  w.edited = mirror.user_edited(pk, opts.edited_at, now, top, top_key) -- (auto-claims: rt-fix6a)
   w.opened_now = opened_now
   w.pending = function() -- (how many of the band's changes wait here: once a look)
     if w.n_pending == nil then w.n_pending = sync.pending_events(proj, cfg, song, room) end

@@ -462,6 +462,8 @@ function E.new(path)
       return false
     end,
     Undo_CanUndo2 = function() return F.undo end, Undo_CanRedo2 = function() return F.redo end,
+    -- (REAPER 7.79's history: F.undo_n is the top point's place in it, which a test moves with each new point; made one second apart)
+    Undo_GetCurEntry = function() return F.undo_n or 0 end, Undo_GetEntryTime = function(_, i) return 1795850000 + (i or 0) end,
     -- (F.undos, when a test sets it to a list: REAPER's undo points as they're made, newest last. A block's changes are one point, its name;
     -- ReorderSelectedTracks outside one makes REAPER's own "Change track order". rt-edits)
     Undo_BeginBlock2 = function() F.depth = (F.depth or 0) + 1 end,
