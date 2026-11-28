@@ -2048,12 +2048,14 @@ local function none_left(proj, tracks)
   return true
 end
 -- -> true on a new opening: this script's first look at the project, or a file opened again in its tab (rt-guard, mirror.watch)
+-- (or the project's applied marks went back to an older file's (sync.marks_moved), whatever the guard and the tracks say: a file of the same
+-- name opened in one REAPER call never moved the guard (live sync2c c3), and a reused track address read as no opening. rt-fixlive2)
 function mirror.on_open(proj)
   local key, master = tostring(proj), reaper.GetMasterTrack(proj) or false
-  local o, loads = mirror.opened[key], require("loadguard").loads[key] or 0
-  local same = o and o.master == master and (o.loads == loads or not none_left(proj, o.tracks))
+  local o, loads, back = mirror.opened[key], require("loadguard").loads[key] or 0, require("sync").marks_moved(proj)
+  local same = o and o.master == master and o.back == back and (o.loads == loads or not none_left(proj, o.tracks))
   if not same then o = { master = master }; mirror.opened[key] = o end
-  o.loads, o.tracks = loads, {}
+  o.loads, o.back, o.tracks = loads, back, {}
   for i = 0, reaper.CountTracks(proj) - 1 do o.tracks[i + 1] = reaper.GetTrack(proj, i) end
   if same then return false end
   local B = require("band")

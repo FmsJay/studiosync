@@ -1949,7 +1949,7 @@ function sync.receive(proj, cfg, song, room, can)
   -- (with what came over the direct link, read from its inbox until Syncthing's copy is here: lib/direct.lua. James, 0.60.0-rt)
   local names, from = require("direct").listing(cfg, dir)
   for _, f in ipairs(names) do -- (shared with this poll's other looks at the folder: 0.59.14, review)
-    if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) ~= "" then settled[f] = true end
+    if not settled[f] and ext(proj, sync.APPLIED, f:sub(1, -6)) ~= "" then sync.settle(settled, f) end
     if not settled[f] and not cache[f] and reaper.time_precise() - t_read > budget then cut = true; break end
     if not settled[f] then
       local ev = cache[f] or band.read_json(from and from[f] or dir .. "/" .. f)
@@ -2373,9 +2373,36 @@ end
 -- is a new one, so that's what is checked, as mirror.watch does with its first track. Linux stress test, 0.58.77)
 -- (and the opening mirror.on_open tells: REAPER keeps the master track through File > Open in the same tab, so an older file opened there was
 -- "settled" and the changes it lacked came back only with the next catch-up, up to 5 minutes later. rt-live bugs 2 and 3, rt-fixlive1)
+-- (and the project's own marks: each cache keeps the last file it took as applied (sync.settle), and one whose mark is gone from the project
+-- means a file was loaded into the tab (its marks are the file's) whatever else told it or didn't: File > Open of the song's own file runs
+-- inside one REAPER call, so the load guard never saw REAPER loading and the name didn't change, and a reused track address hid it from
+-- mirror.on_open. The changes the file lacks came back only with the heal, 64-292 s, or never (live sync2c c1.2, c2, c3). rt-fixlive2.
+-- Counted per project in sync.marks_back, which mirror.on_open takes for an opening.)
 sync.settled, sync.settled_master, sync.settled_retry, sync.settled_open = {}, {}, {}, {}
+sync.settled_mark = setmetatable({}, { __mode = "k" }) -- settled table -> the file it last took as applied
+sync.marks_back = {} -- tostring(proj) -> how many times its applied marks went back
+function sync.settle(settled, f) settled[f] = true; sync.settled_mark[settled] = f end
+local function marks_check(proj, key)
+  local s = sync.settled[key]
+  local f = s and sync.settled_mark[s]
+  if f and ext(proj, sync.APPLIED, f:sub(1, -6)) == "" then
+    sync.settled[key] = nil
+    sync.marks_back[tostring(proj)] = (sync.marks_back[tostring(proj)] or 0) + 1
+  end
+end
+-- -> how many times this project's applied marks went back (each events folder it has a cache for checked now). mirror.on_open
+function sync.marks_moved(proj)
+  local pk = tostring(proj) .. "\0"
+  for key in pairs(sync.settled) do if key:sub(1, #pk) == pk then marks_check(proj, key) end end
+  return sync.marks_back[tostring(proj)] or 0
+end
+local function marks_forget(proj) -- (marks cleared on purpose (trim, Try again): no load)
+  local pk = tostring(proj) .. "\0"
+  for key, s in pairs(sync.settled) do if key:sub(1, #pk) == pk then sync.settled_mark[s] = nil end end
+end
 function sync.settled_for(proj, dir)
   local key = tostring(proj) .. "\0" .. dir
+  marks_check(proj, key)
   local had, master = sync.settled_master[key], reaper.GetMasterTrack(proj)
   if had and not (had == master and reaper.ValidatePtr2(proj, had, "MediaTrack*")) then sync.settled[key] = nil end
   sync.settled_master[key] = master
@@ -2423,6 +2450,7 @@ function sync.forget_trimmed(proj, cfg, song)
     i = i + 1
   end
   for _, key in ipairs(gone) do reaper.SetProjExtState(proj, sync.APPLIED, key, "") end
+  if #gone > 0 then marks_forget(proj) end
   sync.forgot = #gone
   return #gone
 end
@@ -2435,7 +2463,7 @@ function sync.pending_events(proj, cfg, song, room)
   for _, f in ipairs((require("direct").listing(cfg, dir))) do -- (a count: the shared listing, unsorted, and the direct link's inbox. 0.59.14, review; 0.60.0-rt)
     if not settled[f] then -- (looked at first: a name cut for every file of thousands, 2 to 3 times a poll. Round 1 review, 0.59.45)
       local id = f:sub(1, -6)
-      if ext(proj, sync.APPLIED, id) ~= "" then settled[f] = true
+      if ext(proj, sync.APPLIED, id) ~= "" then sync.settle(settled, f)
       -- waiting on a claim isn't "behind", and neither is our own change on its way back (the pill read "Receiving 321"
       -- right after a restore we sent: laptop, 0.34.4)
       elseif not sync.deferred[id] and not sync.is_mine(id, cfg.user) then n = n + 1 end

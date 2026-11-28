@@ -393,4 +393,47 @@ do
   print("rt-guard 10: an older file opened in the same tab is a new opening; the changes it lacks land at once; a save isn't one")
 end
 
+-- ---- 11. the song's own file opened again in its tab, the load guard never moving (rt-fixlive2, live sync2c c3) ------------------------------
+-- File > Open of a file of the same name runs inside one REAPER call: Live sync's tick never sees REAPER loading and the tab's name doesn't
+-- change, so the guard doesn't settle again (on the desktop c3's track never came back; c1.2 and c2 waited for the heal, 64-292 s). The
+-- project's applied marks went back to the file's: that's the opening, and what the file lacks lands at the next receive. Bee's track and
+-- James's own, both made after the file was saved. Fails on 4a40505: "back at once".
+do
+  local S, A, B = song("Guard11")
+  local guard = require("loadguard")
+  S.as(A)
+  local old = A.F.save() -- (the file: Drums, Keys, Gtr)
+  T = T + 5
+  S.edit(B, function(F) F.add_track("Bass") end)
+  S.recv(A)
+  T = T + 5
+  S.edit(A, function(F) F.add_track("Keep") end)
+  S.recv(B)
+  S.recv(A)
+  assert(S.track(A, "Bass") and S.track(B, "Keep"), "Bass and Keep on both: " .. S.names(A) .. " / " .. S.names(B))
+  T = T + 5
+  S.as(A)
+  local pk = tostring(A.F.proj)
+  local loads, opening, gone_before = guard.loads[pk], mirror.opened[pk], S.gone_by("James")
+  A.F.clock = A.F.clock + 1
+  A.F.load(old) -- (the guard's count stays: nothing told Live sync REAPER was loading)
+  A.edited = A.F.clock
+  S.recv(A)
+  assert(guard.loads[pk] == loads, "(the guard didn't move)")
+  assert(S.track(A, "Bass") and S.track(A, "Keep"), "Bee's Bass and James's own Keep back at once (was: only with the heal): " .. S.names(A))
+  assert(mirror.opened[pk] ~= opening, "a new opening")
+  assert(S.names(A) == S.names(B), "in the same order as Bee's: " .. S.names(A) .. " / " .. S.names(B))
+  assert(S.gone_by("James") == gone_before, "nothing sent for what the file lacked")
+  S.recv(B)
+  assert(S.track(B, "Bass") and S.track(B, "Keep"), "Bee keeps both: " .. S.names(B))
+  -- more work, no load: no opening, and a deletion still goes
+  T = T + 5
+  opening = mirror.opened[pk]
+  S.edit(A, function() reaper.DeleteTrack(S.track(A, "Gtr")) end)
+  assert(mirror.opened[pk] == opening, "no opening without a load")
+  S.recv(B)
+  assert(not S.track(B, "Gtr"), "a deletion after it still goes: " .. S.names(B))
+  print("rt-guard 11: the song's own file opened again in its tab, the guard never moving: the changes it lacks land at once")
+end
+
 print("ok rt-guard")
