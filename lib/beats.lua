@@ -90,6 +90,15 @@ local function sm_line(list, posf)
   return "SM " .. table.concat(e, " + ")
 end
 local function own_markers(list) for _, x in ipairs(list) do if not x.made then return true end end return false end
+-- The source seconds REAPER's own markers on an auto-stretch item cover, from the item's start to its end (`len`: the take's length, rate x
+-- length): REAPER keeps it when a tempo marker inside the item is edited, where it keeps the rate and rate x length moves (live check sync2f
+-- f4 on 0.64.0: 90 -> 80 bpm, rate 0.818 kept, length 7.33 -> 8, its end marker 6 6 -> 6.545 6). nil unless they start and end there. Pure.
+local function made_span(list, len)
+  local a, b = list[1], list[#list]
+  local sa, sb = a and tonumber(a.rest:match("^%s*(%S+)")), b and tonumber(b.rest:match("^%s*(%S+)"))
+  if #list < 2 or not (sa and sb) or math.abs(a.pos) > 1e-6 or math.abs(b.pos - len) > 1e-6 then return nil end
+  return sb - sa
+end
 local function num_at(line, k) -- (the k-th number after the keyword, its text's start and end)
   local n, pos = 0, 1
   while true do
@@ -134,9 +143,15 @@ function beats.item(state, mode, qn)
       local r = t.rate and not t.midi and num_at(L[t.rate], 1)
       local sm = t.sm and not t.midi and sm_entries(L[t.sm])
       local own = sm and own_markers(sm)
-      if sm and not own and takes.implied then L[t.sm] = false -- (REAPER's alone: made again from the map where it lands)
-      elseif sm then local rr = r or 1; L[t.sm] = sm_line(sm, function(x) return q6(qn(p + x / rr) - q0) end) end -- (to 1e-6: REAPER writes them to 1e-9 s)
-      if r and not own then L[t.rate] = set_at(L[t.rate], 1, f9(r * l)) end
+      local span = r and r * l
+      if sm and not own and takes.implied then
+        L[t.sm] = false -- (REAPER's alone: made again from the map where it lands)
+        span = r and made_span(sm, r * l) or span -- (what plays over the item, which a receiver's rate then gives: beats.item_seconds)
+      elseif sm then
+        local rr = r or 1
+        L[t.sm] = sm_line(sm, function(x) return q6(qn(p + x / rr) - q0) end) -- (to 1e-6: REAPER writes them to 1e-9 s)
+      end
+      if r and not own then L[t.rate] = set_at(L[t.rate], 1, f9(span)) end
     end
   end
   for i, line in ipairs(L) do

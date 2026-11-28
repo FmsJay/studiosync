@@ -1844,7 +1844,7 @@ end
 -- new code still finds it. A computer below the floor sends nothing and says "update StudioSync" (Live sync, Health); one at the floor holds,
 -- never applies, a change made below it: one with a lower `lv`, or one with none (a StudioSync from before floors) made since the floor was
 -- first recorded. Held, not dropped: it stays in the room unapplied and unmarked (docs/rt/rt-floor.md says why that loses nothing).
-sync.LEVEL = 13 -- (11: rt-floor, the first floor; mirror.HV 11. 12: times in beats, mirror.HV 12, rt-sync2f. 13: fades and snap offset in beats where they sit, mirror.HV 13, rt-sync2g)
+sync.LEVEL = 14 -- (11: rt-floor, the first floor; mirror.HV 11. 12: times in beats, mirror.HV 12, rt-sync2f. 13: fades and snap offset in beats where they sit, mirror.HV 13, rt-sync2g. 14: stretch markers as REAPER keeps them at a tempo change, mirror.HV 14, rt-fixlive2)
 sync.FLOOR_EVERY = 10 -- seconds a read of the floor folder is kept
 sync.floor_now = nil -- { level, since, below, root } as last read (sync.floor), or nil: none read in this Lua state yet (nothing held)
 local floor_read = {} -- root -> { at, f }

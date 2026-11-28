@@ -359,16 +359,16 @@ do
   print("rt-sync2f 5: updating sends nothing: hash version 11 records of format-1 versions are the band's, read in beats")
 end
 
--- ---- 6. format 2, hash version 13 (rt-sync2g's fades), level 13 ------------------------------------------------------------------------------
+-- ---- 6. format 2, hash version 14 (rt-fixlive2's stretch markers), level 14 ------------------------------------------------------------------------------
 do
-  assert(band.FORMAT == 2 and mirror.HV == 13 and sync.LEVEL == 13 and sync.LEVEL >= mirror.HV, "format 2, hash version 13, level 13")
+  assert(band.FORMAT == 2 and mirror.HV == 14 and sync.LEVEL == 14 and sync.LEVEL >= mirror.HV, "format 2, hash version 14, level 14")
   local was = band.FORMAT
   band.FORMAT = 1 -- (a StudioSync from before: format 1)
   local too_new = sync.too_new({ type = "obj", obj = "item", format = 2, lv = 12 })
   band.FORMAT = was
   assert(too_new, "a StudioSync on format 1 holds a format-2 change as too new: it can't read beats")
   assert(not sync.too_new({ type = "obj", obj = "item", format = 1, time = "2026-11-25T10:00:00Z" }), "history in format 1 is read here")
-  print("rt-sync2f 6: format 2, hash version 13, level 13")
+  print("rt-sync2f 6: format 2, hash version 14, level 14")
 end
 
 -- ---- 7. History's preview puts a version in beats on the map then ---------------------------------------------------------------------------
@@ -468,6 +468,13 @@ do
     .. "PLAYRATE 0.81818181818182 1 0 -1 0 0.0025\nSM 0 0 0 1 + 1.636363636 2 0 1 + 6 6 0 1\n" .. tail
   local c0, c1 = beats.item(auto0, 1, qn120), beats.item(auto1, 1, qn90at(12))
   assert(c0 == c1, "an auto-stretch item reads the same before and after a tempo change inside it (REAPER's own markers left out):\n" .. c0 .. "\n" .. c1)
+  -- (rt-fixlive2: that marker then edited to 80 bpm, as REAPER 7.86 wrote it in live check sync2f f4 on 0.64.0: the rate kept, the length
+  -- 8, its end marker 6.545 6. Read as rate x length, 6.545, the desktop sent it and LinuxBox made markers covering 6.545 s of source)
+  local auto2 = "<ITEM\nPOSITION 10\nSNAPOFFS 0\nLENGTH 8\nFADEIN 1 0.01 0 1 0 0 0\nFADEOUT 1 0.015 0 1 0 0 0\nBEAT 1\nIMPLIEDWARP 1\n"
+    .. "PLAYRATE 0.81818181818182 1 0 -1 0 0.0025\nSM 0 0 0 1 + 1.636363636 2 0 1 + 6.545454545 6 0 1\n" .. tail
+  local function qn80at(t) if t <= 12 then return t * 2 end return 24 + (t - 12) * 80 / 60 end
+  local c2 = beats.item(auto2, 1, qn80at)
+  assert(c2 == c0, "and the same after that marker is edited (the source REAPER's markers cover, not rate x length):\n" .. c0 .. "\n" .. c2)
   local h12 = beats.upgrade12("<ITEM\nBANDBEAT 1\nPOSITION 20.000000\nLENGTH 12.000000\nIMPLIEDWARP 1\nPLAYRATE 6.000000000 1 0 -1 0 0.0025\nSM 0 0 0 1 + 1.636363636 2 0 1\n" .. tail)
   assert(not h12:find("\nSM ", 1, true), "hash version 12's copy of REAPER's own markers on an auto-stretch item is left out as it's read: " .. h12)
   -- (a take with stretch markers of its own, at 10 s, 6 s long, a 90 bpm marker added at 10.5 s: REAPER kept the rate and each marker's beats.
