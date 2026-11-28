@@ -1764,6 +1764,7 @@ mirror.auto = {} -- proj .. oid -> its next send is a print StudioSync refreshed
 mirror.print_quiet = {} -- proj .. oid -> { key, at }: nothing to print for it as of then (W.prints)
 mirror.tracks_back = mirror.tracks_back or {} -- tostring(proj) -> { oid = event }: tracks put back by a look, settings again after their items (mirror.watch)
 mirror.unsent = {} -- proj .. oid -> changed here, not sent yet (settling, playing, a burst's rest): mirror.receive waits
+mirror.drift_seen, mirror.drift_put, mirror.drifts = {}, {}, {} -- proj .. oid -> the record looked at for drift; the version put back; proj -> how many (W.one, rt-sync2j)
 mirror.asked_of = {} -- proj .. oid -> { who }: an edit held here for that bandmate's answer by the last look of it (W.refuse; W.one clears it)
 -- Items that can't go out (their audio couldn't be copied into the studio's folder or isn't on this computer, or their send threw), per
 -- project: Sync and exit counts them (mirror.waiting). Not mirror.unsent, which receive waits on: the band's version of such an item would
@@ -4649,6 +4650,53 @@ mirror.SETTLE_SECS = 0.3
 mirror.look_cc = mirror.look_cc or {}
 mirror.settle_due = nil
 local function settle_at(t) if not mirror.settle_due or t < mirror.settle_due then mirror.settle_due = t end end
+-- A test-only fault (rt-sync2j: tests/test_0_60_rt_health2.lua, tools/live/sets/sync2j.py): this object's record keeps naming the version it
+-- holds, under REAPER's reading of it as it is now. Change the object in REAPER first, in the same script step, and the look takes it for the
+-- band's version (no edit sent): REAPER and the version held now differ, as an edit kept on one computer unnoticed would.
+function mirror.test_drift(proj, oid, room_dir, local_mix)
+  local rev, _, evid, kord = mirror.known(proj, oid)
+  local kind = mirror.KIND[oid:sub(1, 1)]
+  if not rev or (evid or "") == "" then return false end
+  local h
+  if kind == "item" then
+    local it = mirror.find(proj, "item", oid)
+    local tr = it and trk_oid(reaper.GetMediaItem_Track(it))
+    h = it and mirror.item_hash(tr, mirror.item_state(it, room_dir .. "/media"))
+  elseif kind == "track" then
+    local tr = mirror.find(proj, "track", oid)
+    h = tr and mirror.track_hash(mirror.track_state(proj, tr, local_mix), local_mix)
+  end
+  if not h then return false end
+  remember(proj, oid, rev, h, evid, kord)
+  return true
+end
+-- Does REAPER's reading `o` hold version `ev`, as this computer reads a version now (the look's re-anchoring, and "drift here")?
+function W.reads_as(proj, o, ev)
+  -- (or its item, read the way this machine reads one now: 0.40.3 left selected notes and VELLANE out)
+  -- (or its chain: a plug-in on it was found restless since)
+  -- (the event's item normalized once for both checks below: 3 to 6 ms each on a big MIDI item, every edit. rt-look)
+  -- (only on the track the band has it on: an item dragged or moved to another track with nothing else changed read as "the band's version,
+  -- hashed anew", as both checks took the track it's on now, so the move was never sent. REAPER check, rt-edits)
+  -- (a merge's `hash` is its winner's, copied: never what the merge holds. rt-sync2j)
+  local evh = not mirror.split_merge(ev.id or "") and ev.hash or nil
+  local on_its_track = ev.track == nil or ev.track == o.track
+  local ev_norm = on_its_track and evh ~= o.hash and o.kind == "item" and type(ev.state) == "string" and mirror.normalize_item(ev.state)
+  -- (and in beats, as a version is read now: one from before them with no map of its own (before rt-converge) read on the map here, which
+  -- is where it sits if nobody moved it. The first look after updating finds every beats item and automation hashed anew, and sends none
+  -- of them. lib/beats.lua, rt-sync2f)
+  if ev_norm and not beats.mark(ev_norm) then ev_norm = beats.read_item(proj, ev_norm, o.ptr and reaper.GetMediaItem_Track(o.ptr) or nil) end
+  local ev_env = evh ~= o.hash and (o.kind == "env" or o.kind == "recv") and type(ev.state) == "string"
+    and (beats.mark(ev.state) and ev.state or beats.read_env(proj, ev.state))
+  return evh == o.hash or ev_norm and mirror.item_hash(o.track, ev_norm) == o.hash
+    or ev_env and mirror.hash(ev_env) == o.hash
+    or o.kind == "fx" and type(ev.state) == "string" and mirror.fx_hash(ev.state) == o.hash
+    -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
+    or ev_norm and mirror.rounded(ev_norm) == mirror.rounded(o.state)
+    -- (or hash version 12's, its fades and snap offset read from shares of the length as near as they can be: beats.upgrade12. rt-sync2g)
+    or ev_norm and tonumber(ev.hv) == 12 and beats.near(ev_norm, o.state)
+    -- (or 12's or 13's, a take's own stretch markers without the ends today's form writes for them: beats.ends_off. rt-fixlive2)
+    or ev_norm and (tonumber(ev.hv) == 12 or tonumber(ev.hv) == 13) and beats.near(beats.ends_off(ev_norm), beats.ends_off(o.state)) or false
+end
 function W.one(w, o)
   local band, sync, proj, cfg, song, room, opts, me = w.band, w.sync, w.proj, w.cfg, w.song, w.room, w.opts, w.me
   local room_dir, media, objs, by_oid, holds, playing = w.room_dir, w.media, w.objs, w.by_oid, w.holds, w.playing
@@ -4768,6 +4816,26 @@ function W.one(w, o)
     end
   end
   if h == o.hash and not knobs_moved then
+    -- drift here (rt-sync2 5c): REAPER reads as its record says, but the record's version holds something else (an edit kept on one computer
+    -- unnoticed, rt-sync2's bug 1). Looked at once per record; the studio's version put back once per version held, and said only when that
+    -- changed something here (a version that reads its own way here, as a fade's 14th digit, changes nothing). Items and automation: plug-in
+    -- chains read back their own way on each computer. rt-sync2j
+    if rev and h ~= "" and (o.kind == "item" or o.kind == "env" or o.kind == "recv") and mirror.drift_seen[rk] ~= tostring(evid) .. "\0" .. h then
+      mirror.drift_seen[rk] = tostring(evid) .. "\0" .. h
+      local ev = (evid or "") ~= "" and event_file(room_dir, evid)
+      if ev and not ev.gone and mirror.drift_put[rk] ~= evid and not W.reads_as(proj, o, ev) and not (o.kind == "item" and (mirror.is_standin(o.ptr)
+          or mirror.only_pick_new(o.track, o.state, ev.state) or mirror.same_but_labels(o.state, ev.state))) then
+        mirror.drift_put[rk] = evid
+        local where = perm_name(o, by_oid)
+        put_back(o, rev, evid, { name = where })
+        if select(2, mirror.known(proj, o.oid)) ~= h then
+          mirror.drifts[tostring(proj)] = (mirror.drifts[tostring(proj)] or 0) + 1
+          sync.put_back(string.format("%s on %s here wasn't the studio's version of it (nothing you did): it's put back as the studio has it",
+            o.kind == "item" and "An item" or "Automation", where ~= "" and where or "an unnamed track"))
+        end
+        return
+      end
+    end
     if o.kind == "fx" and o.ptr and not mirror.fxk_ok[rk] and loaded(proj, rk) then knobs_agreed(proj, o, rk) end
     -- (mirror.receive doubted this chain, its knobs not as they last landed or went out, and this look finds it unchanged (a plug-in settling
     -- as it loads): the knobs as they are now are what it compares with from here, or the band's chain would wait on it for good)
@@ -4787,30 +4855,8 @@ function W.one(w, o)
   if rev and h ~= "" and not knobs_moved and not mirror.anchor_seen[rk .. "\0" .. h] then
     mirror.anchor_seen[rk .. "\0" .. h] = true
     local ev = event_file(room_dir, evid)
-    -- (or its item, read the way this machine reads one now: 0.40.3 left selected notes and VELLANE out)
-    -- (or its chain: a plug-in on it was found restless since)
-    -- (the event's item normalized once for both checks below: 3 to 6 ms each on a big MIDI item, every edit. rt-look)
-    -- (only on the track the band has it on: an item dragged or moved to another track with nothing else changed read as "the band's version,
-    -- hashed anew", as both checks took the track it's on now, so the move was never sent. REAPER check, rt-edits)
     local on_its_track = ev and (ev.track == nil or ev.track == o.track)
-    local ev_norm = on_its_track and ev.hash ~= o.hash and o.kind == "item" and type(ev.state) == "string" and mirror.normalize_item(ev.state)
-    -- (and in beats, as a version is read now: one from before them with no map of its own (before rt-converge) read on the map here, which
-    -- is where it sits if nobody moved it. The first look after updating finds every beats item and automation hashed anew, and sends none
-    -- of them. lib/beats.lua, rt-sync2f)
-    if ev_norm and not beats.mark(ev_norm) then ev_norm = beats.read_item(proj, ev_norm, o.ptr and reaper.GetMediaItem_Track(o.ptr) or nil) end
-    local ev_env = ev and ev.hash ~= o.hash and (o.kind == "env" or o.kind == "recv") and type(ev.state) == "string"
-      and (beats.mark(ev.state) and ev.state or beats.read_env(proj, ev.state))
-    if ev and (ev.hash == o.hash or ev_norm and mirror.item_hash(o.track, ev_norm) == o.hash
-        or ev_env and mirror.hash(ev_env) == o.hash
-        or o.kind == "fx" and type(ev.state) == "string" and mirror.fx_hash(ev.state) == o.hash
-        -- (or the same but for its 14th digit, a tempo map put back: the Mac sent its Keys part as its own change, 0.42.8)
-        or ev_norm and mirror.rounded(ev_norm) == mirror.rounded(o.state)
-        -- (or hash version 12's, its fades and snap offset read from shares of the length as near as they can be: beats.upgrade12. rt-sync2g)
-        or ev_norm and tonumber(ev.hv) == 12 and beats.near(ev_norm, o.state)
-        -- (or 12's or 13's, a take's own stretch markers without the ends today's form writes for them: beats.ends_off. rt-fixlive2)
-        or ev_norm and (tonumber(ev.hv) == 12 or tonumber(ev.hv) == 13) and beats.near(beats.ends_off(ev_norm), beats.ends_off(o.state))) then
-      remember(proj, o.oid, rev, o.hash, evid, kord); return
-    end
+    if ev and W.reads_as(proj, o, ev) then remember(proj, o.oid, rev, o.hash, evid, kord); return end
     -- (an item with takes, the band's version from before which take plays travelled: its own author sends the pick it plays, so
     -- their comp reaches everyone; anyone else keeps theirs till it comes, and isn't sending or putting back a "change". 0.58.85)
     if on_its_track and o.kind == "item" and mirror.only_pick_new(o.track, o.state, ev.state) and not mine(evid) then

@@ -245,4 +245,22 @@ do
   assert(reaper.GetExtState(band.SECTION, "content apart " .. tostring(B.F.proj)) == "", "the same song again: the note goes")
   print("rt-sync2j 3: the same changes put together into another song are noted with the merged object, once")
 end
+
+-- ---- 4. drift here (the test-only fault: a held version swapped) ------------------------------------------------------------------------------
+do
+  local S, A, B = song("Drift")
+  local function sent_by(user) return #S.events(function(v) return v.user == user end) end
+  local before = sent_by("Bee")
+  S.as(B)
+  local it = S.track(B, "Keys").items[1]
+  B.F.set_text(it, midi(7, 2)) -- (REAPER's item changed ...
+  assert(mirror.test_drift(B.F.proj, oid_of(it), S.dir, false), "(the fault is made)") -- (... and its record taking that for the version held)
+  S.settle(B)
+  assert(item_pos(B, "Keys") == 4, "the look puts the studio's version back: " .. tostring(item_pos(B, "Keys")))
+  assert(sent_by("Bee") == before, "and sends nothing")
+  assert(told("wasn't the studio's version of it") == 1, "said once")
+  S.settle(B)
+  assert(told("wasn't the studio's version of it") == 1, "and not again")
+  print("rt-sync2j 4: drift here (REAPER's item isn't the version held) is put back and said once")
+end
 print("ok")
