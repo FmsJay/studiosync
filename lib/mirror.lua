@@ -3004,6 +3004,23 @@ function mirror.will_wait(proj, ev, putting_back)
   end
   return false
 end
+-- An item of yours kept on "(yours, not sent)" when the band deleted its track, landing again as the very version kept (StudioSync's Undo or a
+-- Restore brought the track back with it): the kept one is taken back onto the track, not doubled beside it. Seen on both sides, 2 of 2:
+-- rt-live bug 5 (sync2c c12, sync2e e4). -> the kept item and the track it's on, or nil
+mirror.kept_aside = mirror.kept_aside or {} -- proj .. item oid -> { it, ev }: moved to "(yours, not sent)" with its track's deletion (mirror.apply)
+local function take_back_kept(proj, oid, evid)
+  local k = tostring(proj) .. oid
+  local kn = mirror.kept_aside[k]
+  if not kn then return nil end
+  if not reaper.ValidatePtr2(proj, kn.it, "MediaItem*") or select(2, reaper.GetSetMediaItemInfo_String(kn.it, "P_EXT:band_oid", "", false)) ~= "" then
+    mirror.kept_aside[k] = nil
+    return nil
+  end
+  local ktr = reaper.GetMediaItem_Track(kn.it)
+  if kn.ev == nil or kn.ev ~= evid or not local_track(ktr) then return nil end -- (another version: yours stays kept)
+  mirror.kept_aside[k] = nil
+  return kn.it, ktr
+end
 function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
   mirror.applied = (mirror.applied or 0) + 1 -- (StudioSync wrote the project: lib/dawview.lua reads every track for the page again. rt-perfcut4)
   if ev.obj == "track" then mirror.order_band[tostring(proj)] = true end
@@ -3056,6 +3073,8 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
           -- so the deleter's own deletion of that very version, which comes beside the track's, takes it after all: mirror.receive. rt-fix9.
           -- A deletion that names them never needs it: what it names went, and what it doesn't the deleter never had)
           if not named and not (mirror.unsent[tostring(proj) .. io] or elsewhere[io]) then mirror.kept_new[tostring(proj) .. io] = { it = it, ev = select(3, mirror.known(proj, io)) } end
+          -- (and, with no edit of yours waiting in it, for the track coming back with that very version: take_back_kept. rt-live bug 5)
+          if io ~= "" and not (mirror.unsent[tostring(proj) .. io] or elsewhere[io]) then mirror.kept_aside[tostring(proj) .. io] = { it = it, ev = select(3, mirror.known(proj, io)) } end
           reaper.MoveMediaItemToTrack(it, mirror.keep_track(proj, tname))
           -- (yours now: not the band's item, and nothing waits on it, or the band's delete of it waited for good. 0.58.93)
           reaper.GetSetMediaItemInfo_String(it, "P_EXT:band_oid", "", true)
@@ -3258,8 +3277,11 @@ function mirror.apply(proj, ev, media_dir, local_mix, no_standin)
     -- (an item with Melodyne / ARA on a take isn't rebuilt in place from a chunk without take ids: REAPER kept one
     -- take of two (measured 7.83). A fresh item takes it whole.)
     if it and require("prints").ara_take(it) then reaper.DeleteTrackMediaItem(reaper.GetMediaItem_Track(it), it); it = nil end
+    local kept_on
+    if not it then it, kept_on = take_back_kept(proj, oid, ev.id) end
     if not it then it = reaper.AddMediaItemToTrack(tr)
     elseif reaper.GetMediaItem_Track(it) ~= tr then reaper.MoveMediaItemToTrack(it, tr) end
+    if kept_on and reaper.CountTrackMediaItems(kept_on) == 0 then reaper.DeleteTrack(kept_on) end
     local sel, grp = reaper.IsMediaItemSelected(it), reaper.GetMediaItemInfo_Value(it, "I_GROUPID") -- (item groups are this computer's: kept. 0.58.91)
     -- (which take plays: the sender's pick, BANDTAKE, from 0.58.85. A version from before says nothing, and this machine's own
     -- pick stays: setting the chunk put it back to the first, so an audio comp lost its pick on every update. Review, 2026-10-31)

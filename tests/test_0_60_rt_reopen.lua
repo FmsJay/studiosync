@@ -8,6 +8,7 @@
 --  3. A record whose object no look of this session saw is no deletion of this person's (section 6 (2b)).
 --  4. Deleting half the song's tracks or more asks first (James's decision 2), from 2 tracks deleted (his floor, 2026-11-27).
 --  5. A track StudioSync's Undo brings back gets what a bandmate made on it while it was gone (the soak's 5023).
+--  6. The take kept on "(yours, not sent)" when that deletion landed goes back onto the brought-back track, not doubled (rt-live bug 5).
 package.path = "lib/?.lua;tests/fixtures/?.lua;" .. package.path
 local T = 1800000000
 local real_time, real_date = os.time, os.date
@@ -282,6 +283,32 @@ do
   local t = S.track(B, "Gtr")
   assert(t and #t.items == 1, "and the next pass puts James's take on it (was: gone on Bee's alone until heal): " .. (t and #t.items or -1))
   print("rt-reopen 5: a track StudioSync's Undo brings back gets what a bandmate made on it while it was gone")
+end
+
+-- ---- 6. the take kept on "(yours, not sent)" goes back onto the track StudioSync's Undo brings back, not doubled (rt-live bug 5) ------------
+-- Fails on 52ce885: James kept "Gtr (yours, not sent)" with the same take beside the brought-back Gtr (sync2c c12, sync2e e4).
+do
+  local S, A, B = song("Reopen6")
+  T = T + 5
+  S.edit(B, function() reaper.DeleteTrack(S.track(B, "Gtr")) end) -- (Bee deletes Gtr)
+  T = T + 1
+  S.edit(A, function(F) F.add_item(S.track(A, "Gtr"), table.concat({ "<ITEM", "POSITION 2", "LENGTH 1", 'NAME "James take"', "<SOURCE MIDI",
+    "HASDATA 1 960 QN", "E 960 b0 7b 00", ">", ">" }, "\n") .. "\n") end) -- (James, not having seen it, records a take on Gtr: it goes out)
+  S.recv(A) -- (Bee's deletion reaches James: his take is kept aside)
+  local kept = S.track(A, "Gtr (yours, not sent)")
+  assert(not S.track(A, "Gtr") and kept and #kept.items == 1, "James's take kept on 'Gtr (yours, not sent)': " .. S.names(A))
+  S.recv(B)
+  T = T + 1
+  S.as(B)
+  require("undo").step(B.F.proj, B.cfg, S.b, false, {})
+  S.settle(B)
+  S.recv(B)
+  assert(S.track(B, "Gtr") and #S.track(B, "Gtr").items == 1, "Bee's Undo: Gtr back with James's take on Bee's")
+  S.recv(A)
+  local t = S.track(A, "Gtr")
+  assert(t and #t.items == 1, "Gtr back on James's with his take: " .. S.names(A))
+  assert(not S.track(A, "Gtr (yours, not sent)"), "and no kept copy beside it (was: 'Gtr (yours, not sent)' with the same take): " .. S.names(A))
+  print("rt-reopen 6: a take kept aside goes back onto the track StudioSync's Undo brings back, not doubled")
 end
 
 print("ok rt-reopen")
