@@ -238,10 +238,10 @@ def stretch_markers(ctx):
     d = item(ctx, "d")
     ctx.note(f"after: QN {d['qp']:.6f} + {d['qe'] - d['qp']:.6f}; stretch markers " + ", ".join(f"{m['pos']:.6f}/{m['srcpos']:.6f}" for m in d["sm"]))
     ctx.check(abs(d["qp"] - 22) < 1e-5, f"Gtr's item isn't on QN 22 (LinuxBox's move, made on 120 bpm): QN {d['qp']:.6f}")
-    ctx.check(len(d["sm"]) == 2, f"{len(d['sm'])} stretch markers after the crossing, not 2")
-    if abs(d["sm"][1]["pos"] - sm["d"][1]["pos"]) > 1e-6:
-        ctx.note(f"the stretch markers moved in item time ({sm['d'][1]['pos']:.6f} -> {d['sm'][1]['pos']:.6f}, ratio "
-                 f"{d['sm'][1]['pos'] / sm['d'][1]['pos']:.6f}): they're in item time (seconds), a known limit")
+    # (REAPER keeps each of the take's own markers on its beats and adds one at each end at the first tempo change that reaches it, with
+    # the source that plays there: 2 -> 4, measured. StudioSync reads the take with those ends, so the change sends nothing. rt-fixlive2)
+    own = [m for m in d["sm"] if any(abs(m["srcpos"] - o["srcpos"]) < 1e-6 for o in sm["d"])]
+    ctx.check(len(own) == 2 and len(d["sm"]) in (2, 4), f"the take's own two stretch markers and REAPER's ends after the crossing: {d['sm']}")
     objs = no_obj(ctx, events(ctx, t0), "d")
     ctx.check(not objs, f"the desktop sent obj events after its tempo change: {objs}")
 
